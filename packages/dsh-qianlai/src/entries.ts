@@ -303,7 +303,8 @@ function invoiceAmountMismatch(invoice: InvoiceRecord, amounts: Readonly<Record<
     invoice_tax: invoice.facts.taxAmount,
   }
   const differs = Object.entries(onInvoice).filter(([source, printed]) => {
-    if (typeof printed !== 'string' || amounts[source] === undefined) return false
+    if (amounts[source] === undefined) return false
+    if (typeof printed !== 'string') return true
     const a = parseAmountToCents(printed.replace(/[¥￥,\s]/g, ''))
     const b = parseAmountToCents(amounts[source].replace(/[¥￥,\s]/g, ''))
     return a === undefined || b === undefined || a !== b
