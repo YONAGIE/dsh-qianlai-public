@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reject caller-supplied invoice/settlement evidence roles when previewing or posting; preserve automatic evidence from checked invoice and statement links.
 - Exercise attachment path-escape protection on ordinary Windows accounts using a directory junction test fixture.
 - Add an authenticated, on-demand WeChat QR panel with live status, expiration and refresh, plus a scoped login tool.
 - Read XLS/XLSX worksheets and paginated PDF text/page images directly from received attachments; preserve validation and posting confirmation.
