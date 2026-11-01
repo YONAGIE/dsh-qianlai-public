@@ -31,8 +31,12 @@ export interface InvoiceReading {
 
 type Key = keyof InvoiceExtractedFacts
 
+const READING_KEYS: Partial<Record<Key, keyof InvoiceReading>> = {
+  amountExclTaxCents: 'amountExclTax', taxAmountCents: 'taxAmount', totalInclTaxCents: 'totalInclTax',
+}
+
 function field<T>(reading: InvoiceReading, key: Key, value: T | undefined): InvoiceField<T> {
-  if (reading.unreadable?.includes(key)) return { state: 'unreadable' }
+  if (reading.unreadable?.some(name => name === key || name === (READING_KEYS[key] ?? key))) return { state: 'unreadable' }
   return value === undefined ? { state: 'absent' } : { state: 'present', value }
 }
 
@@ -109,7 +113,14 @@ export function checkInvoice(store: BookStore, reading: InvoiceReading, now: Dat
       direction: direction.direction,
       counterparty: (direction.direction === 'input' ? reading.sellerName : reading.buyerName) ?? null,
       totalCents: total,
-      facts: reading,
+      // Keep uncertain candidates out of the verified invoice facts used later
+      // by posting. A readable total does not make unreadable net/tax certain.
+      facts: {
+        ...reading,
+        amountExclTax: facts.amountExclTaxCents.state === 'present' ? reading.amountExclTax : undefined,
+        taxAmount: facts.taxAmountCents.state === 'present' ? reading.taxAmount : undefined,
+        totalInclTax: facts.totalInclTaxCents.state === 'present' ? reading.totalInclTax : undefined,
+      },
       now,
     })
   }
