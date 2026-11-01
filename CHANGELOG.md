@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restore local build-and-pack delivery using pnpm's native recursive pack command; write both workspace archives to the root dist directory without publishing.
 - Prevent voiding a reversal while its correction remains active; allow rollback in the opposite order when both periods are open.
 - Reserve correction relationship facts for the dedicated reversal/correction workflow instead of accepting them from ordinary business facts.
 - Validate declared tool argument enums recursively before execution, including WeChat action selection.
