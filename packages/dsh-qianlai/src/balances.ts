@@ -22,7 +22,7 @@ export interface BalancesResult {
 }
 
 /**
- * 读期间账：确认企业存在、月份写法对、这个月落在已记账的范围内。
+ * 读期间账：确认企业存在、月份写法对；已确认期初、凭证和锁月共同决定有效范围。
  * 范围外的月份照实拒绝，不拿最近一个月顶替。
  */
 export function checkPeriod(store: BookStore, periodKey: string): Refusal | { company: string; isSample: boolean; bookedThrough: string } {
@@ -30,8 +30,9 @@ export function checkPeriod(store: BookStore, periodKey: string): Refusal | { co
   if (!company) return { accepted: false, code: 'NO_BOOK', message: '本机还没有账本。' }
   if (!PERIOD_KEY.test(periodKey))
     return { accepted: false, code: 'PERIOD_INVALID', message: `月份要写成 YYYY-MM，收到的是 ${periodKey}。` }
-  const posted = store.postedPeriods()
-  const last = posted.at(-1)
+  const periods = [...store.postedPeriods(), ...store.lockedPeriods()]
+  if (store.openingBalancesSetAt() !== undefined) periods.push(company.accountingStartMonth)
+  const last = periods.sort().at(-1)
   if (periodKey < company.accountingStartMonth)
     return {
       accepted: false,
@@ -42,7 +43,7 @@ export function checkPeriod(store: BookStore, periodKey: string): Refusal | { co
     return {
       accepted: false,
       code: 'PERIOD_NOT_POSTED',
-      message: last ? `账上最晚记到 ${last}，${periodKey} 还没有记账。` : '账上还没有任何凭证。',
+      message: last ? `账上可查询到 ${last}，${periodKey} 还没有已确认期初、凭证或结账记录。` : '账上还没有已确认期初、凭证或结账记录。',
     }
   return { company: company.name, isSample: company.isSample, bookedThrough: last }
 }
