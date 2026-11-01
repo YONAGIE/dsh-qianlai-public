@@ -40,6 +40,8 @@ dsh plugin --profile web add /absolute/path/to/dsh-qianlai/packages/dsh-qianlai
 
 Windows 示例路径：`D:\work\dsh-qianlai\packages\dsh-qianlai`。使用独立 `DSH_HOME`，避免测试影响日常数据与登录配置。当前源码使用 workspace 财税核心依赖，分发包的依赖发布与安装仍须单独验收；本次不提供未经核实的 npm 安装命令。
 
+本地检查分发产物可运行 `pnpm pack:all`：先构建两包，再使用 pnpm 原生递归打包，在仓库根 `dist/` 生成 `moneycome-fintax-core-0.1.0.tgz` 和 `dsh-qianlai-0.1.0.tgz`。插件包依赖对应版本财税核心；本地使用这些归档时须将该依赖解析到配套核心归档（如使用包管理器 override）。此命令不发布 npm，也不代表注册表安装已可用。
+
 ## 微信与真模型测试
 
 选择「钱来张姐」后点「连接微信」，获取二维码并用本人微信确认；页面显示扫码、过期、已连接等真实状态，可直接刷新。`MONEYCOME_WECHAT=1` 保留终端启动时自动出码。不要提交登录文件。首次绑定会尝试发送欢迎；若服务端需要入站消息的 context token，先发一句“你好”后会续发。已完成的欢迎不会因重启重发。

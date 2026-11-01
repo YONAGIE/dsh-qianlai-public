@@ -25,6 +25,8 @@ node packages/dsh-qianlai/e2e/q008/run.mjs --validate
 
 After building, install the absolute path of `packages/dsh-qianlai` through the DSH desktop plugin page or `dsh plugin --profile web add /absolute/path/to/packages/dsh-qianlai`. Do not install the workspace root. Use an isolated DSH_HOME. Workspace dependency distribution/npm installation is a separate release milestone.
 
+For local package inspection, `pnpm pack:all` builds both packages and uses pnpm's native recursive pack to write `moneycome-fintax-core-0.1.0.tgz` and `dsh-qianlai-0.1.0.tgz` to the root `dist/` directory. The plugin archive declares the matching core version; a local archive consumer must resolve it to the supplied core archive (for example using a package-manager override). This command does not publish either package or establish registry-install availability.
+
 ## Tests and contribution
 
 The [Q-008 reproduction kit](packages/dsh-qianlai/e2e/q008/README.md) includes fixed synthetic prompts, three frozen personas and selected visible replies. Offline validation needs no key. Paid live-model runs are explicit and use only the tester's DEEPSEEK_API_KEY environment variable. Never submit credentials, private conversations or real financial records.
