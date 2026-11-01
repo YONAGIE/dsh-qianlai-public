@@ -1,6 +1,3 @@
-import { readFileSync, realpathSync, statSync } from 'node:fs'
-import { extname, join, sep } from 'node:path'
-
 import {
   formatCents,
   hasBlockingImportFailure,
@@ -15,47 +12,7 @@ import {
 import { isCalendarDate, monthRange, refuse, todayInChina } from './period.js'
 import type { BookStore } from './store.js'
 
-/** 读上传文件时一次最多交给模型的字符数。 */
-const MAX_TEXT_CHARS = 200_000
-const TEXT_EXTENSIONS = new Set(['.csv', '.txt', '.tsv'])
-
-/**
- * 读老板在对话里上传的表格文件（CSV、TSV、TXT），交回原文。
- *
- * 只读 DSH 附件目录里的文件：张姐会话没有通用的读文件工具，这里也不开这个口子。
- * 银行导出的 CSV 常是 GBK 编码，按 UTF-8 解不开时改按 GB18030 解。
- */
-export function readUpload(dshHome: string, path: string) {
-  let real: string
-  let root: string
-  try {
-    real = realpathSync(path)
-    root = realpathSync(join(dshHome, 'attachments'))
-  } catch {
-    return refuse('FILE_NOT_FOUND', '找不到这个文件。只能读老板在对话里上传的文件。')
-  }
-  if (!real.startsWith(root + sep)) return refuse('FILE_OUTSIDE_UPLOADS', '只能读老板在对话里上传的文件。')
-  const ext = extname(real).toLowerCase()
-  if (!TEXT_EXTENSIONS.has(ext))
-    return refuse(
-      'FILE_TYPE_UNSUPPORTED',
-      `体验版读不了 ${ext || '这种'} 文件。请老板从网银导出 CSV，或者把流水截图发过来。`,
-    )
-  if (statSync(real).size > 8 * 1024 * 1024) return refuse('FILE_TOO_LARGE', '文件太大，请按月份分开导出。')
-  const bytes = readFileSync(real)
-  let text: string
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    text = new TextDecoder('gb18030').decode(bytes)
-  }
-  text = text.replace(/^\uFEFF/, '')
-  return {
-    accepted: true as const,
-    text: text.slice(0, MAX_TEXT_CHARS),
-    truncated: text.length > MAX_TEXT_CHARS,
-  }
-}
+export { readUpload } from './uploads.js'
 
 export interface ImportStatementInput extends PrintedStatementFigures {
   /** 哪个账户的流水，写开户行加卡号尾号，如「招商银行 尾号 1234」。 */

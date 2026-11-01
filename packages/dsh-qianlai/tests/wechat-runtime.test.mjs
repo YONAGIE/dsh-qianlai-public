@@ -93,7 +93,7 @@ for (const globalJunction of [false, true]) {
     try {
       // Node 22.19 的 Windows cpSync 对本测试的目录复制有异常，逐文件复制实际运行模块。
       mkdirSync(join(root, 'wechat'))
-      for (const file of ['index.js', 'ilink.js']) copyFileSync(join(builtWechat, file), join(root, 'wechat', file))
+      for (const file of ['index.js', 'ilink.js', 'control.js']) copyFileSync(join(builtWechat, file), join(root, 'wechat', file))
       writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }))
       mkdirSync(dirname(link), { recursive: true })
       // 显式构造与真实 DSH 受限安装相同的重解析目标；不依赖 DSH 内部执行器。

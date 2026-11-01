@@ -24,8 +24,10 @@ Upstream and dependencies
 packages/fintax-core was copied from Qianlai's internal upstream; original
 file headers, source commit and A6-SNAPSHOT.md are retained without logic changes.
 Runtime dependencies are installed separately: zod (MIT), decimal.js (MIT),
-qrcode (MIT) and their dependencies (MIT/ISC). The iLink protocol implementation
-follows observed traffic; no openclaw-weixin code is copied.
+qrcode (MIT), SheetJS CE 0.20.3 (Apache-2.0), pdfjs-dist (Apache-2.0),
+and @napi-rs/canvas (MIT), with their bundled notices retained.
+The iLink protocol implementation follows the Tencent protocol documentation
+and earlier observed traffic; no openclaw-weixin code is copied.
 
 源码与社区文档按 Apache-2.0 提供；张姐素材保留独立版权声明，仅随插件展示。
 本次是源码接入候选，不是 npm、Release 或生产部署发布。

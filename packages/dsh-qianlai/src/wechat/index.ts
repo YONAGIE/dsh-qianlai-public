@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import type * as QRCodeType from 'qrcode'
 
 import { downloadMedia, getBotQrcode, IlinkConnection, imageMediaType, pollQrStatus, type IlinkMessage } from './ilink.js'
+import { registerLoginControl, registerLoginRpc, type LoginControl, type LoginView, type RpcConnection } from './control.js'
 
 // Windows 受限安装可能生成 Node 未识别的 Global junction；先取得原生真实路径，
 // 让 qrcode 的间接依赖从实际包目录解析。正常目录和其他系统沿用同一个库。
@@ -19,7 +21,7 @@ const QRCode = require(realpathSync.native(require.resolve('qrcode'))) as typeof
  * 只做三件事：扫码登录；老板发来的文字、图片、文件原样交给张姐会话；张姐这一轮说完的最后一段话
  * 转成纯文本发回微信。账怎么记、票怎么核全在张姐会话里，和网页里是同一本账、同一套工具。
  *
- * 宿主层插件，默认不开；启动 DSH 前设 `MONEYCOME_WECHAT=1` 才加载。
+ * 宿主层插件，预设默认按需扫码；`MONEYCOME_WECHAT=1` 保留启动时自动扫码。
  */
 export const inject = ['sessionController']
 
@@ -27,6 +29,7 @@ export interface Config {
   /** 状态文件目录，默认 `$DSH_HOME/moneycome`。 */
   readonly stateDir?: string
   readonly agentPreset?: string
+  readonly autoStart?: boolean
 }
 
 interface State {
@@ -36,6 +39,9 @@ interface State {
   ownerUserId?: string
   contextToken?: string
   sessionId?: string
+  welcomePending?: boolean
+  welcomeProgress?: number
+  welcomeId?: string
 }
 
 type PromptPart =
@@ -160,7 +166,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   // 状态里有 bot token，只给本机用户读写。
   const save = () => {
     mkdirSync(stateDir, { recursive: true })
-    writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 })
+    const temporary = `${statePath}.tmp`
+    writeFileSync(temporary, JSON.stringify(state, null, 2), { mode: 0o600 })
+    renameSync(temporary, statePath)
     chmodSync(statePath, 0o600)
   }
 
@@ -168,10 +176,59 @@ export function apply(ctx: Context, config: Config = {}): void {
     let stopped = false
     let connection: IlinkConnection | undefined
     const abort = new AbortController()
+    let loginAbort: AbortController | undefined
+    let generation = 0
+    let view: LoginView = { status: state.botToken ? 'connected' : 'disconnected' }
+    let welcomeRunning = false
     /** 等回复的 turn：turn 号 → 这一轮里收集到的最后一段话。 */
     const turns = new Map<number, { text: string; typing: NodeJS.Timeout }>()
     const pendingRequests = new Set<string>()
     let lastTurnStart = 0
+
+    const welcome = async () => {
+      if (!state.welcomePending || welcomeRunning || !connection || !state.ownerUserId || stopped) return
+      welcomeRunning = true
+      const target = connection
+      const owner = state.ownerUserId
+      try {
+        if ((state.welcomeProgress ?? 0) === 0) {
+          let summary = ''
+          const book = join(stateDir, 'book.sqlite')
+          if (existsSync(book)) {
+            const { BookStore } = await import('../store.js')
+            const store = new BookStore(book)
+            try {
+              const recent = store.workEvents(undefined, 5).filter(event => Date.now() - Date.parse(event.createdAt) < 7 * 86400_000)
+              const labels: Record<string, string> = { material: '读取业务材料', note: '保存待核实的业务笔记', moneycome_check_invoice: '核对发票', moneycome_record_entry: '处理凭证', moneycome_import_statement: '导入银行流水', moneycome_close_period: '结账', moneycome_open_book: '建立账本', moneycome_set_opening_balances: '录入期初余额' }
+              if (recent.length) {
+                const latest = recent[0]!
+                const action = latest.request.preview === true ? '凭证预演（尚未记账）' : labels[latest.operation] ?? '更新业务记录'
+                summary = `\n这台电脑的账本近期有业务记录，最近一项是${action}，时间为 ${latest.createdAt}。您可以说“继续刚才的事”，我会先核对同一本账的当前进度和待确认事项。`
+              }
+            } finally { store.close() }
+          }
+          await target.sendText(owner, state.contextToken,
+            '您好，我是钱来张姐，AI 财务助手。您可以发票据、Excel/PDF 流水，或询问本机账本；记账前会请您确认。\n可在这个机器人的聊天资料中查看是否有备注和头像设置项；若有，可把机器人备注为“钱来张姐”，长按下面图片保存后选用。不同微信版本支持情况不同，请勿修改您本人的头像或昵称；我不能代改微信资料。' + summary, `mc-welcome-${state.welcomeId}-intro`)
+          if (stopped || connection !== target) return
+          state.welcomeProgress = 1
+          save()
+        }
+        const assets = ['avatar.png', 'welcome.png', 'reassure.png']
+        for (let i = (state.welcomeProgress ?? 1) - 1; i < assets.length; i++) {
+          if (stopped || connection !== target) return
+          const bytes = readFileSync(fileURLToPath(new URL(`../../assets/zhangjie/${assets[i]}`, import.meta.url)))
+          await target.sendImage(owner, state.contextToken, bytes, `mc-welcome-${state.welcomeId}-${i}`)
+          if (stopped || connection !== target) return
+          state.welcomeProgress = i + 2
+          save()
+        }
+        state.welcomePending = false
+        save()
+      } catch {
+        // Some iLink deployments need an inbound context token. Retry the unsent step after the owner's first message.
+        log.warn('moneycome-wechat: welcome delivery incomplete; will resume on the next owner message')
+      } finally { welcomeRunning = false }
+    }
 
     const reply = async (text: string) => {
       if (!connection || !state.ownerUserId) return
@@ -306,6 +363,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       if (message.context_token) state.contextToken = message.context_token
       save()
+      void welcome()
       void connection?.sendTyping(from, state.contextToken)
       const { items, notes } = await collect(message)
       if (notes.length) await reply(notes.join('\n'))
@@ -336,6 +394,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
 
     const connect = (botToken: string) => {
+      connection?.stop()
+      view = { status: 'connected', message: '微信已连接。若微信还没有欢迎消息，请先发一句“你好”，取得消息上下文后会补发。' }
       connection = new IlinkConnection(botToken, onMessage, {
         ...(state.cursor ? { initialCursor: state.cursor } : {}),
         onCursor(cursor) {
@@ -348,9 +408,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           state = {
             ...(state.ownerUserId ? { ownerUserId: state.ownerUserId } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+            ...(state.welcomePending !== undefined ? { welcomePending: state.welcomePending, welcomeProgress: state.welcomeProgress, welcomeId: state.welcomeId } : {}),
           }
           save()
-          void login().catch((error) => log.error(`moneycome-wechat: login failed: ${errorMessage(error)}`))
+          view = { status: 'expired', message: '微信登录已过期，请重新获取二维码。' }
+          if (config.autoStart !== false) void login()
         },
         onError(message, consecutive) {
           log.warn(`moneycome-wechat: ${message} (consecutive ${consecutive})`)
@@ -358,46 +420,87 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
       connection.start()
       log.info('moneycome-wechat: connected')
+      void welcome()
     }
 
     const login = async () => {
-      for (let attempt = 0; attempt < 10 && !stopped; attempt++) {
-        const { qrcode, imgUrl } = await getBotQrcode()
+      const current = ++generation
+      loginAbort?.abort()
+      const controller = new AbortController()
+      loginAbort = controller
+      view = { status: 'loading' }
+      try {
+        const { qrcode, imgUrl } = await getBotQrcode(controller.signal)
+        const qrDataUrl = await QRCode.toDataURL(imgUrl, { width: 360, margin: 1 })
+        if (stopped || current !== generation) return
+        view = { status: 'waiting', qrDataUrl, requestedAt: new Date().toISOString(), message: '请用本人微信扫描并确认。有效期以微信返回状态为准。' }
         const png = join(stateDir, 'wechat-login.png')
         mkdirSync(stateDir, { recursive: true })
-        await QRCode.toFile(png, imgUrl, { width: 360, margin: 1 })
+        writeFileSync(png, Buffer.from(qrDataUrl.split(',')[1]!, 'base64'), { mode: 0o600 })
         const terminal = await QRCode.toString(imgUrl, { type: 'terminal', small: true })
         process.stdout.write(`\n用微信扫下面的二维码，把张姐接到微信上（二维码图片也存在 ${png}）：\n${terminal}\n`)
-        while (!stopped) {
-          const status = await pollQrStatus(qrcode)
+        while (!stopped && current === generation) {
+          const status = await pollQrStatus(qrcode, controller.signal)
+          if (stopped || current !== generation) return
           if (status.status === 'confirmed') {
+            if (state.ownerUserId && status.userId && state.ownerUserId !== status.userId) {
+              view = { status: 'error', message: '扫码微信与已绑定账户不一致。为保护原账本，请使用原微信重新扫码。' }
+              return
+            }
+            const firstBinding = !state.ownerUserId
             state.botToken = status.botToken
             delete state.cursor
-            if (status.userId) {
-              if (state.ownerUserId && state.ownerUserId !== status.userId) {
-                log.warn('moneycome-wechat: a different WeChat scanned; it is now the owner')
-                delete state.contextToken
-              }
-              state.ownerUserId = status.userId
+            delete state.contextToken
+            if (status.userId) state.ownerUserId = status.userId
+            if (firstBinding && !state.welcomeId) {
+              state.welcomeId = randomUUID()
+              state.welcomePending = true
+              state.welcomeProgress = 0
             }
             save()
             process.stdout.write('微信已接上。用这个微信给张姐发一句话，她就能回你。\n')
             connect(status.botToken)
             return
           }
-          if (status.status === 'expired') break
-          await new Promise((resolve) => setTimeout(resolve, 1000))
+          if (status.status === 'expired') {
+            view = { status: 'expired', message: '二维码已过期，请重新获取。' }
+            return
+          }
+          view = { ...view, status: status.status === 'scanned' ? 'scanned' : 'waiting' }
+          await new Promise<void>(resolve => {
+            const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve() }
+            const timer = setTimeout(done, 1000)
+            controller.signal.addEventListener('abort', done, { once: true })
+            if (controller.signal.aborted) done()
+          })
         }
+      } catch {
+        if (!stopped && current === generation) view = { status: 'error', message: '微信二维码获取失败，请重试。' }
       }
-      if (!stopped) log.warn('moneycome-wechat: no scan after 10 QR codes; restart DSH to try again')
     }
-
+    const control: LoginControl = {
+      async run(action) {
+        if (stopped) return { status: 'error', message: '微信服务已停止，请重新加载插件。' }
+        if (action !== 'status' && view.status !== 'connected') {
+          if (action === 'refresh' || !['loading', 'waiting', 'scanned'].includes(view.status)) void login()
+        }
+        return { ...view }
+      },
+    }
+    const offControl = registerLoginControl(stateDir, control)
+    const rpc = ctx.get('connection') as RpcConnection | undefined
+    let offRpc: ReturnType<typeof registerLoginRpc> | undefined
+    try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
+    catch (error) { offControl(); offEvents(); throw error }
     if (state.botToken) connect(state.botToken)
-    else
-      void login().catch((error) => log.error(`moneycome-wechat: login failed: ${error instanceof Error ? error.message : String(error)}`))
+    else if (config.autoStart !== false) void login()
 
     return () => {
       stopped = true
+      generation++
+      loginAbort?.abort()
+      offControl()
+      void offRpc?.()
       abort.abort()
       connection?.stop()
       offEvents()

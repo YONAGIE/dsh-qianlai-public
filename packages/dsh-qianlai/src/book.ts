@@ -24,6 +24,8 @@ export function bookStatus(store: BookStore, deadlines?: { pack: LoadedPack; now
     companyFacts: facts,
     invoicesNotRecorded: store.pendingInvoices().map((i) => ({ invoiceNumber: i.invoiceNumber, issueDate: i.issueDate })),
     statementLinesNotRecorded: unrecordedStatementLines(store).length,
+    recentWork: store.workEvents(undefined, 5),
+    continuation: 'recentWork 是同一本机账本的业务记录，笔记未核实，preview 不代表已记账或已获确认；有记录时先核对当前事项再继续，不重复已完成操作。更多记录可用 moneycome_work_progress 分页读取。',
     ...(deadlines ? { dueSoon: dueSoon(store, deadlines.pack, deadlines.now) } : {}),
   }
 }

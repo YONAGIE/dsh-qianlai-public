@@ -8,7 +8,7 @@ A third-party small-business finance assistant plugin for [DeepSeek Harness](htt
 
 ## Scope
 
-One local SQLite book per company; synthetic sample book, invoice consistency checks, bank-statement import, opening balances, preview/confirmed posting, balances/profit, simple reports, closing, reversals and CSV review export. Optional WeChat iLink shares the book with the desktop/web entry, but keeps separate conversation context. Excel/PDF statements, desktop QR onboarding, cross-entry task continuity and WeChat welcome remain open requirements. See [package documentation](packages/dsh-qianlai/README.md). This does not replace an accountant or execute tax filing/payments. Model conversations and attachments use the configured external model/channel services.
+One local SQLite book per company; synthetic sample book, invoice consistency checks, bank-statement import, opening balances, preview/confirmed posting, balances/profit, simple reports, closing, reversals and CSV review export. Read XLS/XLSX and paginated PDF text/page images directly. An authenticated WeChat QR panel supports refresh and live status. Business events, material references and unverified notes support continuation across sessions sharing one local book; separate computers or DSH homes do not synchronize. First binding attempts a resumable welcome with three bundled portraits. Live model and real-account delivery limits are recorded in [validation notes](docs/validation/open-issues-2026-11-01.md). See [package documentation](packages/dsh-qianlai/README.md). This does not replace an accountant or execute tax filing/payments. Model conversations and attachments use the configured external model/channel services.
 
 ## Build and validate
 

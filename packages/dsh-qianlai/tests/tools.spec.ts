@@ -1,13 +1,16 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { describe, expect, it } from 'vitest'
+import { PDFDocument } from 'pdf-lib'
 
 import { apply } from '../src/index.js'
+// Worker URLs resolve relative to the shipped JS entry, so this integration uses the built plugin.
+import { apply as applyBuilt } from '../lib/index.js'
 
 // 企业是编的。这里测的是工具入口：参数校验、出错兜底、和别的进程抢同一本账。
 
@@ -39,6 +42,35 @@ const ENTRY = {
 }
 
 describe('工具入口', () => {
+  it('异步 PDF 读取期间更换样本账时，不把旧材料写进新公司的业务进度', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'qianlai-book-switch-'))
+    const oldHome = process.env.DSH_HOME
+    process.env.DSH_HOME = home
+    const tools = new Map<string, Tool>()
+    let dispose = () => {}
+    try {
+      mkdirSync(join(home, 'attachments'))
+      const pdf = await PDFDocument.create()
+      pdf.addPage([100, 100]).drawText('synthetic')
+      const path = join(home, 'attachments', 'test.pdf')
+      writeFileSync(path, await pdf.save())
+      applyBuilt({
+        effect: fn => { dispose = fn() }, tools: { register: t => { tools.set(t.name, t); return () => {} } },
+        get: () => ({ saveImage: async () => {
+          await tools.get('moneycome_open_book')!.execute({ companyName: '合成企业', accountingStartMonth: '2026-01', replaceSampleBook: true })
+          return { type: 'synthetic-image-ref' }
+        } }),
+      })
+      expect(await tools.get('moneycome_read_upload')!.execute({ path })).toMatchObject({ accepted: false, code: 'BOOK_CHANGED' })
+      const progress = await tools.get('moneycome_work_progress')!.execute({}) as { events: { operation: string }[] }
+      expect(progress.events.some(event => event.operation === 'material')).toBe(false)
+    } finally {
+      dispose()
+      if (oldHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = oldHome
+    }
+  })
+
   it('参数类型不对时拒绝并指出位置，不抛异常', async () => {
     const { call } = await ownBook()
     expect(await call('moneycome_set_opening_balances', { balances: '' })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })

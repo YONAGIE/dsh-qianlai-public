@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Adds a "钱来张姐" (Zhangjie) mode to DeepSeek Harness. In that mode the agent keeps one set of books on the local machine for a small-scale VAT taxpayer: it checks invoices, imports bank statements, posts vouchers from a bundled accounting pack, reports balances and profit, and runs month-end checks before closing. Selecting the mode switches the Web UI to the Qianlai green palette and shows Zhangjie's avatar in the session header. An optional host plugin connects the same session to WeChat.
+Adds a "钱来张姐" (Zhangjie) mode to DeepSeek Harness. In that mode the agent keeps one set of books on the local machine for a small-scale VAT taxpayer: it checks invoices, imports bank statements, posts vouchers from a bundled accounting pack, reports balances and profit, and runs month-end checks before closing. Selecting the mode switches the Web UI to the Qianlai green palette and shows Zhangjie's avatar in the session header. The WeChat host plugin connects on demand; separate sessions sharing this local book can resume business work from persisted progress.
 
 ## Table of Contents
 
@@ -25,14 +25,16 @@ Adds a "钱来张姐" (Zhangjie) mode to DeepSeek Harness. In that mode the agen
 ## Use this package
 
 ```sh
-dsh plugin --profile web add dsh-qianlai
+dsh plugin --profile web add /absolute/path/to/dsh-qianlai/packages/dsh-qianlai
 export DEEPSEEK_API_KEY=your-key
 dsh --profile web
 ```
 
 Open the printed URL, pick **钱来张姐** in the mode picker above the input box, and start a session. The first start creates fictional sample books; ask Zhangjie to open your own company's books when you are ready, and she clears the sample after you agree.
 
-To connect WeChat, start DSH with `MONEYCOME_WECHAT=1` and scan the QR code printed in the terminal. The WeChat account that scans is the owner.
+Select Zhangjie and click **连接微信** → **获取二维码**. Scan with the owner’s WeChat; status updates live and expired codes can be refreshed. An explicit request to Zhangjie can also start login. `MONEYCOME_WECHAT=1` retains automatic terminal QR login. A different scanner cannot take over the existing book.
+
+First binding attempts a welcome and three savable bundled portraits. Robot remark/avatar settings depend on the actual WeChat version; the plugin never changes your personal profile. If the server requires an inbound context token, send the bot a message to resume unfinished welcome steps. Successful steps are persisted, preventing restart duplication of completed welcomes; context-free delivery still requires real-account verification.
 
 Data lives under `$DSH_HOME/moneycome/` (`~/.dsh/moneycome/` by default): `book.sqlite` for the books and `wechat.json` for the WeChat login. Stop DSH before copying `book.sqlite` as a backup.
 
@@ -52,7 +54,7 @@ Full user documentation: [repository README](https://github.com/qianlai-ai/dsh-q
 |---|---|---|
 | `preset-moneycome-zhangjie` | agent preset | The mode: a persona prefix plus this package's tools. No shell, file-system or web tools. |
 | `moneycome-ui` | host, `mode: ui` | Loads the browser half (`client/client.src.js`): avatar in the session header and a token override on `ctx.theme` while a Zhangjie session or the Zhangjie choice on the new-session page is shown. |
-| `moneycome-wechat` | host | `dsh-qianlai/wechat`, loaded only when `MONEYCOME_WECHAT=1`. Long-polls Tencent iLink and forwards owner messages to a dedicated session through `sessionController`. |
+| `moneycome-wechat` | host | `dsh-qianlai/wechat`, loaded by default with on-demand login; `MONEYCOME_WECHAT=1` enables automatic QR login. Long-polls Tencent iLink and forwards owner messages to a dedicated session through `sessionController`. |
 
 Domain rules come from [`@moneycome/fintax-core`](../fintax-core/README.md) and the accounting pack in `assets/packs/`. The plugin writes no subject codes of its own; the bank subject, profit lines and closing items are read from the pack.
 
@@ -65,7 +67,7 @@ The books are one SQLite file opened with `node:sqlite` in WAL mode. Amounts are
 <a id="model-experience"></a>
 ## Model Experience
 
-The Zhangjie preset gives the model a persona prefix of about 1,700 characters (Chinese) and 24 tools whose names, descriptions and JSON schemas total about 13,000 characters. All tools are prefixed `moneycome_`:
+The Zhangjie preset includes a Chinese persona and 27 business tools. All tools are prefixed `moneycome_`:
 
 - Book: `book_status`, `open_book`, `set_opening_balances`, `set_company_facts`
 - Reading: `read_balances`, `read_profit`, `financial_statements`, `list_vouchers`, `unrecorded_statement_lines`, `posting_guide`
@@ -73,8 +75,9 @@ The Zhangjie preset gives the model a persona prefix of about 1,700 characters (
 - Materials: `check_invoice`, `read_upload`, `import_statement`, `rename_bank_account`
 - Writing: `record_entry` (with `preview` and `correctsVoucherNo`), `link_statement`, `add_evidence`, `void_voucher`, `reverse_voucher`
 - Month end: `closing_check`, `close_period`
+- Continuation and WeChat: `work_progress`, `save_work_note`, `wechat`
 
-Every figure the model reports comes from a tool result. Business refusals (closed month, unbalanced entry, unknown subject and so on) come back as `accepted: false` with a `code` and a plain-language `message`. Arguments of the wrong type return `ARGUMENT_INVALID` naming the field. Each tool call runs in one write transaction; an unexpected error such as a database failure rolls the whole call back and returns `TOOL_FAILED`. When several DSH processes open the same book (say a terminal and a browser), writes queue for up to 5 seconds. Text inside invoices, statements and uploads is passed as data and the persona tells the model not to follow instructions found there.
+Every figure the model reports comes from a tool result. Business refusals (closed month, unbalanced entry, unknown subject and so on) come back as `accepted: false` with a `code` and a plain-language `message`. Arguments of the wrong type return `ARGUMENT_INVALID` naming the field. Synchronous business calls run in one write transaction; attachment parsing uses a timed worker without holding the book write lock; an unexpected error such as a database failure rolls the whole call back and returns `TOOL_FAILED`. When several DSH processes open the same book (say a terminal and a browser), writes queue for up to 5 seconds. Text inside invoices, statements and uploads is passed as data and the persona tells the model not to follow instructions found there.
 
 #### Token effect
 
@@ -92,9 +95,10 @@ The persona and tool catalog are static, so they stay in the cached prefix. Noth
 - Closed months cannot be reopened; errors found later are fixed with a reversing voucher and a correcting entry in an open month.
 - Filing reminders track dates only; the plugin does not know whether a return has been filed, and the filing prep sheet totals the books without computing tax.
 - The invoice check verifies internal consistency only, not authenticity with the tax bureau.
-- Statement files: CSV, TSV and TXT only; Excel and PDF need exporting or a screenshot.
+- Supports CSV/TSV/TXT, XLS/XLSX and text, scanned or mixed PDFs, retaining the 8 MB input limit. Excel exposes row/sheet continuation; PDFs expose page text and images. Formulas use saved cached values only. Encrypted, damaged or unreadable materials need clarification or replacement; reading does not import or post.
+- Progress and material references are shared only within one local book and DSH home, without cross-machine synchronization. Notes remain unverified and cannot replace current preview/confirmation. Replacing sample books clears their old progress.
 - The accounting pack is an unreviewed engineering candidate with placeholder signatures.
-- The WeChat channel uses Tencent's undocumented iLink message format and may break when Tencent changes it.
+- The WeChat channel uses Tencent's iLink message format and may break when Tencent changes it.
 
 -----
 

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apply } from '../src/wechat/index.js'
+import { loginControl } from '../src/wechat/control.js'
 
 // 不连腾讯：用一个假的 iLink 接口和假的张姐会话，验证通道自己的收发逻辑。
 
@@ -222,15 +223,19 @@ describe('微信通道', () => {
     expect(sent.map((s) => s.to)).toEqual(['boss'])
   })
 
-  it('换了一个微信扫码，扫码的人成为老板', async () => {
+  it('不同微信不能通过重新扫码接管原会话和账本', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-qianlai-wechat-'))
     writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9' }))
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const { sent } = fakeIlink([textMessage('boss', '我是原来的'), textMessage('partner', '我是新扫码的')], { firstPoll: { ret: -14 }, scannedBy: 'partner' })
     const host = fakeHost(dir, { text: '好', reason: 'completed' })
-    await until(() => sent.length > 0)
+    await until(() => !JSON.parse(readFileSync(join(dir, 'wechat.json'), 'utf8')).botToken)
+    await until(() => vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/get_qrcode_status')))
+    expect(await loginControl(dir)!.run('status')).toMatchObject({ status: 'error' })
     host.stop()
     write.mockRestore()
-    expect(sent.map((s) => s.to)).toEqual(['partner'])
+    expect(sent).toEqual([])
+    expect(host.prompts).toEqual([])
+    expect(JSON.parse(readFileSync(join(dir, 'wechat.json'), 'utf8'))).toMatchObject({ ownerUserId: 'boss', sessionId: 's9' })
   })
 })

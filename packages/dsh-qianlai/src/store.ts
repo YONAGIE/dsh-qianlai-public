@@ -101,6 +101,16 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE company ADD COLUMN opening_balances_set_at TEXT;
   ALTER TABLE statement_import ADD COLUMN opening_balance_cents INTEGER;
   `,
+  // 业务进度与工具事实共享于同一本本地账本；换掉样本账时一同清理。
+  `
+  CREATE TABLE work_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  `,
 ]
 
 export interface Company {
@@ -108,6 +118,14 @@ export interface Company {
   readonly taxId?: string
   readonly accountingStartMonth: string
   readonly isSample: boolean
+}
+
+export interface WorkEvent {
+  readonly id: number
+  readonly operation: string
+  readonly request: Record<string, unknown>
+  readonly result: Record<string, unknown>
+  readonly createdAt: string
 }
 
 export interface SubjectMovement {
@@ -232,6 +250,7 @@ export class BookStore {
   /** 清空整本账，换一家企业重新开。只在把样本账换成老板自己的账时用。 */
   clearBook(): void {
     for (const table of [
+      'work_event',
       'opening_balance',
       'statement_line',
       'statement_import',
@@ -244,6 +263,25 @@ export class BookStore {
       'company',
     ])
       this.db.exec(`DELETE FROM ${table}`)
+  }
+
+  recordWork(operation: string, request: unknown, result: unknown, now = new Date()): number {
+    const json = (value: unknown) => JSON.stringify(value, (_key, v) => typeof v === 'bigint' ? v.toString() : v)
+    return Number(this.db.prepare(
+      'INSERT INTO work_event (operation, request_json, result_json, created_at) VALUES (?, ?, ?, ?)',
+    ).run(operation, json(request), json(result), now.toISOString()).lastInsertRowid)
+  }
+
+  workEvents(beforeId?: number, limit = 20): WorkEvent[] {
+    const rows = this.db.prepare(
+      'SELECT id, operation, request_json, result_json, created_at FROM work_event WHERE id < ? ORDER BY id DESC LIMIT ?',
+    ).all(beforeId ?? Number.MAX_SAFE_INTEGER, limit) as {
+      id: number; operation: string; request_json: string; result_json: string; created_at: string
+    }[]
+    return rows.map(row => ({
+      id: row.id, operation: row.operation, request: JSON.parse(row.request_json) as Record<string, unknown>,
+      result: JSON.parse(row.result_json) as Record<string, unknown>, createdAt: row.created_at,
+    }))
   }
 
   /** 录过期初余额的时间，没录过为 undefined。录的是空表（新成立的公司）也算录过。 */

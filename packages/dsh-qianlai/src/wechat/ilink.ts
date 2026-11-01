@@ -1,4 +1,4 @@
-import { createDecipheriv, randomUUID } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
 
 /**
  * 微信 iLink（ClawBot）协议的最小客户端：扫码登录、长轮询收消息、发文本、下载并解密媒体。
@@ -62,24 +62,26 @@ function headers(token = ''): Record<string, string> {
 const failed = (d: IlinkResponse) => (d.ret !== undefined && d.ret !== 0) || (d.errcode !== undefined && d.errcode !== 0)
 
 /** 出码：不需要任何凭据，每调一次是一个全新的 bot。`imgUrl` 要自己画成二维码。 */
-export async function getBotQrcode(): Promise<{ qrcode: string; imgUrl: string }> {
-  const r = await fetch(`${ILINK}/ilink/bot/get_bot_qrcode?bot_type=3`, { headers: headers() })
+export async function getBotQrcode(signal?: AbortSignal): Promise<{ qrcode: string; imgUrl: string }> {
+  const r = await fetch(`${ILINK}/ilink/bot/get_bot_qrcode?bot_type=3`, { headers: headers(), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000) })
+  if (!r.ok) throw new Error(`get_bot_qrcode HTTP ${r.status}`)
   const d = (await r.json()) as IlinkResponse & { qrcode?: string; qrcode_img_content?: string }
   if (d.ret !== 0 || !d.qrcode || !d.qrcode_img_content) throw new Error(`get_bot_qrcode ret=${d.ret} errmsg=${d.errmsg ?? ''}`)
   return { qrcode: d.qrcode, imgUrl: d.qrcode_img_content }
 }
 
 /** `userId` 是扫码那个微信的用户号，和收消息时的 `from_user_id` 是同一套号；旧版服务端可能不给。 */
-export type QrStatus = { status: 'wait' | 'expired' } | { status: 'confirmed'; botToken: string; botId: string; userId?: string }
+export type QrStatus = { status: 'wait' | 'scanned' | 'expired' } | { status: 'confirmed'; botToken: string; botId: string; userId?: string }
 
-export async function pollQrStatus(qrcode: string): Promise<QrStatus> {
+export async function pollQrStatus(qrcode: string, signal?: AbortSignal): Promise<QrStatus> {
   const ctl = new AbortController()
   const timer = setTimeout(() => ctl.abort(), QR_POLL_TIMEOUT_MS)
   try {
     const r = await fetch(`${ILINK}/ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(qrcode)}`, {
       headers: { ...headers(), 'iLink-App-ClientVersion': '1' },
-      signal: ctl.signal,
+      signal: signal ? AbortSignal.any([signal, ctl.signal]) : ctl.signal,
     })
+    if (!r.ok) throw new Error(`get_qrcode_status HTTP ${r.status}`)
     const d = (await r.json()) as IlinkResponse & { status?: string; bot_token?: string; ilink_bot_id?: string; ilink_user_id?: string }
     if (d.status === 'confirmed' && d.bot_token)
       return {
@@ -88,7 +90,7 @@ export async function pollQrStatus(qrcode: string): Promise<QrStatus> {
         botId: d.ilink_bot_id ?? '',
         ...(d.ilink_user_id ? { userId: d.ilink_user_id } : {}),
       }
-    return { status: d.status === 'expired' ? 'expired' : 'wait' }
+    return { status: d.status === 'expired' ? 'expired' : d.status === 'scanned' ? 'scanned' : 'wait' }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') return { status: 'wait' }
     throw error
@@ -161,8 +163,9 @@ export class IlinkConnection {
           }),
           signal: ctl.signal,
         })
-        clearTimeout(timer)
+        if (!r.ok) throw new Error(`getupdates HTTP ${r.status}`)
         const d = (await r.json()) as IlinkResponse & { msgs?: IlinkMessage[]; get_updates_buf?: string }
+        clearTimeout(timer)
         if (d.ret === -14 || d.errcode === -14) {
           this.polling = false
           this.hooks.onExpired?.()
@@ -197,15 +200,16 @@ export class IlinkConnection {
     }
   }
 
-  async sendText(toUserId: string, contextToken: string | undefined, text: string): Promise<void> {
+  async sendText(toUserId: string, contextToken: string | undefined, text: string, clientId = `mc-${randomUUID()}`): Promise<void> {
     const r = await fetch(`${ILINK}/ilink/bot/sendmessage`, {
       method: 'POST',
       headers: headers(this.botToken),
+      signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({
         msg: {
           from_user_id: '',
           to_user_id: toUserId,
-          client_id: `mc-${randomUUID()}`,
+          client_id: clientId,
           message_type: 2,
           message_state: 2,
           ...(contextToken ? { context_token: contextToken } : {}),
@@ -214,8 +218,41 @@ export class IlinkConnection {
         base_info: { channel_version: CHANNEL_VERSION },
       }),
     })
-    const d = (await r.json().catch(() => ({}))) as IlinkResponse
+    if (!r.ok) throw new Error(`sendmessage HTTP ${r.status}`)
+    const d = (await r.json()) as IlinkResponse
     if (failed(d)) throw new Error(`sendmessage ret=${d.ret} errcode=${d.errcode} ${d.errmsg ?? ''}`)
+  }
+
+  /** Sends only a caller-selected bundled image; no remote URL or arbitrary file access. */
+  async sendImage(toUserId: string, contextToken: string | undefined, bytes: Buffer, clientId: string): Promise<void> {
+    const key = randomBytes(16)
+    const cipher = createCipheriv('aes-128-ecb', key, null)
+    const encrypted = Buffer.concat([cipher.update(bytes), cipher.final()])
+    const filekey = randomBytes(16).toString('hex')
+    const response = await fetch(`${ILINK}/ilink/bot/getuploadurl`, {
+      method: 'POST', headers: headers(this.botToken), signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ filekey, media_type: 1, to_user_id: toUserId, rawsize: bytes.length,
+        rawfilemd5: createHash('md5').update(bytes).digest('hex'), filesize: encrypted.length,
+        no_need_thumb: true, aeskey: key.toString('hex'), base_info: { channel_version: CHANNEL_VERSION } }),
+    })
+    if (!response.ok) throw Error(`getuploadurl HTTP ${response.status}`)
+    const data = await response.json() as IlinkResponse & { upload_full_url?: string; upload_param?: string }
+    if (failed(data) || (!data.upload_full_url && !data.upload_param)) throw Error('getuploadurl failed')
+    const url = new URL(data.upload_full_url || `https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=${encodeURIComponent(data.upload_param!)}&filekey=${filekey}`)
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.weixin.qq.com') || url.username || url.password)
+      throw Error('Untrusted WeChat upload destination')
+    const uploaded = await fetch(url, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(encrypted), signal: AbortSignal.timeout(30_000) })
+    const parameter = uploaded.headers.get('x-encrypted-param')
+    if (uploaded.status !== 200 || !parameter) throw Error('WeChat image upload failed')
+    const sent = await fetch(`${ILINK}/ilink/bot/sendmessage`, {
+      method: 'POST', headers: headers(this.botToken), signal: AbortSignal.timeout(15_000),
+      body: JSON.stringify({ msg: { from_user_id: '', to_user_id: toUserId, client_id: clientId,
+        message_type: 2, message_state: 2, ...(contextToken ? { context_token: contextToken } : {}),
+        item_list: [{ type: 2, image_item: { media: { encrypt_query_param: parameter,
+          aes_key: Buffer.from(key.toString('hex')).toString('base64'), encrypt_type: 1 }, mid_size: encrypted.length } }],
+      }, base_info: { channel_version: CHANNEL_VERSION } }),
+    })
+    if (!sent.ok || failed(await sent.json() as IlinkResponse)) throw Error('WeChat image message failed')
   }
 
   /** 「对方正在输入」，尽力而为，失败不影响回复。 */
@@ -223,6 +260,7 @@ export class IlinkConnection {
     await fetch(`${ILINK}/ilink/bot/sendtyping`, {
       method: 'POST',
       headers: headers(this.botToken),
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({ to_user_id: toUserId, context_token: contextToken, base_info: { channel_version: CHANNEL_VERSION } }),
     }).catch(() => undefined)
   }
@@ -234,7 +272,7 @@ export class IlinkConnection {
  */
 export async function downloadMedia(media: IlinkMedia, declaredLength?: number): Promise<Buffer> {
   if (!media.full_url || !media.aes_key) throw new Error('media has no url or key')
-  const r = await fetch(media.full_url)
+  const r = await fetch(media.full_url, { signal: AbortSignal.timeout(30_000) })
   if (!r.ok) throw new Error(`media download HTTP ${r.status}`)
   const cipher = Buffer.from(await r.arrayBuffer())
   const key = Buffer.from(Buffer.from(media.aes_key, 'base64').toString('latin1'), 'hex')
