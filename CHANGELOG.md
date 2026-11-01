@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reject unsafe numeric-to-string parameter conversion and out-of-range invoice adapter amounts before Number conversion; retain original long strings and exact supported amounts instead of returning rounded values.
+
 - Clarify month/year intent before querying, including in clarification questions; do not treat the assistant's suggested year as user confirmation. Add live-model regression with explicit non-sample years and known-year controls.
 
 - Add explicit synthetic approval modes to the live-model runner, direct Node/DSH CLI selection for Windows, and Unicode-safe session-log reads; test answerers are not loaded in production.

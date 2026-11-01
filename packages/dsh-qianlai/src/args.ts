@@ -29,7 +29,13 @@ function normalizeValue(schema: Schema, value: unknown, path: string, problems: 
   switch (schema.type) {
     case 'string':
       if (typeof value === 'string') return value
-      if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+          problems.push(`${at(path)} 数字超出精确整数范围，请按原文传字符串`)
+          return value
+        }
+        return String(value)
+      }
       problems.push(`${at(path)} 应为字符串`)
       return value
     case 'boolean':
