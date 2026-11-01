@@ -3,7 +3,11 @@ import { dirname, join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 
 import { createCanvas } from '@napi-rs/canvas'
-import * as XLSX from 'xlsx'
+import type * as SheetJS from 'xlsx'
+
+// The official self-contained distribution is copied unchanged during build;
+// archive consumers do not need an exotic URL dependency in their runtime graph.
+const XLSX = createRequire(import.meta.url)('./vendor/xlsx.cjs') as typeof SheetJS
 
 const input = workerData as { bytes: Uint8Array; ext: string; page: number; sheet: number; startRow: number }
 
@@ -56,7 +60,7 @@ async function parse() {
     const cells: string[] = []
     for (let col = 0; col <= lastColumn; col++) {
       const address = XLSX.utils.encode_cell({ r: row, c: col })
-      const cell = sheet[address] as XLSX.CellObject | undefined
+      const cell = sheet[address] as SheetJS.CellObject | undefined
       if (cell?.f && cell.v === undefined) warnings.push(`${address} 公式没有缓存值，不能猜测或执行公式`)
       cells.push(cell ? XLSX.utils.format_cell(cell) : '')
     }

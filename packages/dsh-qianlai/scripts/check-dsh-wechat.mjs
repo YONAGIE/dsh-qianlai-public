@@ -11,7 +11,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const cli = resolve(process.argv[2])
 const executable = process.env.QIANLAI_DSH_EXECUTABLE || process.execPath
 const prefix = process.env.QIANLAI_DSH_EXECUTABLE ? ['--expose-internals', cli] : [cli]
-const plugin = fileURLToPath(new URL('../', import.meta.url))
+const plugin = process.env.QIANLAI_DSH_PLUGIN_PATH
+  ? resolve(process.env.QIANLAI_DSH_PLUGIN_PATH)
+  : fileURLToPath(new URL('../', import.meta.url))
 const root = mkdtempSync(join(tmpdir(), 'qianlai-dsh-wechat-'))
 const home = join(root, 'home')
 const marker = join(root, 'requests.jsonl')
