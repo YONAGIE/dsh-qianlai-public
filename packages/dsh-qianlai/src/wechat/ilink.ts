@@ -174,16 +174,16 @@ export class IlinkConnection {
         if (failed(d)) throw new Error(`getupdates ret=${d.ret} errcode=${d.errcode} ${d.errmsg ?? ''}`)
         const msgs = d.msgs ?? []
         for (const m of msgs) {
+          if (!this.polling) break
           if (m.message_type !== MESSAGE_TYPE_USER) continue
-          try {
-            await this.handler(m)
-          } catch (error) {
-            this.hooks.onError?.(`handler: ${error instanceof Error ? error.message : String(error)}`, 0)
-          }
+          // A failed message leaves the entire batch unacknowledged. The channel
+          // uses message identity to skip successfully admitted replays.
+          await this.handler(m)
         }
+        if (!this.polling) break
         if (d.get_updates_buf) {
+          this.hooks.onCursor?.(d.get_updates_buf)
           this.cursor = d.get_updates_buf
-          this.hooks.onCursor?.(this.cursor)
         }
         errors = 0
         const elapsed = Date.now() - start
@@ -195,6 +195,7 @@ export class IlinkConnection {
         if (error instanceof Error && error.name === 'AbortError') continue
         errors += 1
         this.hooks.onError?.(error instanceof Error ? error.message : String(error), errors)
+        if (!this.polling) break
         await this.sleep(Math.min(3000 * 2 ** (errors - 1), 60_000))
       }
     }

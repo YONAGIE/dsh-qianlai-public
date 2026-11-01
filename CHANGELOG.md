@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep failed WeChat batches unacknowledged, persist recent admitted identities, and reuse DSH request deduplication for message retries and restarts.
+
 - Publish review exports as unique, completed snapshots; failed writes leave no partial export and repeated exports never overwrite earlier deliveries.
 
 - Bundle the existing official SheetJS CE build and license in compiled uploads; remove its exotic URL runtime subdependency so pnpm 12 can install archives with default protection.
