@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Validate the cumulative statement amount attached to a voucher; make identical link retries idempotent and reject empty evidence links.
 - Reject caller-supplied invoice/settlement evidence roles when previewing or posting; preserve automatic evidence from checked invoice and statement links.
 - Exercise attachment path-escape protection on ordinary Windows accounts using a directory junction test fixture.
 - Add an authenticated, on-demand WeChat QR panel with live status, expiration and refresh, plus a scoped login tool.

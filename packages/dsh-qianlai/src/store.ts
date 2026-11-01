@@ -606,7 +606,7 @@ export class BookStore {
   }
 
   /** 流水行，可按导入批次或日期范围筛。 */
-  statementLines(filter: { importId?: number; from?: string; to?: string; ids?: readonly number[] }): StatementLine[] {
+  statementLines(filter: { importId?: number; from?: string; to?: string; ids?: readonly number[]; voucherNo?: string }): StatementLine[] {
     const where: string[] = []
     const params: (string | number)[] = []
     if (filter.importId !== undefined) {
@@ -624,6 +624,10 @@ export class BookStore {
     if (filter.ids !== undefined) {
       where.push(`s.id IN (${filter.ids.map(() => '?').join(', ') || 'NULL'})`)
       params.push(...filter.ids)
+    }
+    if (filter.voucherNo !== undefined) {
+      where.push('v.voucher_no = ?')
+      params.push(filter.voucherNo)
     }
     const stmt = this.db.prepare(
       `SELECT s.id, i.account_ref, s.row_number, s.occurred_on, s.signed_cents, s.counterparty, s.description, v.voucher_no

@@ -361,10 +361,11 @@ export function linkStatementLines(store: BookStore, pack: LoadedPack, input: { 
   const periodKey = voucher.voucherDate.slice(0, 7)
   if (store.lockedPeriods().includes(periodKey)) return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，凭证不能再改。`)
   const lineIds = [...new Set(input.statementLineIds)]
+  if (lineIds.length === 0) return refuse('STATEMENT_LINES_REQUIRED', '至少提供一行真实流水，不能用空列表补结算凭据。')
   const lines = store.statementLines({ ids: lineIds })
   const missing = lineIds.filter((id) => !lines.some((l) => l.id === id))
   if (missing.length) return refuse('STATEMENT_LINE_NOT_FOUND', `没有这些流水行：${missing.join('、')}。`)
-  const taken = lines.filter((l) => l.voucherNo)
+  const taken = lines.filter((l) => l.voucherNo && l.voucherNo !== input.voucherNo)
   if (taken.length)
     return refuse('STATEMENT_LINE_ALREADY_RECORDED', `这些流水已经记过了：${taken.map((l) => `${l.id}（${l.voucherNo}）`).join('、')}。`)
   const elsewhere = otherPeriodLines(lines, periodKey)
@@ -375,7 +376,10 @@ export function linkStatementLines(store: BookStore, pack: LoadedPack, input: { 
     ruleId: voucher.ruleId,
     legs: voucher.legs.map((l) => ({ ...l, amount: formatCents(l.amountCents), amountSource: '' })),
   }
-  const mismatch = statementMismatch(pack.payload, posting, lines)
+  const allLines = [...new Map(
+    [...store.statementLines({ voucherNo: input.voucherNo }), ...lines].map(line => [line.id, line]),
+  ).values()]
+  const mismatch = statementMismatch(pack.payload, posting, allLines)
   if (mismatch) return mismatch
   store.transaction(() => {
     for (const id of lineIds) store.attachStatementLine(id, voucher.id)
