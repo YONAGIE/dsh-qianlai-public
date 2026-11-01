@@ -157,8 +157,15 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
   if (input.correctsVoucherNo !== undefined) {
     const [original] = store.vouchers({ voucherNo: input.correctsVoucherNo })
     if (!original) return refuse('VOUCHER_NOT_FOUND', `没有凭证 ${input.correctsVoucherNo}。`)
-    if (!store.voucherLinkedTo('correction.reverses', original.voucherNo))
+    const reversalNo = store.voucherLinkedTo('correction.reverses', original.voucherNo)
+    const reversal = reversalNo ? store.vouchers({ voucherNo: reversalNo })[0] : undefined
+    if (!reversal || reversal.voided || reversal.eventKind !== REVERSAL_KIND)
       return refuse('NOT_REVERSED', `${original.voucherNo} 还没冲销。先用 moneycome_reverse_voucher 冲掉它，再记更正后的这一笔。`)
+    const reversalPeriod = reversal.voucherDate.slice(0, 7)
+    if (periodKey < reversalPeriod)
+      return refuse('CORRECTION_BEFORE_REVERSAL', `更正凭证不能记到冲销之前的月份。${reversal.voucherNo} 在 ${reversalPeriod}，更正要记在该月或以后尚未结账的月份。`, {
+        reversalVoucherNo: reversal.voucherNo, reversalPeriod, correctionPeriod: periodKey,
+      })
     const existing = store.voucherLinkedTo('correction.of', original.voucherNo)
     if (existing) return refuse('ALREADY_CORRECTED', `${original.voucherNo} 已经有更正凭证 ${existing} 了。`)
     // 原凭证上的凭据（发票、合同、回单）仍然有效，更正后的这一笔照样算有。
