@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Align contribution and security scope with the source packages and local build environment now present, while preserving private reporting and copied-core maintenance rules.
+
 - Bound WeChat media reception to 20 MB across declared sizes, headers, streamed ciphertext and decrypted bytes; cancel oversized transfers and request compression/splitting instead of reporting a network failure. The existing 8 MB document parsing limit is unchanged.
 
 - Reject unsafe numeric-to-string parameter conversion and out-of-range invoice adapter amounts before Number conversion; retain original long strings and exact supported amounts instead of returning rounded values.
