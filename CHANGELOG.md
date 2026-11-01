@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retain unacknowledged WeChat reply fragments in the private channel state, retry with stable client identities, and resume pending sends after restart without rerunning business operations.
+
 - Keep failed WeChat batches unacknowledged, persist recent admitted identities, and reuse DSH request deduplication for message retries and restarts.
 
 - Publish review exports as unique, completed snapshots; failed writes leave no partial export and repeated exports never overwrite earlier deliveries.
