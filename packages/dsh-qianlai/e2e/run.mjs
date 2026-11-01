@@ -11,19 +11,29 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { scenarios } from './scenarios.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pkgDir = dirname(here)
 const fixtures = join(here, 'fixtures')
-const DSH = process.env.DSH_BIN ?? 'dsh'
+const DSH_PREFIX = process.env.DSH_ENTRY ? [resolve(process.env.DSH_ENTRY)] : []
+const DSH = process.env.DSH_BIN ?? (DSH_PREFIX.length ? process.execPath : 'dsh')
+const approvalMode = process.env.E2E_APPROVAL_MODE
+if (approvalMode && !['allow', 'reject'].includes(approvalMode)) throw Error('E2E_APPROVAL_MODE must be allow or reject; omit it for normal interactive approval.')
 const OUT = process.env.E2E_OUT ?? join(tmpdir(), `dsh-qianlai-e2e-${new Date().toISOString().replace(/[:.]/g, '-')}`)
 const JOBS = Number(process.env.E2E_JOBS ?? 3)
 let nextPort = Number(process.env.E2E_PORT ?? 8900)
+if (!Number.isSafeInteger(JOBS) || JOBS < 1 || JOBS > 10 || !Number.isSafeInteger(nextPort) || nextPort < 1 || nextPort > 65535)
+  throw Error('E2E_JOBS must be 1–10 and E2E_PORT must be 1–65535.')
+
+if (process.argv.includes('--list')) {
+  console.log(scenarios.map(scenario => scenario.name).join('\n'))
+  process.exit(0)
+}
 
 if (!process.env.DEEPSEEK_API_KEY) {
   console.error('要先设 DEEPSEEK_API_KEY。')
@@ -35,22 +45,34 @@ delete env.DEEPSEEK_BASE_URL
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 async function startDsh(home, ws, port) {
-  execFileSync(DSH, ['plugin', '--profile', 'web', 'add', `link:${pkgDir}`], { cwd: ws, env: { ...env, DSH_HOME: home }, stdio: 'ignore' })
-  const child = spawn(DSH, ['--profile', 'web', '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
+  execFileSync(DSH, [...DSH_PREFIX, 'plugin', '--profile', 'web', 'add', `link:${pkgDir}`], { cwd: ws, env: { ...env, DSH_HOME: home }, stdio: 'ignore', windowsHide: true, timeout: 180_000 })
+  const patchArgs = []
+  if (approvalMode) {
+    const runId = crypto.randomUUID()
+    writeFileSync(join(home, '.synthetic-e2e-home'), runId)
+    const patch = join(home, 'synthetic-approval.patch.yml')
+    writeFileSync(patch, JSON.stringify([{ insert: [{ id: 'synthetic-e2e-approval',
+      name: pathToFileURL(join(here, 'approval-fixture.mjs')).href, config: { mode: approvalMode, home, runId } }] }]))
+    patchArgs.push('--patch', patch)
+  }
+  const child = spawn(DSH, [...DSH_PREFIX, '--profile', 'web', ...patchArgs, '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: ws,
     env: { ...env, DSH_HOME: home },
+    windowsHide: true,
   })
   let out = ''
+  let spawnError
+  child.on('error', error => { spawnError = error })
   child.stdout.on('data', (d) => (out += d))
   child.stderr.on('data', (d) => (out += d))
   for (let i = 0; i < 120; i++) {
     const m = /http:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9_-]+/.exec(out)
     if (m) return { child, url: m[0], log: () => out }
-    if (child.exitCode !== null) break
+    if (child.exitCode !== null || spawnError) break
     await sleep(500)
   }
   child.kill()
-  throw new Error(`DSH 没起来：\n${out.slice(-2000)}`)
+  throw new Error(`DSH 没起来：${spawnError?.message ?? ''}\n${out.slice(-2000)}`)
 }
 
 function client(url) {
@@ -63,7 +85,7 @@ function client(url) {
   const call = async (method, request) => {
     await init
     const body = { type: 'client-request', rpcId: crypto.randomUUID(), method, payload: { args: { request } } }
-    const r = await fetch(`${base}/api/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify(body) })
+    const r = await fetch(`${base}/api/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json', cookie }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) })
     return r.json()
   }
   const upload = async (sessionId, path) => {
@@ -96,7 +118,10 @@ function readEvents(home, sessionId) {
   if (!file) return []
   // 会话记录是一帧一帧追加的 zstd，Node 自带的解压只认第一帧，所以用 zstd 命令。
   // 正在写的最后一帧可能不完整，只取能解析的整行。
-  const text = spawnSync('zstd', ['-dc', file], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).stdout ?? ''
+  // Read through Node and pass bytes on stdin: some Windows zstd builds cannot open Unicode filenames.
+  const decoded = spawnSync(process.env.ZSTD_BIN ?? 'zstd', ['-dc'], { input: readFileSync(file), encoding: 'utf8', windowsHide: true, maxBuffer: 256 * 1024 * 1024 })
+  if (decoded.error) throw Error('zstd unavailable; set ZSTD_BIN to an installed executable.')
+  const text = decoded.stdout ?? ''
   const events = []
   for (const line of text.split('\n')) {
     if (!line) continue
@@ -160,6 +185,7 @@ async function runScenario(s) {
   const dir = join(OUT, s.name)
   const home = join(dir, 'home')
   const ws = join(dir, 'ws')
+  if (existsSync(home) && readdirSync(home).length) throw Error('Scenario home already contains data; choose a fresh E2E_OUT.')
   mkdirSync(home, { recursive: true })
   mkdirSync(ws, { recursive: true })
   const port = nextPort++
@@ -214,9 +240,12 @@ async function runScenario(s) {
 
 const filter = process.argv.slice(2)
 const repeat = Number(process.env.E2E_REPEAT ?? 1)
+if (!Number.isSafeInteger(repeat) || repeat < 1 || repeat > 100) throw Error('E2E_REPEAT must be 1–100.')
 const chosen = scenarios
+  .filter(s => !s.requiredApprovalMode || s.requiredApprovalMode === approvalMode)
   .filter((s) => filter.length === 0 || filter.some((f) => s.name.includes(f)))
   .flatMap((s) => (repeat > 1 ? Array.from({ length: repeat }, (_, i) => ({ ...s, name: `${s.name}-${i + 1}` })) : [s]))
+if (!chosen.length) throw Error('No matching scenarios; use --list to inspect names.')
 mkdirSync(OUT, { recursive: true })
 console.log(`跑 ${chosen.length} 个场景，记录在 ${OUT}`)
 const queue = [...chosen]

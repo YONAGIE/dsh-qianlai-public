@@ -45,7 +45,7 @@ interface State {
   /** Recent admitted message hashes. Older replays also use DSH's persisted request identity. */
   handledMessages?: string[]
   /** Unacknowledged reply fragments, saved before attempting delivery. */
-  outbox?: { clientId: string; owner: string; text: string }[]
+  outbox?: { clientId: string; owner: string; text: string; approvalCode?: string }[]
 }
 
 type PromptPart =
@@ -86,6 +86,16 @@ interface Context {
 
 interface FileUploads {
   uploadStream(request: { sessionId: string; data: AsyncIterable<Uint8Array>; name?: string }): Promise<{ receiptId: string }>
+}
+
+interface ApprovalQuestion {
+  readonly agent: { readonly session: { readonly id: string } }
+  readonly toolName: string
+  readonly reason?: string
+  readonly signal?: AbortSignal
+}
+interface ApprovalEvents {
+  on(event: 'approval/request', handler: (question: ApprovalQuestion, next: () => Promise<string>) => Promise<string>, options: { prepend: boolean }): () => void
 }
 
 /** 单条微信消息的字数上限取保守值，超了按段落拆成几条发。 */
@@ -187,6 +197,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     let flushing: Promise<void> | undefined
     let sendRetry: NodeJS.Timeout | undefined
     let sendErrors = 0
+    const approvals = new Map<string, { owner: string; sessionId: string; settle(outcome: string): void }>()
     /** 等回复的 turn：turn 号 → 这一轮里收集到的最后一段话。 */
     const turns = new Map<number, { text: string; typing: NodeJS.Timeout }>()
     const pendingRequests = new Set<string>()
@@ -247,7 +258,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           while (!stopped && connection === target && state.outbox?.length) {
             const item = state.outbox[0]!
             if (item.owner !== state.ownerUserId) throw Error('reply owner does not match binding')
-            await target.sendText(item.owner, state.contextToken, item.text, item.clientId)
+            // Approval prompts never survive the lifetime of their pending ask.
+            if (!item.approvalCode || approvals.has(item.approvalCode))
+              await target.sendText(item.owner, state.contextToken, item.text, item.clientId)
             if (stopped || connection !== target) return
             const previous = state.outbox
             state.outbox = previous.slice(1)
@@ -264,11 +277,12 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
       return flushing
     }
-    const reply = async (text: string, identity = `mc-reply-${randomUUID()}`) => {
+    const reply = async (text: string, identity = `mc-reply-${randomUUID()}`, approvalCode?: string) => {
       if (stopped || !state.ownerUserId) return
       const previous = state.outbox
       const additions = splitForWechat(toWechatText(text)).map((chunk, index) => ({
         clientId: `${identity}-${index}`, owner: state.ownerUserId!, text: chunk,
+        ...(approvalCode ? { approvalCode } : {}),
       })).filter(item => !previous?.some(pending => pending.clientId === item.clientId))
       state.outbox = [...(previous ?? []), ...additions]
       try { save() } catch (error) {
@@ -278,6 +292,30 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       await flushReplies()
     }
+
+    // The approval service is agent-scoped and may not exist on this host
+    // context yet. Register the host answerer before creating any sessions.
+    // Claim only our session before generic UI brokers; delegate all others.
+    const offApprovals = (ctx as unknown as ApprovalEvents).on('approval/request', async (question, next) => {
+        if (question.agent.session.id !== state.sessionId) return next()
+        if (stopped || !connection || !state.ownerUserId || question.signal?.aborted) return 'unavailable'
+        const code = randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()
+        return new Promise<string>(resolve => {
+          const cancel = () => settle('cancelled')
+          const settle = (outcome: string) => {
+            if (!approvals.delete(code)) return
+            clearTimeout(timer)
+            question.signal?.removeEventListener('abort', cancel)
+            resolve(outcome)
+          }
+          const timer = setTimeout(cancel, 5 * 60_000)
+          approvals.set(code, { owner: state.ownerUserId!, sessionId: state.sessionId!, settle })
+          question.signal?.addEventListener('abort', cancel, { once: true })
+          if (question.signal?.aborted) { cancel(); return }
+          void reply(`请确认本次账务操作：\n${question.reason ?? question.toolName}\n\n同意请单独回复“确认 ${code}”，不同意回复“拒绝 ${code}”。本次码五分钟内有效，取消或重启后失效。`, `mc-approval-${code}`, code)
+            .catch(() => settle('unavailable'))
+        })
+      }, { prepend: true })
 
     const offEvents = ctx.on('session/event', (session, event) => {
       if (session.id !== state.sessionId) return
@@ -414,6 +452,19 @@ export function apply(ctx: Context, config: Config = {}): void {
           throw error
         }
       }
+      const text = message.item_list?.length === 1 ? message.item_list[0]?.text_item?.text?.trim() : undefined
+      const decision = text?.match(/^(确认|拒绝)\s+([A-F0-9]{12})$/i)
+      if (decision) {
+        const pending = approvals.get(decision[2]!.toUpperCase())
+        if (pending && pending.owner === from && pending.sessionId === state.sessionId) {
+          admitted()
+          pending.settle(decision[1] === '确认' ? 'allowed-once' : 'rejected')
+        } else {
+          await reply('这次确认已失效或不属于当前会话，请重新核对操作后再确认。')
+          admitted()
+        }
+        return
+      }
       void welcome()
       void connection?.sendTyping(from, state.contextToken)
       const { items, notes } = await collect(message)
@@ -548,13 +599,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rpc = ctx.get('connection') as RpcConnection | undefined
     let offRpc: ReturnType<typeof registerLoginRpc> | undefined
     try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
-    catch (error) { offControl(); offEvents(); throw error }
+    catch (error) { offControl(); offEvents(); offApprovals(); throw error }
     if (state.botToken) connect(state.botToken)
     else if (config.autoStart !== false) void login()
 
     return () => {
       stopped = true
       clearTimeout(sendRetry)
+      for (const pending of approvals.values()) pending.settle('cancelled')
       generation++
       loginAbort?.abort()
       offControl()
@@ -562,6 +614,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       abort.abort()
       connection?.stop()
       offEvents()
+      offApprovals()
       for (const pending of turns.values()) clearInterval(pending.typing)
     }
   })
