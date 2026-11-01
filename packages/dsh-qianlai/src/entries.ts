@@ -462,6 +462,12 @@ export function voidVoucher(
   const periodKey = voucher.voucherDate.slice(0, 7)
   if (store.lockedPeriods().includes(periodKey)) return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，凭证不能再作废。`)
   if (transferKinds.includes(voucher.eventKind)) return refuse('TRANSFER_VOUCHER', '结账生成的结转凭证不能单独作废。')
+  if (voucher.eventKind === REVERSAL_KIND) {
+    const original = store.voucherReference(voucher.voucherNo, 'correction.reverses')
+    const correction = original ? store.voucherLinkedTo('correction.of', original) : undefined
+    if (correction)
+      return refuse('CORRECTION_ACTIVE', `还有有效更正凭证 ${correction}。要撤回本次更正，请先作废尚未结账的更正凭证，再作废冲销凭证。`, { correctionVoucherNo: correction })
+  }
   const reason = input.reason.trim()
   if (reason.length < VOID_REASON_MIN_LENGTH || reason.length > VOID_REASON_MAX_LENGTH)
     return refuse('REASON_REQUIRED', `作废要写清原因，${VOID_REASON_MIN_LENGTH} 到 ${VOID_REASON_MAX_LENGTH} 个字。`)

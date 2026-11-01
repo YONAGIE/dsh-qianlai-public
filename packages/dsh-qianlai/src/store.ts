@@ -387,6 +387,13 @@ export class BookStore {
     return row?.voucher_no
   }
 
+  /** 凭证内部保存的更正关系，调用方另行检查该凭证的有效状态。 */
+  voucherReference(voucherNo: string, key: 'correction.reverses' | 'correction.of'): string | undefined {
+    const row = this.db.prepare(`SELECT json_extract(facts_json, '$."' || ? || '"') AS ref FROM voucher WHERE voucher_no = ?`)
+      .get(key, voucherNo) as { ref: unknown } | undefined
+    return typeof row?.ref === 'string' ? row.ref : undefined
+  }
+
   addEvidence(voucherId: number, role: string): void {
     this.db.prepare('INSERT OR IGNORE INTO voucher_evidence (voucher_id, role) VALUES (?, ?)').run(voucherId, role)
   }
