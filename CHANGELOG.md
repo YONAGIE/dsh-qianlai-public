@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reserve correction relationship facts for the dedicated reversal/correction workflow instead of accepting them from ordinary business facts.
 - Validate declared tool argument enums recursively before execution, including WeChat action selection.
 - Require a valid active reversal before correction and reject correction periods earlier than the reversal, including previews.
 - Allow balance, profit, statement and review-pack reads for confirmed opening balances and closed zero-activity periods without inventing later periods.

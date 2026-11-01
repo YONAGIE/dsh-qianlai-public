@@ -137,6 +137,9 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
       '发票和流水不能手填为凭据：发票要先核对并带 invoiceNumber，流水要带 statementLineIds 或用 moneycome_link_statement 关联。',
       { roles: automatic },
     )
+  const reserved = Object.keys(input.facts).filter(key => key.startsWith('correction.'))
+  if (reserved.length)
+    return refuse('FACT_RESERVED', 'correction.* 是系统更正关系，不能作为普通业务事实填写。请使用冲销工具或 correctsVoucherNo。', { facts: reserved })
 
   const facts = { ...input.facts, [EVENT_KIND]: input.eventKind }
   const event = { eventId: `entry-${randomUUID()}`, facts, amounts: input.amounts, periodKey }
