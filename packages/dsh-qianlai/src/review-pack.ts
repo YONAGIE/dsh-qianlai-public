@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { formatCents } from '@moneycome/fintax-core'
@@ -74,7 +75,7 @@ function blockerText(blocker: Record<string, unknown>): string {
 
 /**
  * 导出某个月给会计复核的材料：报表、凭证、科目余额、流水、发票、还没处理完的事，各一份 CSV，
- * 外加一份说明。写到 `<exportRoot>/<月份>-<导出时间>/`，返回目录和文件名。
+ * 外加一份说明。完整写入后发布独立目录，既有交付快照不被覆盖。
  */
 export function exportReviewPack(store: BookStore, pack: LoadedPack, periodKey: string, exportRoot: string, now: Date) {
   const statements = readStatements(store, pack, periodKey)
@@ -83,131 +84,138 @@ export function exportReviewPack(store: BookStore, pack: LoadedPack, periodKey: 
   const check = closingCheck(store, pack, periodKey, now)
   const range = monthRange(periodKey)
   const stamp = now.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15)
-  const dir = join(exportRoot, `${periodKey}-${stamp}`)
-  mkdirSync(dir, { recursive: true })
-  const files: string[] = []
+  mkdirSync(exportRoot, { recursive: true })
+  const published = join(exportRoot, `${periodKey}-${stamp}-${randomUUID()}`)
+  const dir = mkdtempSync(join(exportRoot, '.review-pending-'))
+  try {
+    const files: string[] = []
 
-  const sheet = statements.balanceSheet
-  files.push(
-    writeCsv(dir, '1-资产负债表.csv', ['项目', '金额（元）'], [
-      ['资产', ''],
-      ...sheet.assets.map((l) => [l.lineName, l.amount]),
-      ['资产合计', sheet.assetsTotal],
-      ['负债和所有者权益', ''],
-      ...sheet.liabilitiesAndEquity.map((l) => [l.lineName, l.amount]),
-      ['负债和所有者权益合计', sheet.liabilitiesAndEquityTotal],
-      ...('unclosedProfitInRetained' in sheet ? [['其中：未分配利润含还没结转的利润', sheet.unclosedProfitInRetained]] : []),
-    ]),
-  )
+    const sheet = statements.balanceSheet
+    files.push(
+      writeCsv(dir, '1-资产负债表.csv', ['项目', '金额（元）'], [
+        ['资产', ''],
+        ...sheet.assets.map((l) => [l.lineName, l.amount]),
+        ['资产合计', sheet.assetsTotal],
+        ['负债和所有者权益', ''],
+        ...sheet.liabilitiesAndEquity.map((l) => [l.lineName, l.amount]),
+        ['负债和所有者权益合计', sheet.liabilitiesAndEquityTotal],
+        ...('unclosedProfitInRetained' in sheet ? [['其中：未分配利润含还没结转的利润', sheet.unclosedProfitInRetained]] : []),
+      ]),
+    )
 
-  const month = statements.profit?.month
-  const ytd = statements.profit?.yearToDate
-  const lineNames = [...new Set([...(month?.lines ?? []), ...(ytd?.lines ?? [])].map((l) => l.lineName))]
-  const amountOf = (lines: readonly { lineName: string; amount: string }[] | undefined, name: string) =>
-    lines?.find((l) => l.lineName === name)?.amount ?? '0.00'
-  files.push(
-    writeCsv(dir, '2-利润表.csv', ['项目', '本月（元）', `本年累计（${ytd?.from ?? ''} 起）`], [
-      ...lineNames.map((name) => [name, amountOf(month?.lines, name), amountOf(ytd?.lines, name)]),
-      ...(month?.totals && ytd?.totals
-        ? [
-            ['收入合计', month.totals.revenue, ytd.totals.revenue],
-            ['费用合计', month.totals.expense, ytd.totals.expense],
-            ['利润', month.totals.profit, ytd.totals.profit],
-          ]
-        : []),
-    ]),
-  )
+    const month = statements.profit?.month
+    const ytd = statements.profit?.yearToDate
+    const lineNames = [...new Set([...(month?.lines ?? []), ...(ytd?.lines ?? [])].map((l) => l.lineName))]
+    const amountOf = (lines: readonly { lineName: string; amount: string }[] | undefined, name: string) =>
+      lines?.find((l) => l.lineName === name)?.amount ?? '0.00'
+    files.push(
+      writeCsv(dir, '2-利润表.csv', ['项目', '本月（元）', `本年累计（${ytd?.from ?? ''} 起）`], [
+        ...lineNames.map((name) => [name, amountOf(month?.lines, name), amountOf(ytd?.lines, name)]),
+        ...(month?.totals && ytd?.totals
+          ? [
+              ['收入合计', month.totals.revenue, ytd.totals.revenue],
+              ['费用合计', month.totals.expense, ytd.totals.expense],
+              ['利润', month.totals.profit, ytd.totals.profit],
+            ]
+          : []),
+      ]),
+    )
 
-  files.push(
-    writeCsv(
-      dir,
-      '3-凭证.csv',
-      ['凭证号', '日期', '摘要', '借贷', '科目代码', '科目名称', '金额（元）', '缺的凭据'],
-      listVouchers(store, periodKey).flatMap((v) =>
-        v.legs.map((l, i) => [
-          v.voucherNo,
-          v.date,
-          v.summary,
-          l.side,
-          l.subjectCode,
-          l.subjectName,
-          l.amount,
-          i === 0 ? v.missingEvidence.map((r) => ROLE_NAMES[r] ?? r).join('、') : '',
+    files.push(
+      writeCsv(
+        dir,
+        '3-凭证.csv',
+        ['凭证号', '日期', '摘要', '借贷', '科目代码', '科目名称', '金额（元）', '缺的凭据'],
+        listVouchers(store, periodKey).flatMap((v) =>
+          v.legs.map((l, i) => [
+            v.voucherNo,
+            v.date,
+            v.summary,
+            l.side,
+            l.subjectCode,
+            l.subjectName,
+            l.amount,
+            i === 0 ? v.missingEvidence.map((r) => ROLE_NAMES[r] ?? r).join('、') : '',
+          ]),
+        ),
+      ),
+    )
+
+    files.push(
+      writeCsv(
+        dir,
+        '4-科目余额.csv',
+        ['科目代码', '科目名称', '方向', '月末余额（元）'],
+        balances.accepted ? balances.rows.map((r) => [r.subjectCode, r.subjectName, r.side, r.balance]) : [],
+      ),
+    )
+
+    files.push(
+      writeCsv(
+        dir,
+        '5-银行流水.csv',
+        ['账户', '日期', '金额（元）', '对方', '摘要', '记在哪张凭证'],
+        store.statementLines(range).map((l) => [l.accountRef, l.occurredOn, formatCents(l.signedCents), l.counterparty, l.description, l.voucherNo ?? '还没记账']),
+      ),
+    )
+
+    files.push(
+      writeCsv(
+        dir,
+        '6-发票.csv',
+        ['发票号码', '开票日期', '方向', '对方', '价税合计（元）', '记在哪张凭证', '验真'],
+        store.invoices(range).map((i) => [
+          i.invoiceNumber,
+          i.issueDate,
+          DIRECTION_NAMES[i.direction] ?? i.direction,
+          i.counterparty,
+          i.totalCents === null ? '' : formatCents(i.totalCents),
+          i.voucherNo ?? '还没记账',
+          '未查验，请到国家税务总局全国增值税发票查验平台核对',
         ]),
       ),
-    ),
-  )
+    )
 
-  files.push(
-    writeCsv(
-      dir,
-      '4-科目余额.csv',
-      ['科目代码', '科目名称', '方向', '月末余额（元）'],
-      balances.accepted ? balances.rows.map((r) => [r.subjectCode, r.subjectName, r.side, r.balance]) : [],
-    ),
-  )
+    const failing = 'checks' in check ? check.checks.filter((c) => !c.passed) : []
+    files.push(
+      writeCsv(
+        dir,
+        '7-还没处理完的事.csv',
+        ['检查项', '说明'],
+        failing.flatMap((c) => c.blockers.map((b) => [c.check, blockerText(b as Record<string, unknown>)])),
+      ),
+    )
 
-  files.push(
-    writeCsv(
-      dir,
-      '5-银行流水.csv',
-      ['账户', '日期', '金额（元）', '对方', '摘要', '记在哪张凭证'],
-      store.statementLines(range).map((l) => [l.accountRef, l.occurredOn, formatCents(l.signedCents), l.counterparty, l.description, l.voucherNo ?? '还没记账']),
-    ),
-  )
+    const company = store.company()!
+    const notes = [
+      `${company.name} ${periodKey} 复核材料`,
+      `导出时间：${now.toISOString()}`,
+      `会计包：${pack.packRef}`,
+      `这个月${'locked' in check && check.locked ? '已经结账' : '还没结账'}。`,
+      '',
+      '这些表由钱来张姐（dsh-qianlai 插件）从本机账本导出，供会计复核：',
+      '1 资产负债表、2 利润表：简表，行与科目的对应来自会计包；没结账的月份，未分配利润含还没结转的利润。',
+      '3 凭证：本月没作废的凭证，每行一条分录。',
+      '4 科目余额：建账以来累计到月末，含期初余额。',
+      '5 银行流水、6 发票：本月导入的流水和开票日期在本月的发票。发票只核过票面自洽，没有去税务局查验真伪。',
+      '7 还没处理完的事：结账检查没过的项。',
+      '',
+      '会计包是未经执业会计复核的工程候选版；张姐不代为报税。账请会计复核后再用。',
+    ]
+    writeFileSync(join(dir, '0-说明.txt'), `\uFEFF${notes.join('\r\n')}\r\n`)
+    files.unshift('0-说明.txt')
 
-  files.push(
-    writeCsv(
-      dir,
-      '6-发票.csv',
-      ['发票号码', '开票日期', '方向', '对方', '价税合计（元）', '记在哪张凭证', '验真'],
-      store.invoices(range).map((i) => [
-        i.invoiceNumber,
-        i.issueDate,
-        DIRECTION_NAMES[i.direction] ?? i.direction,
-        i.counterparty,
-        i.totalCents === null ? '' : formatCents(i.totalCents),
-        i.voucherNo ?? '还没记账',
-        '未查验，请到国家税务总局全国增值税发票查验平台核对',
-      ]),
-    ),
-  )
-
-  const failing = 'checks' in check ? check.checks.filter((c) => !c.passed) : []
-  files.push(
-    writeCsv(
-      dir,
-      '7-还没处理完的事.csv',
-      ['检查项', '说明'],
-      failing.flatMap((c) => c.blockers.map((b) => [c.check, blockerText(b as Record<string, unknown>)])),
-    ),
-  )
-
-  const company = store.company()!
-  const notes = [
-    `${company.name} ${periodKey} 复核材料`,
-    `导出时间：${now.toISOString()}`,
-    `会计包：${pack.packRef}`,
-    `这个月${'locked' in check && check.locked ? '已经结账' : '还没结账'}。`,
-    '',
-    '这些表由钱来张姐（dsh-qianlai 插件）从本机账本导出，供会计复核：',
-    '1 资产负债表、2 利润表：简表，行与科目的对应来自会计包；没结账的月份，未分配利润含还没结转的利润。',
-    '3 凭证：本月没作废的凭证，每行一条分录。',
-    '4 科目余额：建账以来累计到月末，含期初余额。',
-    '5 银行流水、6 发票：本月导入的流水和开票日期在本月的发票。发票只核过票面自洽，没有去税务局查验真伪。',
-    '7 还没处理完的事：结账检查没过的项。',
-    '',
-    '会计包是未经执业会计复核的工程候选版；张姐不代为报税。账请会计复核后再用。',
-  ]
-  writeFileSync(join(dir, '0-说明.txt'), `\uFEFF${notes.join('\r\n')}\r\n`)
-  files.unshift('0-说明.txt')
-
-  return {
-    accepted: true as const,
-    periodKey,
-    isSampleBook: company.isSample,
-    dir,
-    files,
-    openItems: failing.reduce((n, c) => n + c.blockers.length, 0),
+    renameSync(dir, published)
+    return {
+      accepted: true as const,
+      periodKey,
+      isSampleBook: company.isSample,
+      dir: published,
+      files,
+      openItems: failing.reduce((n, c) => n + c.blockers.length, 0),
+    }
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true })
+    throw error
   }
 }
