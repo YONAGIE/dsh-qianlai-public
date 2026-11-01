@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Validate declared tool argument enums recursively before execution, including WeChat action selection.
 - Require a valid active reversal before correction and reject correction periods earlier than the reversal, including previews.
 - Allow balance, profit, statement and review-pack reads for confirmed opening balances and closed zero-activity periods without inventing later periods.
 - Require confirmed opening balances and an ended accounting month in China time before locking a period; expose both blockers in closing checks and review exports.
