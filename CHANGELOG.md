@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add explicit synthetic approval modes to the live-model runner, direct Node/DSH CLI selection for Windows, and Unicode-safe session-log reads; test answerers are not loaded in production.
+
+- Apply declared parameter types to every caller-owned JSON dictionary key and require actual own fields for required properties.
+
+- Require DSH-native approval for critical ledger writes, reject stale/cancelled approvals, and return persistent per-call receipts instead of executing the same accepted call twice.
+
 - Retain unacknowledged WeChat reply fragments in the private channel state, retry with stable client identities, and resume pending sends after restart without rerunning business operations.
 
 - Keep failed WeChat batches unacknowledged, persist recent admitted identities, and reuse DSH request deduplication for message retries and restarts.

@@ -54,11 +54,14 @@ function normalizeValue(schema: Schema, value: unknown, path: string, problems: 
       const out: Record<string, unknown> = {}
       for (const [key, v] of Object.entries(value)) {
         const child = `${path ? `${path}.` : ''}${key}`
-        const declared = props[key] ?? (typeof schema.additionalProperties === 'object' ? schema.additionalProperties : undefined)
+        const declared = Object.hasOwn(props, key) ? props[key]
+          : typeof schema.additionalProperties === 'object' ? schema.additionalProperties : undefined
         if (v === null && !required.has(key)) continue
-        out[key] = declared ? normalize(declared, v, child, problems) : v
+        // JSON keys are data, including names also used by Object.prototype.
+        Object.defineProperty(out, key, { value: declared ? normalize(declared, v, child, problems) : v,
+          enumerable: true, writable: true, configurable: true })
       }
-      for (const key of required) if (out[key] === undefined) problems.push(`缺少 ${path ? `${path}.` : ''}${key}`)
+      for (const key of required) if (!Object.hasOwn(out, key) || out[key] === undefined) problems.push(`缺少 ${path ? `${path}.` : ''}${key}`)
       return out
     }
     default:
