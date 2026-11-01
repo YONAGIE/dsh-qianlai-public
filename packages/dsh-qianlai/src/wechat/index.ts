@@ -44,6 +44,8 @@ interface State {
   welcomeId?: string
   /** Recent admitted message hashes. Older replays also use DSH's persisted request identity. */
   handledMessages?: string[]
+  /** Unacknowledged reply fragments, saved before attempting delivery. */
+  outbox?: { clientId: string; owner: string; text: string }[]
 }
 
 type PromptPart =
@@ -182,6 +184,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     let generation = 0
     let view: LoginView = { status: state.botToken ? 'connected' : 'disconnected' }
     let welcomeRunning = false
+    let flushing: Promise<void> | undefined
+    let sendRetry: NodeJS.Timeout | undefined
+    let sendErrors = 0
     /** 等回复的 turn：turn 号 → 这一轮里收集到的最后一段话。 */
     const turns = new Map<number, { text: string; typing: NodeJS.Timeout }>()
     const pendingRequests = new Set<string>()
@@ -232,17 +237,46 @@ export function apply(ctx: Context, config: Config = {}): void {
       } finally { welcomeRunning = false }
     }
 
-    const reply = async (text: string) => {
-      if (!connection || !state.ownerUserId) return
-      for (const chunk of splitForWechat(toWechatText(text))) {
+    const flushReplies = (): Promise<void> => {
+      if (stopped || !connection || !state.ownerUserId || !state.outbox?.length) return Promise.resolve()
+      if (flushing) return flushing
+      clearTimeout(sendRetry)
+      const target = connection
+      flushing = Promise.resolve().then(async () => {
         try {
-          await connection.sendText(state.ownerUserId, state.contextToken, chunk)
+          while (!stopped && connection === target && state.outbox?.length) {
+            const item = state.outbox[0]!
+            if (item.owner !== state.ownerUserId) throw Error('reply owner does not match binding')
+            await target.sendText(item.owner, state.contextToken, item.text, item.clientId)
+            if (stopped || connection !== target) return
+            const previous = state.outbox
+            state.outbox = previous.slice(1)
+            try { save() } catch (error) { state.outbox = previous; throw error }
+          }
+          sendErrors = 0
         } catch (error) {
-          log.error(`moneycome-wechat: send failed: ${error instanceof Error ? error.message : String(error)}`)
-          return
+          log.error(`moneycome-wechat: send failed; reply retained: ${errorMessage(error)}`)
+          if (!stopped) sendRetry = setTimeout(() => void flushReplies(), Math.min(3000 * 2 ** Math.min(sendErrors++, 5), 60_000))
+        } finally {
+          flushing = undefined
+          if (!stopped && target !== connection) void flushReplies()
         }
+      })
+      return flushing
+    }
+    const reply = async (text: string, identity = `mc-reply-${randomUUID()}`) => {
+      if (stopped || !state.ownerUserId) return
+      const previous = state.outbox
+      const additions = splitForWechat(toWechatText(text)).map((chunk, index) => ({
+        clientId: `${identity}-${index}`, owner: state.ownerUserId!, text: chunk,
+      })).filter(item => !previous?.some(pending => pending.clientId === item.clientId))
+      state.outbox = [...(previous ?? []), ...additions]
+      try { save() } catch (error) {
+        if (previous) state.outbox = previous
+        else delete state.outbox
+        throw error
       }
-      log.info(`moneycome-wechat: replied ${text.length} chars`)
+      await flushReplies()
     }
 
     const offEvents = ctx.on('session/event', (session, event) => {
@@ -272,7 +306,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           pending.text && completed
             ? pending.text
             : pending.text || '刚才这一步没做完，您再说一次，或者换个说法试试。',
-        )
+          `mc-turn-${session.id}-${data.turn}`,
+        ).catch(error => log.error(`moneycome-wechat: could not retain reply: ${errorMessage(error)}`))
       }
     })
 
@@ -407,7 +442,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         admitted()
       } catch (error) {
         log.error(`moneycome-wechat: prompt failed: ${errorMessage(error)}`)
-        await reply('这条消息的提交结果暂未确认，正在自动重试，请先不要重复发送。')
+        await reply('这条消息的提交结果暂未确认，正在自动重试，请先不要重复发送。', `mc-error-${requestId}`)
         throw error
       }
     }
@@ -428,6 +463,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             ...(state.ownerUserId ? { ownerUserId: state.ownerUserId } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
             ...(state.handledMessages ? { handledMessages: state.handledMessages } : {}),
+            ...(state.outbox ? { outbox: state.outbox } : {}),
             ...(state.welcomePending !== undefined ? { welcomePending: state.welcomePending, welcomeProgress: state.welcomeProgress, welcomeId: state.welcomeId } : {}),
           }
           save()
@@ -441,6 +477,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       connection.start()
       log.info('moneycome-wechat: connected')
       void welcome()
+      void flushReplies()
     }
 
     const login = async () => {
@@ -517,6 +554,7 @@ export function apply(ctx: Context, config: Config = {}): void {
 
     return () => {
       stopped = true
+      clearTimeout(sendRetry)
       generation++
       loginAbort?.abort()
       offControl()

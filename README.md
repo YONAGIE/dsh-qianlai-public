@@ -29,6 +29,8 @@ For local package inspection, `pnpm pack:all` builds both packages and uses pnpm
 
 Then run `pnpm test:packages` to install those archives in a fresh temporary consumer with the core override, keeping pnpm's default supply-chain protection. It checks tool loading, Chinese XLS/XLSX and CSV reads, the WeChat export, and bundled SheetJS/license byte identity. It may fetch registry metadata/dependencies, disables install lifecycle scripts, uses no model or real account, and cleans its consumer directory. SheetJS CE remains the existing official 0.20.3 build, bundled at compile time instead of an exotic runtime URL dependency.
 
+WeChat retries failed batches using stable message/request identities. Unacknowledged reply fragments are retained privately in `moneycome/wechat.json` and retried after reconnect/restart; acknowledged fragments are removed. This file contains credentials and pending business replies: never attach it publicly. Delivery still depends on the remote service's client-ID handling, and replies lost before persistence cannot be recovered; do not rerun business actions merely to resend a reply.
+
 ## Tests and contribution
 
 The [Q-008 reproduction kit](packages/dsh-qianlai/e2e/q008/README.md) includes fixed synthetic prompts, three frozen personas and selected visible replies. Offline validation needs no key. Paid live-model runs are explicit and use only the tester's DEEPSEEK_API_KEY environment variable. Never submit credentials, private conversations or real financial records.
