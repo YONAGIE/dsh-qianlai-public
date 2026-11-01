@@ -87,7 +87,7 @@ function bankBalanceCheck(store: BookStore, bankSubject: string, periodKey: stri
   return { check: BANK_BALANCE_CHECK, passed: blockers.length === 0, blockers }
 }
 
-function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startMonth: string) {
+function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startMonth: string, now: Date) {
   const range = monthRange(periodKey)
   const transferIds = new Set(balanceTransferItems(pack.payload).map((i) => i.itemId))
   const vouchers = store.vouchers({ periodKey }).filter((v) => !transferIds.has(v.eventKind))
@@ -173,6 +173,12 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
     const complete = report.checks.find((c) => c.checkId === 'statement_complete')?.passed ?? true
     checks.push(bankBalanceCheck(store, bankSubject, periodKey, complete))
   }
+  const openingConfirmed = store.openingBalancesSetAt() !== undefined
+  const periodEnded = periodKey < todayInChina(now).slice(0, 7)
+  checks.push(
+    { check: '期初余额已经确认（含全零）', passed: openingConfirmed, blockers: openingConfirmed ? [] : [{ kind: 'opening_balances_unconfirmed' }] },
+    { check: '本月业务期间已经结束', passed: periodEnded, blockers: periodEnded ? [] : [{ kind: 'period_not_ended', periodKey }] },
+  )
   return {
     canClose: checks.every((c) => c.passed),
     checks,
@@ -180,7 +186,7 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
   }
 }
 
-/** 某月能不能结账：七项一次全查，不短路，每一项卡在哪都列出来。 */
+/** 某月能不能结账：逐项检查，不短路，每一项卡在哪都列出来。 */
 export function closingCheck(store: BookStore, pack: LoadedPack, periodKey: string, now: Date) {
   const company = validPeriod(store, periodKey, now)
   if ('accepted' in company) return company
@@ -191,12 +197,12 @@ export function closingCheck(store: BookStore, pack: LoadedPack, periodKey: stri
     periodKey,
     isSampleBook: company.isSample,
     locked: false,
-    ...runChecks(store, pack, periodKey, company.accountingStartMonth),
+    ...runChecks(store, pack, periodKey, company.accountingStartMonth, now),
   }
 }
 
 /**
- * 结账：七项全过才做。先按包声明做损益结转（把这个月损益科目的余额转进声明的科目），再把这个月锁住，
+ * 结账：所有检查通过才做。先按包声明做损益结转（把这个月损益科目的余额转进声明的科目），再把这个月锁住，
  * 之后不能再往里记账或导流水。
  *
  * 结转分录按余额算、不按规则推，做法与 moneycome `finance-ledger/balance-transfer.ts` 相同。
@@ -206,7 +212,7 @@ export function closePeriod(store: BookStore, pack: LoadedPack, periodKey: strin
   if ('accepted' in company) return company
   if (company.isSample) return refuse('SAMPLE_BOOK', '样本账只用来演示，不结账。')
   if (store.lockedPeriods().includes(periodKey)) return refuse('PERIOD_LOCKED', `${periodKey} 已经结过账了。`)
-  const checks = runChecks(store, pack, periodKey, company.accountingStartMonth)
+  const checks = runChecks(store, pack, periodKey, company.accountingStartMonth, now)
   if (!checks.canClose) return refuse('CLOSING_BLOCKED', '还有没过的检查项，这个月先不能结账。', checks.checks.filter((c) => !c.passed))
 
   const profit = store.postedPeriods().includes(periodKey) ? readProfit(store, pack, periodKey) : undefined

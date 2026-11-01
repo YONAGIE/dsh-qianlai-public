@@ -117,6 +117,7 @@ describe('记账说明', () => {
 describe('交票 → 交流水 → 问利润 → 结账', () => {
   it('走通 1 月', () => {
     const store = ownBook()
+    expect(setOpeningBalances(store, pack, [], NOW)).toMatchObject({ accepted: true })
 
     // 交一张进货票：核票、试推、正式记。
     expect(checkInvoice(store, PURCHASE_INVOICE, NOW)).toMatchObject({
@@ -366,6 +367,7 @@ describe('记账时的几道核对', () => {
 describe('补挂凭据', () => {
   it('记账时缺的凭据后来能补上，只收缺的那几种；结了账不能再补', () => {
     const store = ownBook()
+    expect(setOpeningBalances(store, pack, [], NOW)).toMatchObject({ accepted: true })
     const imported = importStatement(store, { ...STATEMENT, printedClosingBalance: '100000.00', rows: STATEMENT.rows.slice(0, 1) }, NOW)
     const capitalLine = 'lines' in imported ? imported.lines[0]!.lineId : -1
     const capital = recordEntry(store, pack, { date: '2026-01-05', summary: '股东实缴注册资本', eventKind: 'capital_contribution', facts: { ...bank, 'capital.nature': 'registeredCapital' }, amounts: { contract: '100000.00' }, statementLineIds: [capitalLine] }, NOW)

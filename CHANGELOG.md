@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Require confirmed opening balances and an ended accounting month in China time before locking a period; expose both blockers in closing checks and review exports.
 - Honor public unreadable amount fields before parsing; never persist uncertain monetary candidates as verified invoice facts or use missing invoice amounts for posting.
 - Validate the cumulative statement amount attached to a voucher; make identical link retries idempotent and reject empty evidence links.
 - Reject caller-supplied invoice/settlement evidence roles when previewing or posting; preserve automatic evidence from checked invoice and statement links.
