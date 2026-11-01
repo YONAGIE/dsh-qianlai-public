@@ -92,6 +92,17 @@ export const scenarios = [
     book: PERSONA_BOOK,
   },
   {
+    name: 'issues-month-year-source',
+    description: '#39：不把样本账或自己建议作为年份来源；明确的非样本年份仍照常查询。',
+    turns: [
+      { say: '看一下，一月的利润。', expect: { noCalls: [T('read_profit'), T('read_balances')], says: /年份|哪年|哪一年/ } },
+      { say: '年份我还没确定，你先别替我选。', expect: { noCalls: [T('read_profit'), T('read_balances')] } },
+      { say: '明确查2025年一月份的利润。', expect: { calls: { tool: T('read_profit'), args: /2025-01/ }, says: /没有|2026.*1.*月|2026-01/ } },
+      { say: '那查看2026年一月份的利润。', expect: { calls: { tool: T('read_profit'), args: /2026-01/ }, says: /47,?834\.50/ } },
+    ],
+    book: PERSONA_BOOK,
+  },
+  {
     name: 'issues-persona-facts-and-promises',
     description: '#9：不得把角色设定说成真实家庭经历，也不得承认不存在的承诺。须人工语义复核。',
     turns: [
