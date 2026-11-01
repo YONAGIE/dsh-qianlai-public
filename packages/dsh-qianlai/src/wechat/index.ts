@@ -366,6 +366,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const collect = async (message: IlinkMessage) => {
       const items: Incoming[] = []
       const notReceived = new Set<string>()
+      const oversized = new Set<string>()
       let voiceWithoutText = false
       let unsupported = false
       for (const item of message.item_list ?? []) {
@@ -382,7 +383,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             else items.push({ type: 'text', text: '（老板发来一张图片，但格式认不出来。）' })
           } catch (error) {
             log.warn(`moneycome-wechat: image download failed: ${errorMessage(error)}`)
-            notReceived.add('图片')
+            if ((error as { code?: string } | null)?.code === 'MEDIA_TOO_LARGE') oversized.add('图片')
+            else notReceived.add('图片')
           }
         } else if (item.file_item?.media) {
           const name = item.file_item.file_name ?? 'file'
@@ -390,11 +392,13 @@ export function apply(ctx: Context, config: Config = {}): void {
             items.push({ type: 'fileBytes', name, bytes: await downloadMedia(item.file_item.media, Number(item.file_item.len ?? 0)) })
           } catch (error) {
             log.warn(`moneycome-wechat: file download failed: ${errorMessage(error)}`)
-            notReceived.add(`文件「${name}」`)
+            if ((error as { code?: string } | null)?.code === 'MEDIA_TOO_LARGE') oversized.add(`文件「${name}」`)
+            else notReceived.add(`文件「${name}」`)
           }
         } else unsupported = true
       }
       const notes: string[] = []
+      if (oversized.size) notes.push(`刚才的${[...oversized].join('和')}超过20 MB，未处理；请压缩或按页、月份拆分后再发。`)
       if (notReceived.size) notes.push(`刚才的${[...notReceived].join('和')}没收到，可能是网络断了一下，麻烦再发一次。`)
       if (voiceWithoutText) notes.push('这条语音微信没转出文字，麻烦打字说，或者发截图。')
       if (unsupported) notes.push('视频这类消息我看不了，麻烦打字，或者发截图、文件。')

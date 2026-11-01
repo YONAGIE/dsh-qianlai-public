@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound WeChat media reception to 20 MB across declared sizes, headers, streamed ciphertext and decrypted bytes; cancel oversized transfers and request compression/splitting instead of reporting a network failure. The existing 8 MB document parsing limit is unchanged.
+
 - Reject unsafe numeric-to-string parameter conversion and out-of-range invoice adapter amounts before Number conversion; retain original long strings and exact supported amounts instead of returning rounded values.
 
 - Clarify month/year intent before querying, including in clarification questions; do not treat the assistant's suggested year as user confirmation. Add live-model regression with explicit non-sample years and known-year controls.

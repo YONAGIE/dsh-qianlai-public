@@ -116,6 +116,19 @@ afterEach(() => {
 })
 
 describe('微信通道', () => {
+  it.each(['image', 'file'])('超大 %s 说明拆分要求，不误导为网络失败反复重发', async kind => {
+    const media = { full_url: 'https://cdn.example/too-large', aes_key: 'a2V5' }
+    const item = kind === 'image' ? { type: 2, image_item: { media, hd_size: 20 * 1024 * 1024 + 1 } }
+      : { type: 4, file_item: { media, file_name: 'synthetic.pdf', len: String(20 * 1024 * 1024 + 1) } }
+    const { sent } = fakeIlink([{ message_type: 1, from_user_id: 'boss', item_list: [item] }])
+    const host = fakeHost(stateDirWithLogin(), { text: '不应触发', reason: 'completed' })
+    await until(() => sent.length > 0)
+    host.stop()
+    expect(sent[0]!.text).toContain('超过20 MB')
+    expect(sent[0]!.text).toContain('拆分')
+    expect(sent[0]!.text).not.toContain('网络')
+    expect(host.prompts).toEqual([])
+  })
   it('老板的话交给张姐会话，这一轮说完把最后一段话转成纯文本发回去', async () => {
     const { sent } = fakeIlink([textMessage('boss', '1月赚了多少？')])
     const dir = stateDirWithLogin()
