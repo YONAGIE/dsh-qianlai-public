@@ -9,6 +9,7 @@
 
 interface Schema {
   readonly type?: string
+  readonly enum?: readonly unknown[]
   readonly properties?: Readonly<Record<string, Schema>>
   readonly required?: readonly string[]
   readonly additionalProperties?: Schema | boolean
@@ -18,6 +19,13 @@ interface Schema {
 const at = (path: string) => path || '参数'
 
 function normalize(schema: Schema, value: unknown, path: string, problems: string[]): unknown {
+  const normalized = normalizeValue(schema, value, path, problems)
+  if (schema.enum && !schema.enum.includes(normalized))
+    problems.push(`${at(path)} 只能是 ${schema.enum.map(String).join(' / ')}`)
+  return normalized
+}
+
+function normalizeValue(schema: Schema, value: unknown, path: string, problems: string[]): unknown {
   switch (schema.type) {
     case 'string':
       if (typeof value === 'string') return value
