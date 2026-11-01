@@ -57,6 +57,10 @@ function blockerText(blocker: Record<string, unknown>): string {
       return `${pick('voucherNo')} 借贷不平：借 ${pick('debit')}，贷 ${pick('credit')}`
     case 'previous_period_open':
       return `上个月 ${pick('periodKey')} 还没结账`
+    case 'opening_balances_unconfirmed':
+      return '期初余额尚未确认；新成立企业也需明确确认全零'
+    case 'period_not_ended':
+      return `${pick('periodKey')} 业务期间尚未结束，不能提前锁月`
     case 'bank_balance_pending':
       return pick('message')
     case 'statement_balance_unknown':
