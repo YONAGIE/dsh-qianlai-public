@@ -75,11 +75,14 @@ describe('财务上传解析', () => {
 
   it('拒绝越界、符号链接逃逸、伪造格式与非法分页', async () => {
     const { home, directory } = fixture()
-    const outside = join(home, 'private.txt')
-    writeFileSync(outside, 'private')
-    const link = join(directory, 'link.txt')
-    symlinkSync(outside, link)
-    expect(await readUpload(home, link)).toMatchObject({ accepted: false, code: 'FILE_OUTSIDE_UPLOADS' })
+    const outside = join(home, 'private')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'private.txt'), 'private')
+    const link = join(directory, 'external')
+    // Windows directory junctions need no file-symlink privilege. The file still
+    // resolves outside attachments, so the same realpath boundary is exercised.
+    symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(await readUpload(home, join(link, 'private.txt'))).toMatchObject({ accepted: false, code: 'FILE_OUTSIDE_UPLOADS' })
     const fake = join(directory, 'fake.xlsx')
     writeFileSync(fake, 'not an excel workbook')
     expect(await readUpload(home, fake)).toMatchObject({ accepted: false, code: 'FILE_FORMAT_MISMATCH' })

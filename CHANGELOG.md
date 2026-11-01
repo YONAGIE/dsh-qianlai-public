@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Exercise attachment path-escape protection on ordinary Windows accounts using a directory junction test fixture.
 - Add an authenticated, on-demand WeChat QR panel with live status, expiration and refresh, plus a scoped login tool.
 - Read XLS/XLSX worksheets and paginated PDF text/page images directly from received attachments; preserve validation and posting confirmation.
 - Persist local-book business progress, material references and explicitly unverified continuation notes across sessions and restarts.
