@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Publish review exports as unique, completed snapshots; failed writes leave no partial export and repeated exports never overwrite earlier deliveries.
+
 - Bundle the existing official SheetJS CE build and license in compiled uploads; remove its exotic URL runtime subdependency so pnpm 12 can install archives with default protection.
 - Restore local build-and-pack delivery using pnpm's native recursive pack command; write both workspace archives to the root dist directory without publishing.
 - Prevent voiding a reversal while its correction remains active; allow rollback in the opposite order when both periods are open.
