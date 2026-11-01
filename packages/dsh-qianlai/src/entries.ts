@@ -130,6 +130,14 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
   if (store.lockedPeriods().includes(periodKey))
     return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，不能再往里记。`)
 
+  const automatic = [...new Set(input.evidenceRoles ?? [])].filter((role) => AUTOMATIC_ROLES.has(role))
+  if (automatic.length)
+    return refuse(
+      'ROLE_AUTOMATIC',
+      '发票和流水不能手填为凭据：发票要先核对并带 invoiceNumber，流水要带 statementLineIds 或用 moneycome_link_statement 关联。',
+      { roles: automatic },
+    )
+
   const facts = { ...input.facts, [EVENT_KIND]: input.eventKind }
   const event = { eventId: `entry-${randomUUID()}`, facts, amounts: input.amounts, periodKey }
   let rule: ReturnType<typeof matchRule>
