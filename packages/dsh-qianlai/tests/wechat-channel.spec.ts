@@ -178,7 +178,7 @@ describe('微信通道', () => {
     expect(host.created()).toBe(1)
   })
 
-  it('会话被删了才开新会话；别的错误不换会话，告诉老板稍后再发', async () => {
+  it('会话被删了才开新会话；别的错误不换会话，告知自动重试', async () => {
     const gone = Object.assign(new Error('session "s1" not found'), { code: 'session/not-found' })
     const first = fakeIlink([textMessage('boss', '记吧')])
     const host = fakeHost(stateDirWithLogin(), { text: '好。', reason: 'completed' }, [gone])
@@ -194,7 +194,7 @@ describe('微信通道', () => {
     busy.stop()
     expect(busy.created()).toBe(1)
     expect(busy.prompts).toEqual([])
-    expect(second.sent[0]!.text).toContain('稍后再发')
+    expect(second.sent[0]!.text).toContain('自动重试')
   })
 
   it('登录过期重新扫码后，老板还是扫码的那个微信，会话接着用', async () => {

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
@@ -42,6 +42,8 @@ interface State {
   welcomePending?: boolean
   welcomeProgress?: number
   welcomeId?: string
+  /** Recent admitted message hashes. Older replays also use DSH's persisted request identity. */
+  handledMessages?: string[]
 }
 
 type PromptPart =
@@ -363,19 +365,34 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       if (message.context_token) state.contextToken = message.context_token
       save()
+      const requestId = typeof message.msg_id === 'string' && message.msg_id.trim()
+        ? `mc-in-${createHash('sha256').update(JSON.stringify([from, message.msg_id])).digest('hex')}`
+        : randomUUID()
+      if (state.handledMessages?.includes(requestId)) return
+      const admitted = () => {
+        if (!message.msg_id) return
+        const previous = state.handledMessages
+        state.handledMessages = [...(previous ?? []), requestId].slice(-2048)
+        try { save() } catch (error) {
+          if (previous) state.handledMessages = previous
+          else delete state.handledMessages
+          throw error
+        }
+      }
       void welcome()
       void connection?.sendTyping(from, state.contextToken)
       const { items, notes } = await collect(message)
       if (notes.length) await reply(notes.join('\n'))
-      if (!items.length) return
+      if (!items.length) { admitted(); return }
       const send = async (sessionId: string) => {
         const content = await toParts(items, sessionId)
-        const requestId = randomUUID()
         pendingRequests.add(requestId)
-        await ctx.sessionController.prompt(
-          { sessionId, requestId, mode: 'queue', content, clientTimeZone: 'Asia/Shanghai' },
-          abort.signal,
-        )
+        try {
+          await ctx.sessionController.prompt(
+            { sessionId, requestId, mode: 'queue', content, clientTimeZone: 'Asia/Shanghai' },
+            abort.signal,
+          )
+        } catch (error) { pendingRequests.delete(requestId); throw error }
         log.info(`moneycome-wechat: prompt ${content.map((p) => p.type).join('+')}`)
       }
       try {
@@ -387,9 +404,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           log.warn(`moneycome-wechat: session gone, starting a new one: ${errorMessage(error)}`)
           await send(await ensureSession(true))
         }
+        admitted()
       } catch (error) {
         log.error(`moneycome-wechat: prompt failed: ${errorMessage(error)}`)
-        await reply('我这边出了点问题，这条没收到，您稍后再发一次。')
+        await reply('这条消息的提交结果暂未确认，正在自动重试，请先不要重复发送。')
+        throw error
       }
     }
 
@@ -408,6 +427,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           state = {
             ...(state.ownerUserId ? { ownerUserId: state.ownerUserId } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+            ...(state.handledMessages ? { handledMessages: state.handledMessages } : {}),
             ...(state.welcomePending !== undefined ? { welcomePending: state.welcomePending, welcomeProgress: state.welcomeProgress, welcomeId: state.welcomeId } : {}),
           }
           save()
