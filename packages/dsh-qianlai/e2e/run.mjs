@@ -27,8 +27,8 @@ if (approvalMode && !['allow', 'reject'].includes(approvalMode)) throw Error('E2
 const OUT = process.env.E2E_OUT ?? join(tmpdir(), `dsh-qianlai-e2e-${new Date().toISOString().replace(/[:.]/g, '-')}`)
 const JOBS = Number(process.env.E2E_JOBS ?? 3)
 let nextPort = Number(process.env.E2E_PORT ?? 8900)
-if (!Number.isSafeInteger(JOBS) || JOBS < 1 || JOBS > 10 || !Number.isSafeInteger(nextPort) || nextPort < 1 || nextPort > 65535)
-  throw Error('E2E_JOBS must be 1–10 and E2E_PORT must be 1–65535.')
+if (!Number.isSafeInteger(JOBS) || JOBS < 1 || JOBS > 10 || !Number.isSafeInteger(nextPort) || nextPort < 0 || nextPort > 65535)
+  throw Error('E2E_JOBS must be 1–10 and E2E_PORT must be 0–65535 (0 selects a free port).')
 
 if (process.argv.includes('--list')) {
   console.log(scenarios.map(scenario => scenario.name).join('\n'))
@@ -44,7 +44,7 @@ delete env.DEEPSEEK_BASE_URL
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function startDsh(home, ws, port) {
+async function startDsh(home, ws, port, scenario) {
   execFileSync(DSH, [...DSH_PREFIX, 'plugin', '--profile', 'web', 'add', `link:${pkgDir}`], { cwd: ws, env: { ...env, DSH_HOME: home }, stdio: 'ignore', windowsHide: true, timeout: 180_000 })
   const patchArgs = []
   if (approvalMode) {
@@ -55,9 +55,20 @@ async function startDsh(home, ws, port) {
       name: pathToFileURL(join(here, 'approval-fixture.mjs')).href, config: { mode: approvalMode, home, runId } }] }]))
     patchArgs.push('--patch', patch)
   }
+  const hostEnv = { ...env, DSH_HOME: home }
+  if (scenario?.wechatFixture) {
+    const id = crypto.randomUUID()
+    writeFileSync(join(home, '.synthetic-wechat-home'), id)
+    Object.assign(hostEnv, { E2E_WECHAT_FIXTURE_HOME: home, E2E_WECHAT_FIXTURE_ID: id,
+      NODE_OPTIONS: `${hostEnv.NODE_OPTIONS ?? ''} --import=${pathToFileURL(join(here, 'wechat-fixture.mjs')).href}`.trim() })
+    if (scenario.wechatFixture === 'connected') {
+      mkdirSync(join(home, 'moneycome'), { recursive: true })
+      writeFileSync(join(home, 'moneycome', 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }))
+    }
+  }
   const child = spawn(DSH, [...DSH_PREFIX, '--profile', 'web', ...patchArgs, '--host', '127.0.0.1', '--port', String(port), '--no-open'], {
     cwd: ws,
-    env: { ...env, DSH_HOME: home },
+    env: hostEnv,
     windowsHide: true,
   })
   let out = ''
@@ -138,6 +149,7 @@ function readEvents(home, sessionId) {
 function turnView(events, turn) {
   const calls = []
   const results = []
+  let images = 0
   let say = ''
   let reason
   for (const e of events) {
@@ -148,10 +160,13 @@ function turnView(events, turn) {
         if (c.type === 'tool-call') calls.push({ name: c.name, args: c.arguments })
         else if (c.type === 'text' && c.text.trim()) say = c.text
       }
-    if (e.type === 'tool/result') for (const c of d.message?.content ?? []) if (c.type === 'text') results.push(c.text)
+    if (e.type === 'tool/result') for (const c of d.message?.content ?? []) {
+      if (c.type === 'text') results.push(c.text)
+      else if (c.type === 'image') images++
+    }
     if (e.type === 'turn/end') reason = d.reason?.kind
   }
-  return { calls, results, say, reason }
+  return { calls, results, say, reason, images }
 }
 
 const asList = (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v])
@@ -173,6 +188,7 @@ function judgeTurn(expect, view) {
     if (view.calls.some((c) => matches(rule, c))) failures.push(`不该调却调了：${JSON.stringify(rule, regexToString)}`)
   for (const re of asList(expect.says)) if (!re.test(view.say)) failures.push(`回复里没有 ${re}`)
   for (const re of asList(expect.notSays)) if (re.test(view.say)) failures.push(`回复里不该有 ${re}`)
+  if (expect.images !== undefined && view.images < expect.images) failures.push(`应返回至少 ${expect.images} 张工具图片，实际 ${view.images}`)
   if (view.reason !== 'completed') failures.push(`这一轮没正常结束：${view.reason}`)
   return failures
 }
@@ -188,10 +204,10 @@ async function runScenario(s) {
   if (existsSync(home) && readdirSync(home).length) throw Error('Scenario home already contains data; choose a fresh E2E_OUT.')
   mkdirSync(home, { recursive: true })
   mkdirSync(ws, { recursive: true })
-  const port = nextPort++
+  const port = nextPort === 0 ? 0 : nextPort++
   const transcript = [`# ${s.name}\n\n${s.description}\n`]
   const failures = []
-  const dsh = await startDsh(home, ws, port)
+  const dsh = await startDsh(home, ws, port, s)
   try {
     const { call, upload } = client(dsh.url)
     const created = JSON.stringify(await call('session/create', { agentPreset: 'moneycome-zhangjie', cwd: ws }))

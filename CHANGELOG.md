@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resolve WeChat login-QR requests through the current dedicated tool, distinguish it from general image generation, and correct obsolete capability claims from earlier conversations without rewriting history.
+
 - Align contribution and security scope with the source packages and local build environment now present, while preserving private reporting and copied-core maintenance rules.
 
 - Bound WeChat media reception to 20 MB across declared sizes, headers, streamed ciphertext and decrypted bytes; cancel oversized transfers and request compression/splitting instead of reporting a network failure. The existing 8 MB document parsing limit is unchanged.
