@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
     let connection
 
-    function WechatPanel() {
+    function WechatPanel({ sessionId }) {
       const titleId = useId()
       const [open, setOpen] = useState(false)
       const [state, setState] = useState({ status: 'disconnected' })
@@ -41,7 +41,7 @@ window.__ModuleLoader__.load({
         const timer = setTimeout(() => abort.abort(), 15000)
         try {
           if (!connection) throw Error('微信接入服务尚未就绪，请稍后重试。')
-          const result = await connection.rpc.call('/api', 'qianlai/wechat', { action }, abort.signal)
+          const result = await connection.rpc.call('/api', 'qianlai/wechat', { action, ...(sessionId ? { sessionId } : {}) }, abort.signal)
           if (version !== sequence.current || abort.signal.aborted) return
           if (!result.ok) throw Error(result.error.message)
           setState(result.value)
@@ -52,7 +52,9 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (!open) return undefined
         dialog.current?.showModal()
-        void request('status')
+        // Opening "connect" is explicit intent. If already connected, start
+        // only attaches this conversation for handoff; it does not reset login.
+        void request('start')
         const timer = setInterval(() => void request('status'), 2000)
         return () => { clearInterval(timer); sequence.current++; control.current?.abort(); control.current = null }
       }, [open])
@@ -136,14 +138,14 @@ window.__ModuleLoader__.load({
     function ZhangjieAvatar({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, {})] }) : null
+      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId })] }) : null
     }
 
     /** 新会话页也提供微信入口。 */
     function ZhangjieTheme({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx(WechatPanel, {}) : null
+      return active ? jsx(WechatPanel, { sessionId }) : null
     }
 
     const inject = ['slots']

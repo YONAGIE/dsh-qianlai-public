@@ -36,7 +36,7 @@ async function until(condition: () => boolean, attempts = 100) {
 function stateDirectory() {
   const root = mkdtempSync(join(tmpdir(), 'qianlai-replay-'))
   roots.push(root)
-  writeFileSync(join(root, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner' }))
+  writeFileSync(join(root, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }))
   return root
 }
 function host(stateDir: string, prompt = vi.fn(async (_request: unknown) => ({}))) {
