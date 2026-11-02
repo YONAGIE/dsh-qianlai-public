@@ -23,8 +23,10 @@ Upstream and dependencies
 -------------------------
 packages/fintax-core was copied from Qianlai's internal upstream; original
 file headers, source commit and A6-SNAPSHOT.md are retained without logic changes.
+SheetJS CE 0.20.3 (Apache-2.0) is bundled unchanged at
+packages/dsh-qianlai/lib/vendor/xlsx.cjs with its full xlsx.LICENSE.
 Runtime dependencies are installed separately: zod (MIT), decimal.js (MIT),
-qrcode (MIT), SheetJS CE 0.20.3 (Apache-2.0), pdfjs-dist (Apache-2.0),
+qrcode (MIT), pdfjs-dist (Apache-2.0),
 and @napi-rs/canvas (MIT), with their bundled notices retained.
 The iLink protocol implementation follows the Tencent protocol documentation
 and earlier observed traffic; no openclaw-weixin code is copied.

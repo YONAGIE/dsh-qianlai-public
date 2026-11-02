@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -51,8 +52,25 @@ interface ToolDefinition {
   readonly description: string
   readonly parameters: object
   readonly output: { schema: object; render: (args: unknown, value: unknown) => ({ type: 'text'; text: string } | { type: 'image'; attachment: unknown })[] }
-  execute(args: Record<string, unknown>, exec?: { signal: AbortSignal }): Promise<unknown>
+  execute(args: Record<string, unknown>, exec?: Execution): Promise<unknown>
 }
+
+interface Execution {
+  readonly signal: AbortSignal
+  readonly callId?: string
+  readonly agent?: { readonly session: { readonly id: string } }
+}
+interface Approval {
+  request(request: { agent: NonNullable<Execution['agent']>; toolName: string; callId: string; reason: string; signal: AbortSignal }): Promise<string>
+}
+const CRITICAL_WRITES = new Set([
+  'moneycome_open_book', 'moneycome_set_opening_balances', 'moneycome_record_entry',
+  'moneycome_void_voucher', 'moneycome_reverse_voucher', 'moneycome_close_period',
+])
+// Canonical JSON binds an exact, normalized action to its host-owned identity.
+const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) =>
+  item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item)
 
 interface Context {
   effect(fn: () => () => void): void
@@ -88,6 +106,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())
     seedSampleBook(store, pack, new Date())
+    let disposed = false
     const tool = (
       name: string,
       description: string,
@@ -106,13 +125,50 @@ export function apply(ctx: Context, config: Config = {}): void {
           const { args, problems } = checkArgs(parameters, raw)
           if (problems.length) return refuse('ARGUMENT_INVALID', `参数不对：${problems.join('；')}。按工具说明改好再调。`)
           try {
+            if (disposed) return refuse('TOOL_CANCELLED', '插件已停止，没有改动账本。')
             if (exec?.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
             if (asynchronous) return await run(args, exec?.signal)
+            const critical = CRITICAL_WRITES.has(name) && !(name === 'moneycome_record_entry' && args.preview === true)
+            let receiptKey: string | undefined
+            let argsHash = ''
+            let revision = ''
+            const previous = () => {
+              const saved = receiptKey ? store.toolReceipt(receiptKey) : undefined
+              if (!saved) return undefined
+              return saved.operation === name && saved.argsHash === argsHash
+                ? saved.result
+                : refuse('CALL_ID_CONFLICT', '同一次宿主调用的参数已变化，不能重复执行。请重新核对并取得新的确认。')
+            }
+            if (critical) {
+              const approval = ctx.get?.('approval') as Approval | undefined
+              if (!approval?.request || !exec?.agent?.session.id || !exec.callId)
+                return refuse('APPROVAL_UNAVAILABLE', '当前宿主无法确认这项账务操作，没有改动账本。请使用支持批准交互的 DSH 会话。')
+              receiptKey = createHash('sha256').update(JSON.stringify([exec.agent.session.id, exec.callId])).digest('hex')
+              argsHash = createHash('sha256').update(canonical(args)).digest('hex')
+              const cached = previous()
+              if (cached !== undefined) return cached
+              revision = store.approvalRevision()
+              const preview = name === 'moneycome_record_entry'
+                ? recordEntry(store, pack, { ...args, preview: true } as unknown as RecordEntryInput, new Date()) : undefined
+              if (preview && !preview.accepted) return preview
+              const reason = `账本：${store.company()?.name ?? '未开账'}\n操作：${name}\n参数：${canonical(args)}${preview ? `\n当前预演：${canonical(preview)}` : ''}\n只批准本次操作；拒绝或取消不会执行。`
+              const outcome = await approval.request({ agent: exec.agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
+              if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
+              if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
+            }
             // 整个工具调用放在一个写事务里：另一个进程开着同一本账时，两边的检查和写入不会交错。
             return store.transaction(() => {
+              if (critical) {
+                const cached = previous()
+                if (cached !== undefined) return cached
+                if (revision !== store.approvalRevision())
+                  return refuse('BOOK_CHANGED', '等待确认期间账本已变化，请重新核对并确认。没有执行这项操作。')
+              }
               const result = run(args)
               if (WORK_OPERATIONS.has(name) && (result as { accepted?: boolean })?.accepted === true)
                 store.recordWork(name, args, result)
+              if (receiptKey && (result as { accepted?: boolean })?.accepted === true)
+                store.saveToolReceipt(receiptKey, name, argsHash, result)
               return result
             })
           } catch (error) {
@@ -445,13 +501,14 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_close_period',
-        '结账：七项检查全过才做，自动做损益结转、生成结转凭证，然后锁住这个月。只在老板明确说要结账时调用。结了账的月份不能再记账、作废、补凭据或导流水，也没有反结账；以后发现记错了，只能在没结账的月份冲销再更正（moneycome_reverse_voucher）。结账前要跟老板说清这一点。',
+        '结账：结账检查全部通过才做，自动做损益结转、生成结转凭证，然后锁住这个月。只在老板明确说要结账时调用。结了账的月份不能再记账、作废、补凭据或导流水，也没有反结账；以后发现记错了，只能在没结账的月份冲销再更正（moneycome_reverse_voucher）。结账前要跟老板说清这一点。',
         periodKey,
         ['periodKey'],
         (a) => closePeriod(store, pack, String(a.periodKey ?? ''), new Date()),
       ),
     ]
     return () => {
+      disposed = true
       for (const dispose of disposers) dispose()
       store.close()
     }

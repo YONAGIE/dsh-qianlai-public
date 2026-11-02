@@ -31,8 +31,12 @@ export interface InvoiceReading {
 
 type Key = keyof InvoiceExtractedFacts
 
+const READING_KEYS: Partial<Record<Key, keyof InvoiceReading>> = {
+  amountExclTaxCents: 'amountExclTax', taxAmountCents: 'taxAmount', totalInclTaxCents: 'totalInclTax',
+}
+
 function field<T>(reading: InvoiceReading, key: Key, value: T | undefined): InvoiceField<T> {
-  if (reading.unreadable?.includes(key)) return { state: 'unreadable' }
+  if (reading.unreadable?.some(name => name === key || name === (READING_KEYS[key] ?? key))) return { state: 'unreadable' }
   return value === undefined ? { state: 'absent' } : { state: 'present', value }
 }
 
@@ -43,9 +47,12 @@ function parsedField(reading: InvoiceReading, key: Key, text: string | undefined
   return value === undefined ? ({ state: 'unreadable' } as const) : field(reading, key, value)
 }
 
+const MAX_EXACT_CENTS = BigInt(Number.MAX_SAFE_INTEGER)
+const parsedCents = (text: string) => parseAmountToCents(text.replace(/[¥￥,\s]/g, ''))
+const exactCents = (value: bigint) => value >= -MAX_EXACT_CENTS && value <= MAX_EXACT_CENTS
 function cents(text: string): number | undefined {
-  const value = parseAmountToCents(text.replace(/[¥￥,\s]/g, ''))
-  return value === undefined ? undefined : Number(value)
+  const value = parsedCents(text)
+  return value === undefined || !exactCents(value) ? undefined : Number(value)
 }
 
 function rate(text: string): number | undefined {
@@ -90,6 +97,14 @@ export function checkInvoice(store: BookStore, reading: InvoiceReading, now: Dat
   if (!company) return refuse('NO_BOOK', '本机还没有账本。')
   if (company.isSample)
     return refuse('SAMPLE_BOOK', '现在是样本账。老板要记自己公司的票，先用 moneycome_open_book 开账。')
+  const outOfRange = Object.entries(READING_KEYS).flatMap(([internal, external]) => {
+    if (reading.unreadable?.some(key => key === internal || key === external)) return []
+    const text = reading[external]
+    const value = typeof text === 'string' ? parsedCents(text) : undefined
+    return value !== undefined && !exactCents(value) ? [external] : []
+  })
+  if (outOfRange.length)
+    return refuse('INVOICE_AMOUNT_OUT_OF_RANGE', '票面金额超过当前核票引擎可精确处理的范围，本次没有保存发票或记账。请交会计人工核对，不要修改或舍入原金额。', { fields: outOfRange })
   const facts = toFacts(reading)
   const readability = resolveInvoiceReadability(facts)
   const checks = runInvoiceSelfChecks(facts, 'invoice')
@@ -109,7 +124,14 @@ export function checkInvoice(store: BookStore, reading: InvoiceReading, now: Dat
       direction: direction.direction,
       counterparty: (direction.direction === 'input' ? reading.sellerName : reading.buyerName) ?? null,
       totalCents: total,
-      facts: reading,
+      // Keep uncertain candidates out of the verified invoice facts used later
+      // by posting. A readable total does not make unreadable net/tax certain.
+      facts: {
+        ...reading,
+        amountExclTax: facts.amountExclTaxCents.state === 'present' ? reading.amountExclTax : undefined,
+        taxAmount: facts.taxAmountCents.state === 'present' ? reading.taxAmount : undefined,
+        totalInclTax: facts.totalInclTaxCents.state === 'present' ? reading.totalInclTax : undefined,
+      },
       now,
     })
   }

@@ -9,6 +9,7 @@
 
 interface Schema {
   readonly type?: string
+  readonly enum?: readonly unknown[]
   readonly properties?: Readonly<Record<string, Schema>>
   readonly required?: readonly string[]
   readonly additionalProperties?: Schema | boolean
@@ -18,10 +19,23 @@ interface Schema {
 const at = (path: string) => path || '参数'
 
 function normalize(schema: Schema, value: unknown, path: string, problems: string[]): unknown {
+  const normalized = normalizeValue(schema, value, path, problems)
+  if (schema.enum && !schema.enum.includes(normalized))
+    problems.push(`${at(path)} 只能是 ${schema.enum.map(String).join(' / ')}`)
+  return normalized
+}
+
+function normalizeValue(schema: Schema, value: unknown, path: string, problems: string[]): unknown {
   switch (schema.type) {
     case 'string':
       if (typeof value === 'string') return value
-      if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        if (Number.isInteger(value) && !Number.isSafeInteger(value)) {
+          problems.push(`${at(path)} 数字超出精确整数范围，请按原文传字符串`)
+          return value
+        }
+        return String(value)
+      }
       problems.push(`${at(path)} 应为字符串`)
       return value
     case 'boolean':
@@ -46,11 +60,14 @@ function normalize(schema: Schema, value: unknown, path: string, problems: strin
       const out: Record<string, unknown> = {}
       for (const [key, v] of Object.entries(value)) {
         const child = `${path ? `${path}.` : ''}${key}`
-        const declared = props[key] ?? (typeof schema.additionalProperties === 'object' ? schema.additionalProperties : undefined)
+        const declared = Object.hasOwn(props, key) ? props[key]
+          : typeof schema.additionalProperties === 'object' ? schema.additionalProperties : undefined
         if (v === null && !required.has(key)) continue
-        out[key] = declared ? normalize(declared, v, child, problems) : v
+        // JSON keys are data, including names also used by Object.prototype.
+        Object.defineProperty(out, key, { value: declared ? normalize(declared, v, child, problems) : v,
+          enumerable: true, writable: true, configurable: true })
       }
-      for (const key of required) if (out[key] === undefined) problems.push(`缺少 ${path ? `${path}.` : ''}${key}`)
+      for (const key of required) if (!Object.hasOwn(out, key) || out[key] === undefined) problems.push(`缺少 ${path ? `${path}.` : ''}${key}`)
       return out
     }
     default:

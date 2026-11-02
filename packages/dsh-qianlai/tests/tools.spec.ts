@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -15,14 +16,19 @@ import { apply as applyBuilt } from '../lib/index.js'
 // 企业是编的。这里测的是工具入口：参数校验、出错兜底、和别的进程抢同一本账。
 
 interface Tool {
-  execute(args: unknown): Promise<unknown>
+  execute(args: unknown, exec?: ReturnType<typeof approvedCall>): Promise<unknown>
 }
+
+// Synthetic native approval; production uses DSH's actual approval service.
+const approvedCall = () => ({ signal: new AbortController().signal, callId: randomUUID(), agent: { session: { id: 'synthetic-tools-session' } } })
 
 function plugin() {
   const bookPath = join(mkdtempSync(join(tmpdir(), 'qianlai-tools-')), 'book.sqlite')
   const tools = new Map<string, Tool>()
-  apply({ effect: (fn) => void fn(), tools: { register: (t) => (tools.set(t.name, t), () => {}) } }, { bookPath })
-  const call = (name: string, args: unknown) => tools.get(name)!.execute(args) as Promise<Record<string, unknown>>
+  apply({ effect: (fn) => void fn(), tools: { register: (t) => (tools.set(t.name, t), () => {}) },
+    get: name => name === 'approval' ? { request: async () => 'allowed-once' } : undefined,
+  }, { bookPath })
+  const call = (name: string, args: unknown) => tools.get(name)!.execute(args, approvedCall()) as Promise<Record<string, unknown>>
   return { bookPath, call }
 }
 
@@ -56,8 +62,8 @@ describe('工具入口', () => {
       writeFileSync(path, await pdf.save())
       applyBuilt({
         effect: fn => { dispose = fn() }, tools: { register: t => { tools.set(t.name, t); return () => {} } },
-        get: () => ({ saveImage: async () => {
-          await tools.get('moneycome_open_book')!.execute({ companyName: '合成企业', accountingStartMonth: '2026-01', replaceSampleBook: true })
+        get: name => name === 'approval' ? { request: async () => 'allowed-once' } : ({ saveImage: async () => {
+          await tools.get('moneycome_open_book')!.execute({ companyName: '合成企业', accountingStartMonth: '2026-01', replaceSampleBook: true }, approvedCall())
           return { type: 'synthetic-image-ref' }
         } }),
       })

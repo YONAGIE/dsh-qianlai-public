@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
@@ -42,6 +42,10 @@ interface State {
   welcomePending?: boolean
   welcomeProgress?: number
   welcomeId?: string
+  /** Recent admitted message hashes. Older replays also use DSH's persisted request identity. */
+  handledMessages?: string[]
+  /** Unacknowledged reply fragments, saved before attempting delivery. */
+  outbox?: { clientId: string; owner: string; text: string; approvalCode?: string }[]
 }
 
 type PromptPart =
@@ -82,6 +86,16 @@ interface Context {
 
 interface FileUploads {
   uploadStream(request: { sessionId: string; data: AsyncIterable<Uint8Array>; name?: string }): Promise<{ receiptId: string }>
+}
+
+interface ApprovalQuestion {
+  readonly agent: { readonly session: { readonly id: string } }
+  readonly toolName: string
+  readonly reason?: string
+  readonly signal?: AbortSignal
+}
+interface ApprovalEvents {
+  on(event: 'approval/request', handler: (question: ApprovalQuestion, next: () => Promise<string>) => Promise<string>, options: { prepend: boolean }): () => void
 }
 
 /** 单条微信消息的字数上限取保守值，超了按段落拆成几条发。 */
@@ -180,6 +194,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     let generation = 0
     let view: LoginView = { status: state.botToken ? 'connected' : 'disconnected' }
     let welcomeRunning = false
+    let flushing: Promise<void> | undefined
+    let sendRetry: NodeJS.Timeout | undefined
+    let sendErrors = 0
+    const approvals = new Map<string, { owner: string; sessionId: string; settle(outcome: string): void }>()
     /** 等回复的 turn：turn 号 → 这一轮里收集到的最后一段话。 */
     const turns = new Map<number, { text: string; typing: NodeJS.Timeout }>()
     const pendingRequests = new Set<string>()
@@ -230,18 +248,74 @@ export function apply(ctx: Context, config: Config = {}): void {
       } finally { welcomeRunning = false }
     }
 
-    const reply = async (text: string) => {
-      if (!connection || !state.ownerUserId) return
-      for (const chunk of splitForWechat(toWechatText(text))) {
+    const flushReplies = (): Promise<void> => {
+      if (stopped || !connection || !state.ownerUserId || !state.outbox?.length) return Promise.resolve()
+      if (flushing) return flushing
+      clearTimeout(sendRetry)
+      const target = connection
+      flushing = Promise.resolve().then(async () => {
         try {
-          await connection.sendText(state.ownerUserId, state.contextToken, chunk)
+          while (!stopped && connection === target && state.outbox?.length) {
+            const item = state.outbox[0]!
+            if (item.owner !== state.ownerUserId) throw Error('reply owner does not match binding')
+            // Approval prompts never survive the lifetime of their pending ask.
+            if (!item.approvalCode || approvals.has(item.approvalCode))
+              await target.sendText(item.owner, state.contextToken, item.text, item.clientId)
+            if (stopped || connection !== target) return
+            const previous = state.outbox
+            state.outbox = previous.slice(1)
+            try { save() } catch (error) { state.outbox = previous; throw error }
+          }
+          sendErrors = 0
         } catch (error) {
-          log.error(`moneycome-wechat: send failed: ${error instanceof Error ? error.message : String(error)}`)
-          return
+          log.error(`moneycome-wechat: send failed; reply retained: ${errorMessage(error)}`)
+          if (!stopped) sendRetry = setTimeout(() => void flushReplies(), Math.min(3000 * 2 ** Math.min(sendErrors++, 5), 60_000))
+        } finally {
+          flushing = undefined
+          if (!stopped && target !== connection) void flushReplies()
         }
-      }
-      log.info(`moneycome-wechat: replied ${text.length} chars`)
+      })
+      return flushing
     }
+    const reply = async (text: string, identity = `mc-reply-${randomUUID()}`, approvalCode?: string) => {
+      if (stopped || !state.ownerUserId) return
+      const previous = state.outbox
+      const additions = splitForWechat(toWechatText(text)).map((chunk, index) => ({
+        clientId: `${identity}-${index}`, owner: state.ownerUserId!, text: chunk,
+        ...(approvalCode ? { approvalCode } : {}),
+      })).filter(item => !previous?.some(pending => pending.clientId === item.clientId))
+      state.outbox = [...(previous ?? []), ...additions]
+      try { save() } catch (error) {
+        if (previous) state.outbox = previous
+        else delete state.outbox
+        throw error
+      }
+      await flushReplies()
+    }
+
+    // The approval service is agent-scoped and may not exist on this host
+    // context yet. Register the host answerer before creating any sessions.
+    // Claim only our session before generic UI brokers; delegate all others.
+    const offApprovals = (ctx as unknown as ApprovalEvents).on('approval/request', async (question, next) => {
+        if (question.agent.session.id !== state.sessionId) return next()
+        if (stopped || !connection || !state.ownerUserId || question.signal?.aborted) return 'unavailable'
+        const code = randomUUID().replaceAll('-', '').slice(0, 12).toUpperCase()
+        return new Promise<string>(resolve => {
+          const cancel = () => settle('cancelled')
+          const settle = (outcome: string) => {
+            if (!approvals.delete(code)) return
+            clearTimeout(timer)
+            question.signal?.removeEventListener('abort', cancel)
+            resolve(outcome)
+          }
+          const timer = setTimeout(cancel, 5 * 60_000)
+          approvals.set(code, { owner: state.ownerUserId!, sessionId: state.sessionId!, settle })
+          question.signal?.addEventListener('abort', cancel, { once: true })
+          if (question.signal?.aborted) { cancel(); return }
+          void reply(`请确认本次账务操作：\n${question.reason ?? question.toolName}\n\n同意请单独回复“确认 ${code}”，不同意回复“拒绝 ${code}”。本次码五分钟内有效，取消或重启后失效。`, `mc-approval-${code}`, code)
+            .catch(() => settle('unavailable'))
+        })
+      }, { prepend: true })
 
     const offEvents = ctx.on('session/event', (session, event) => {
       if (session.id !== state.sessionId) return
@@ -270,7 +344,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           pending.text && completed
             ? pending.text
             : pending.text || '刚才这一步没做完，您再说一次，或者换个说法试试。',
-        )
+          `mc-turn-${session.id}-${data.turn}`,
+        ).catch(error => log.error(`moneycome-wechat: could not retain reply: ${errorMessage(error)}`))
       }
     })
 
@@ -291,6 +366,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const collect = async (message: IlinkMessage) => {
       const items: Incoming[] = []
       const notReceived = new Set<string>()
+      const oversized = new Set<string>()
       let voiceWithoutText = false
       let unsupported = false
       for (const item of message.item_list ?? []) {
@@ -307,7 +383,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             else items.push({ type: 'text', text: '（老板发来一张图片，但格式认不出来。）' })
           } catch (error) {
             log.warn(`moneycome-wechat: image download failed: ${errorMessage(error)}`)
-            notReceived.add('图片')
+            if ((error as { code?: string } | null)?.code === 'MEDIA_TOO_LARGE') oversized.add('图片')
+            else notReceived.add('图片')
           }
         } else if (item.file_item?.media) {
           const name = item.file_item.file_name ?? 'file'
@@ -315,11 +392,13 @@ export function apply(ctx: Context, config: Config = {}): void {
             items.push({ type: 'fileBytes', name, bytes: await downloadMedia(item.file_item.media, Number(item.file_item.len ?? 0)) })
           } catch (error) {
             log.warn(`moneycome-wechat: file download failed: ${errorMessage(error)}`)
-            notReceived.add(`文件「${name}」`)
+            if ((error as { code?: string } | null)?.code === 'MEDIA_TOO_LARGE') oversized.add(`文件「${name}」`)
+            else notReceived.add(`文件「${name}」`)
           }
         } else unsupported = true
       }
       const notes: string[] = []
+      if (oversized.size) notes.push(`刚才的${[...oversized].join('和')}超过20 MB，未处理；请压缩或按页、月份拆分后再发。`)
       if (notReceived.size) notes.push(`刚才的${[...notReceived].join('和')}没收到，可能是网络断了一下，麻烦再发一次。`)
       if (voiceWithoutText) notes.push('这条语音微信没转出文字，麻烦打字说，或者发截图。')
       if (unsupported) notes.push('视频这类消息我看不了，麻烦打字，或者发截图、文件。')
@@ -363,19 +442,47 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       if (message.context_token) state.contextToken = message.context_token
       save()
+      const requestId = typeof message.msg_id === 'string' && message.msg_id.trim()
+        ? `mc-in-${createHash('sha256').update(JSON.stringify([from, message.msg_id])).digest('hex')}`
+        : randomUUID()
+      if (state.handledMessages?.includes(requestId)) return
+      const admitted = () => {
+        if (!message.msg_id) return
+        const previous = state.handledMessages
+        state.handledMessages = [...(previous ?? []), requestId].slice(-2048)
+        try { save() } catch (error) {
+          if (previous) state.handledMessages = previous
+          else delete state.handledMessages
+          throw error
+        }
+      }
+      const text = message.item_list?.length === 1 ? message.item_list[0]?.text_item?.text?.trim() : undefined
+      const decision = text?.match(/^(确认|拒绝)\s+([A-F0-9]{12})$/i)
+      if (decision) {
+        const pending = approvals.get(decision[2]!.toUpperCase())
+        if (pending && pending.owner === from && pending.sessionId === state.sessionId) {
+          admitted()
+          pending.settle(decision[1] === '确认' ? 'allowed-once' : 'rejected')
+        } else {
+          await reply('这次确认已失效或不属于当前会话，请重新核对操作后再确认。')
+          admitted()
+        }
+        return
+      }
       void welcome()
       void connection?.sendTyping(from, state.contextToken)
       const { items, notes } = await collect(message)
       if (notes.length) await reply(notes.join('\n'))
-      if (!items.length) return
+      if (!items.length) { admitted(); return }
       const send = async (sessionId: string) => {
         const content = await toParts(items, sessionId)
-        const requestId = randomUUID()
         pendingRequests.add(requestId)
-        await ctx.sessionController.prompt(
-          { sessionId, requestId, mode: 'queue', content, clientTimeZone: 'Asia/Shanghai' },
-          abort.signal,
-        )
+        try {
+          await ctx.sessionController.prompt(
+            { sessionId, requestId, mode: 'queue', content, clientTimeZone: 'Asia/Shanghai' },
+            abort.signal,
+          )
+        } catch (error) { pendingRequests.delete(requestId); throw error }
         log.info(`moneycome-wechat: prompt ${content.map((p) => p.type).join('+')}`)
       }
       try {
@@ -387,9 +494,11 @@ export function apply(ctx: Context, config: Config = {}): void {
           log.warn(`moneycome-wechat: session gone, starting a new one: ${errorMessage(error)}`)
           await send(await ensureSession(true))
         }
+        admitted()
       } catch (error) {
         log.error(`moneycome-wechat: prompt failed: ${errorMessage(error)}`)
-        await reply('我这边出了点问题，这条没收到，您稍后再发一次。')
+        await reply('这条消息的提交结果暂未确认，正在自动重试，请先不要重复发送。', `mc-error-${requestId}`)
+        throw error
       }
     }
 
@@ -408,6 +517,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           state = {
             ...(state.ownerUserId ? { ownerUserId: state.ownerUserId } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+            ...(state.handledMessages ? { handledMessages: state.handledMessages } : {}),
+            ...(state.outbox ? { outbox: state.outbox } : {}),
             ...(state.welcomePending !== undefined ? { welcomePending: state.welcomePending, welcomeProgress: state.welcomeProgress, welcomeId: state.welcomeId } : {}),
           }
           save()
@@ -421,6 +532,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       connection.start()
       log.info('moneycome-wechat: connected')
       void welcome()
+      void flushReplies()
     }
 
     const login = async () => {
@@ -491,12 +603,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rpc = ctx.get('connection') as RpcConnection | undefined
     let offRpc: ReturnType<typeof registerLoginRpc> | undefined
     try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
-    catch (error) { offControl(); offEvents(); throw error }
+    catch (error) { offControl(); offEvents(); offApprovals(); throw error }
     if (state.botToken) connect(state.botToken)
     else if (config.autoStart !== false) void login()
 
     return () => {
       stopped = true
+      clearTimeout(sendRetry)
+      for (const pending of approvals.values()) pending.settle('cancelled')
       generation++
       loginAbort?.abort()
       offControl()
@@ -504,6 +618,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       abort.abort()
       connection?.stop()
       offEvents()
+      offApprovals()
       for (const pending of turns.values()) clearInterval(pending.typing)
     }
   })

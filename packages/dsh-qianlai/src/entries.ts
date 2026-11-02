@@ -130,6 +130,17 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
   if (store.lockedPeriods().includes(periodKey))
     return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，不能再往里记。`)
 
+  const automatic = [...new Set(input.evidenceRoles ?? [])].filter((role) => AUTOMATIC_ROLES.has(role))
+  if (automatic.length)
+    return refuse(
+      'ROLE_AUTOMATIC',
+      '发票和流水不能手填为凭据：发票要先核对并带 invoiceNumber，流水要带 statementLineIds 或用 moneycome_link_statement 关联。',
+      { roles: automatic },
+    )
+  const reserved = Object.keys(input.facts).filter(key => key.startsWith('correction.'))
+  if (reserved.length)
+    return refuse('FACT_RESERVED', 'correction.* 是系统更正关系，不能作为普通业务事实填写。请使用冲销工具或 correctsVoucherNo。', { facts: reserved })
+
   const facts = { ...input.facts, [EVENT_KIND]: input.eventKind }
   const event = { eventId: `entry-${randomUUID()}`, facts, amounts: input.amounts, periodKey }
   let rule: ReturnType<typeof matchRule>
@@ -149,8 +160,15 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
   if (input.correctsVoucherNo !== undefined) {
     const [original] = store.vouchers({ voucherNo: input.correctsVoucherNo })
     if (!original) return refuse('VOUCHER_NOT_FOUND', `没有凭证 ${input.correctsVoucherNo}。`)
-    if (!store.voucherLinkedTo('correction.reverses', original.voucherNo))
+    const reversalNo = store.voucherLinkedTo('correction.reverses', original.voucherNo)
+    const reversal = reversalNo ? store.vouchers({ voucherNo: reversalNo })[0] : undefined
+    if (!reversal || reversal.voided || reversal.eventKind !== REVERSAL_KIND)
       return refuse('NOT_REVERSED', `${original.voucherNo} 还没冲销。先用 moneycome_reverse_voucher 冲掉它，再记更正后的这一笔。`)
+    const reversalPeriod = reversal.voucherDate.slice(0, 7)
+    if (periodKey < reversalPeriod)
+      return refuse('CORRECTION_BEFORE_REVERSAL', `更正凭证不能记到冲销之前的月份。${reversal.voucherNo} 在 ${reversalPeriod}，更正要记在该月或以后尚未结账的月份。`, {
+        reversalVoucherNo: reversal.voucherNo, reversalPeriod, correctionPeriod: periodKey,
+      })
     const existing = store.voucherLinkedTo('correction.of', original.voucherNo)
     if (existing) return refuse('ALREADY_CORRECTED', `${original.voucherNo} 已经有更正凭证 ${existing} 了。`)
     // 原凭证上的凭据（发票、合同、回单）仍然有效，更正后的这一笔照样算有。
@@ -295,7 +313,8 @@ function invoiceAmountMismatch(invoice: InvoiceRecord, amounts: Readonly<Record<
     invoice_tax: invoice.facts.taxAmount,
   }
   const differs = Object.entries(onInvoice).filter(([source, printed]) => {
-    if (typeof printed !== 'string' || amounts[source] === undefined) return false
+    if (amounts[source] === undefined) return false
+    if (typeof printed !== 'string') return true
     const a = parseAmountToCents(printed.replace(/[¥￥,\s]/g, ''))
     const b = parseAmountToCents(amounts[source].replace(/[¥￥,\s]/g, ''))
     return a === undefined || b === undefined || a !== b
@@ -353,10 +372,11 @@ export function linkStatementLines(store: BookStore, pack: LoadedPack, input: { 
   const periodKey = voucher.voucherDate.slice(0, 7)
   if (store.lockedPeriods().includes(periodKey)) return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，凭证不能再改。`)
   const lineIds = [...new Set(input.statementLineIds)]
+  if (lineIds.length === 0) return refuse('STATEMENT_LINES_REQUIRED', '至少提供一行真实流水，不能用空列表补结算凭据。')
   const lines = store.statementLines({ ids: lineIds })
   const missing = lineIds.filter((id) => !lines.some((l) => l.id === id))
   if (missing.length) return refuse('STATEMENT_LINE_NOT_FOUND', `没有这些流水行：${missing.join('、')}。`)
-  const taken = lines.filter((l) => l.voucherNo)
+  const taken = lines.filter((l) => l.voucherNo && l.voucherNo !== input.voucherNo)
   if (taken.length)
     return refuse('STATEMENT_LINE_ALREADY_RECORDED', `这些流水已经记过了：${taken.map((l) => `${l.id}（${l.voucherNo}）`).join('、')}。`)
   const elsewhere = otherPeriodLines(lines, periodKey)
@@ -367,7 +387,10 @@ export function linkStatementLines(store: BookStore, pack: LoadedPack, input: { 
     ruleId: voucher.ruleId,
     legs: voucher.legs.map((l) => ({ ...l, amount: formatCents(l.amountCents), amountSource: '' })),
   }
-  const mismatch = statementMismatch(pack.payload, posting, lines)
+  const allLines = [...new Map(
+    [...store.statementLines({ voucherNo: input.voucherNo }), ...lines].map(line => [line.id, line]),
+  ).values()]
+  const mismatch = statementMismatch(pack.payload, posting, allLines)
   if (mismatch) return mismatch
   store.transaction(() => {
     for (const id of lineIds) store.attachStatementLine(id, voucher.id)
@@ -439,6 +462,12 @@ export function voidVoucher(
   const periodKey = voucher.voucherDate.slice(0, 7)
   if (store.lockedPeriods().includes(periodKey)) return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，凭证不能再作废。`)
   if (transferKinds.includes(voucher.eventKind)) return refuse('TRANSFER_VOUCHER', '结账生成的结转凭证不能单独作废。')
+  if (voucher.eventKind === REVERSAL_KIND) {
+    const original = store.voucherReference(voucher.voucherNo, 'correction.reverses')
+    const correction = original ? store.voucherLinkedTo('correction.of', original) : undefined
+    if (correction)
+      return refuse('CORRECTION_ACTIVE', `还有有效更正凭证 ${correction}。要撤回本次更正，请先作废尚未结账的更正凭证，再作废冲销凭证。`, { correctionVoucherNo: correction })
+  }
   const reason = input.reason.trim()
   if (reason.length < VOID_REASON_MIN_LENGTH || reason.length > VOID_REASON_MAX_LENGTH)
     return refuse('REASON_REQUIRED', `作废要写清原因，${VOID_REASON_MIN_LENGTH} 到 ${VOID_REASON_MAX_LENGTH} 个字。`)

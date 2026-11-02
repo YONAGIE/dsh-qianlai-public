@@ -111,6 +111,15 @@ const MIGRATIONS: readonly string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  // Native host call receipts commit atomically with the corresponding ledger operation.
+  `
+  CREATE TABLE tool_receipt (
+    request_key TEXT PRIMARY KEY,
+    operation TEXT NOT NULL,
+    args_hash TEXT NOT NULL,
+    result_json TEXT NOT NULL
+  );
+  `,
 ]
 
 export interface Company {
@@ -241,6 +250,24 @@ export class BookStore {
     }
   }
 
+  /** Compare on this same connection, including local and other-connection writes. */
+  approvalRevision(): string {
+    const external = this.db.prepare('PRAGMA data_version').get() as { data_version: number }
+    const local = this.db.prepare('SELECT CAST(total_changes() AS TEXT) AS changes').get() as { changes: string }
+    return `${external.data_version}:${local.changes}`
+  }
+
+  toolReceipt(requestKey: string): { operation: string; argsHash: string; result: unknown } | undefined {
+    const row = this.db.prepare('SELECT operation, args_hash, result_json FROM tool_receipt WHERE request_key = ?').get(requestKey) as
+      { operation: string; args_hash: string; result_json: string } | undefined
+    return row ? { operation: row.operation, argsHash: row.args_hash, result: JSON.parse(row.result_json) as unknown } : undefined
+  }
+
+  saveToolReceipt(requestKey: string, operation: string, argsHash: string, result: unknown): void {
+    this.db.prepare('INSERT INTO tool_receipt (request_key, operation, args_hash, result_json) VALUES (?, ?, ?, ?)')
+      .run(requestKey, operation, argsHash, JSON.stringify(result))
+  }
+
   createCompany(company: Company): void {
     this.db
       .prepare('INSERT INTO company (id, name, tax_id, accounting_start_month, is_sample) VALUES (1, ?, ?, ?, ?)')
@@ -250,6 +277,7 @@ export class BookStore {
   /** 清空整本账，换一家企业重新开。只在把样本账换成老板自己的账时用。 */
   clearBook(): void {
     for (const table of [
+      'tool_receipt',
       'work_event',
       'opening_balance',
       'statement_line',
@@ -385,6 +413,13 @@ export class BookStore {
       .prepare(`SELECT voucher_no FROM voucher WHERE voided_at IS NULL AND json_extract(facts_json, '$."' || ? || '"') = ?`)
       .get(key, voucherNo) as { voucher_no: string } | undefined
     return row?.voucher_no
+  }
+
+  /** 凭证内部保存的更正关系，调用方另行检查该凭证的有效状态。 */
+  voucherReference(voucherNo: string, key: 'correction.reverses' | 'correction.of'): string | undefined {
+    const row = this.db.prepare(`SELECT json_extract(facts_json, '$."' || ? || '"') AS ref FROM voucher WHERE voucher_no = ?`)
+      .get(key, voucherNo) as { ref: unknown } | undefined
+    return typeof row?.ref === 'string' ? row.ref : undefined
   }
 
   addEvidence(voucherId: number, role: string): void {
@@ -606,7 +641,7 @@ export class BookStore {
   }
 
   /** 流水行，可按导入批次或日期范围筛。 */
-  statementLines(filter: { importId?: number; from?: string; to?: string; ids?: readonly number[] }): StatementLine[] {
+  statementLines(filter: { importId?: number; from?: string; to?: string; ids?: readonly number[]; voucherNo?: string }): StatementLine[] {
     const where: string[] = []
     const params: (string | number)[] = []
     if (filter.importId !== undefined) {
@@ -624,6 +659,10 @@ export class BookStore {
     if (filter.ids !== undefined) {
       where.push(`s.id IN (${filter.ids.map(() => '?').join(', ') || 'NULL'})`)
       params.push(...filter.ids)
+    }
+    if (filter.voucherNo !== undefined) {
+      where.push('v.voucher_no = ?')
+      params.push(filter.voucherNo)
     }
     const stmt = this.db.prepare(
       `SELECT s.id, i.account_ref, s.row_number, s.occurred_on, s.signed_cents, s.counterparty, s.description, v.voucher_no

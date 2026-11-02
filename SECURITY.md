@@ -2,12 +2,14 @@
 
 ## 当前范围 / Scope
 
-本仓库处于建仓阶段，尚无插件源码、安装包或发布版本。
-受理本仓库公开内容相关的安全报告；没有已验证的产品版本支持矩阵。
+本仓库已包含 DSH 插件源码、财税核心复制快照及本地构建/验证脚本。
+受理本仓库源码和构建产物相关的安全报告；尚未建立经验证的产品版本安全支持矩阵，
+本地工程测试不代表生产安全认证。
 
-This repository contains community materials only. No plugin source, packages or
-releases are provided. Reports concerning this repository are welcome; no
-runtime security validation or product-version support matrix is claimed.
+This repository includes DSH plugin source, a copied financial-core snapshot,
+and local build/validation scripts. Reports concerning its source and build
+artifacts are welcome. No validated product-version security support matrix or
+production security certification is claimed from local engineering tests.
 
 ## 私密报告 / Report privately
 

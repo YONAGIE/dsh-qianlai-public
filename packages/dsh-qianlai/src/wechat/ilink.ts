@@ -14,6 +14,8 @@ const QR_POLL_TIMEOUT_MS = 5_000
 const MIN_CYCLE_MS = 1_000
 const MESSAGE_TYPE_USER = 1
 const ITEM_TYPE_TEXT = 1
+const MAX_MEDIA_BYTES = 20 * 1024 * 1024
+const mediaTooLarge = () => Object.assign(new Error('微信媒体超过20 MB，请压缩或拆分后再发。'), { code: 'MEDIA_TOO_LARGE' })
 
 export interface IlinkMedia {
   readonly full_url?: string
@@ -174,16 +176,16 @@ export class IlinkConnection {
         if (failed(d)) throw new Error(`getupdates ret=${d.ret} errcode=${d.errcode} ${d.errmsg ?? ''}`)
         const msgs = d.msgs ?? []
         for (const m of msgs) {
+          if (!this.polling) break
           if (m.message_type !== MESSAGE_TYPE_USER) continue
-          try {
-            await this.handler(m)
-          } catch (error) {
-            this.hooks.onError?.(`handler: ${error instanceof Error ? error.message : String(error)}`, 0)
-          }
+          // A failed message leaves the entire batch unacknowledged. The channel
+          // uses message identity to skip successfully admitted replays.
+          await this.handler(m)
         }
+        if (!this.polling) break
         if (d.get_updates_buf) {
+          this.hooks.onCursor?.(d.get_updates_buf)
           this.cursor = d.get_updates_buf
-          this.hooks.onCursor?.(this.cursor)
         }
         errors = 0
         const elapsed = Date.now() - start
@@ -195,6 +197,7 @@ export class IlinkConnection {
         if (error instanceof Error && error.name === 'AbortError') continue
         errors += 1
         this.hooks.onError?.(error instanceof Error ? error.message : String(error), errors)
+        if (!this.polling) break
         await this.sleep(Math.min(3000 * 2 ** (errors - 1), 60_000))
       }
     }
@@ -272,12 +275,40 @@ export class IlinkConnection {
  */
 export async function downloadMedia(media: IlinkMedia, declaredLength?: number): Promise<Buffer> {
   if (!media.full_url || !media.aes_key) throw new Error('media has no url or key')
+  if (declaredLength !== undefined && declaredLength > MAX_MEDIA_BYTES) throw mediaTooLarge()
   const r = await fetch(media.full_url, { signal: AbortSignal.timeout(30_000) })
-  if (!r.ok) throw new Error(`media download HTTP ${r.status}`)
-  const cipher = Buffer.from(await r.arrayBuffer())
+  if (!r.ok) {
+    await r.body?.cancel().catch(() => undefined)
+    throw new Error(`media download HTTP ${r.status}`)
+  }
+  // AES-ECB with PKCS#7 adds at most one 16-byte block. Neither a missing
+  // Content-Length nor an understated one may bypass the actual byte budget.
+  const cipherLimit = MAX_MEDIA_BYTES + 16
+  if (Number(r.headers.get('content-length')) > cipherLimit) {
+    await r.body?.cancel().catch(() => undefined)
+    throw mediaTooLarge()
+  }
+  const reader = r.body?.getReader()
+  if (!reader) throw new Error('media download has no body')
+  const chunks: Buffer[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > cipherLimit) throw mediaTooLarge()
+      chunks.push(Buffer.from(value))
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined)
+    throw error
+  } finally { reader.releaseLock() }
+  const cipher = Buffer.concat(chunks, total)
   const key = Buffer.from(Buffer.from(media.aes_key, 'base64').toString('latin1'), 'hex')
   const decipher = createDecipheriv('aes-128-ecb', key, null)
   const plain = Buffer.concat([decipher.update(cipher), decipher.final()])
+  if (plain.length > MAX_MEDIA_BYTES) throw mediaTooLarge()
   return declaredLength && declaredLength > 0 && declaredLength <= plain.length ? plain.subarray(0, declaredLength) : plain
 }
 

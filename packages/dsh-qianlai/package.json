@@ -70,8 +70,7 @@
     "@moneycome/fintax-core": "workspace:*",
     "@napi-rs/canvas": "^1.1.0",
     "pdfjs-dist": "^6.4.299",
-    "qrcode": "1.5.4",
-    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+    "qrcode": "1.5.4"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh": ">=0.2.1-0 <0.3.0-0"
@@ -82,6 +81,7 @@
     }
   },
   "devDependencies": {
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "@types/node": "^22.10.0",
     "@types/qrcode": "1.5.5",
     "pdf-lib": "^1.17.1",

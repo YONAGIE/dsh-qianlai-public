@@ -14,7 +14,8 @@
     "test": "pnpm -r run test",
     "lint": "eslint . --max-warnings 0",
     "typecheck": "pnpm -r run typecheck",
-    "pack:all": "node scripts/pack-all.mjs"
+    "pack:all": "pnpm build && pnpm --filter \"./packages/*\" -r pack --pack-destination dist",
+    "test:packages": "node scripts/check-package-install.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.20.0",

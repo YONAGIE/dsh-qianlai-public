@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Align contribution and security scope with the source packages and local build environment now present, while preserving private reporting and copied-core maintenance rules.
+
+- Bound WeChat media reception to 20 MB across declared sizes, headers, streamed ciphertext and decrypted bytes; cancel oversized transfers and request compression/splitting instead of reporting a network failure. The existing 8 MB document parsing limit is unchanged.
+
+- Reject unsafe numeric-to-string parameter conversion and out-of-range invoice adapter amounts before Number conversion; retain original long strings and exact supported amounts instead of returning rounded values.
+
+- Clarify month/year intent before querying, including in clarification questions; do not treat the assistant's suggested year as user confirmation. Add live-model regression with explicit non-sample years and known-year controls.
+
+- Add explicit synthetic approval modes to the live-model runner, direct Node/DSH CLI selection for Windows, and Unicode-safe session-log reads; test answerers are not loaded in production.
+
+- Apply declared parameter types to every caller-owned JSON dictionary key and require actual own fields for required properties.
+
+- Require DSH-native approval for critical ledger writes, reject stale/cancelled approvals, and return persistent per-call receipts instead of executing the same accepted call twice.
+
+- Retain unacknowledged WeChat reply fragments in the private channel state, retry with stable client identities, and resume pending sends after restart without rerunning business operations.
+
+- Keep failed WeChat batches unacknowledged, persist recent admitted identities, and reuse DSH request deduplication for message retries and restarts.
+
+- Publish review exports as unique, completed snapshots; failed writes leave no partial export and repeated exports never overwrite earlier deliveries.
+
+- Bundle the existing official SheetJS CE build and license in compiled uploads; remove its exotic URL runtime subdependency so pnpm 12 can install archives with default protection.
+- Restore local build-and-pack delivery using pnpm's native recursive pack command; write both workspace archives to the root dist directory without publishing.
+- Prevent voiding a reversal while its correction remains active; allow rollback in the opposite order when both periods are open.
+- Reserve correction relationship facts for the dedicated reversal/correction workflow instead of accepting them from ordinary business facts.
+- Validate declared tool argument enums recursively before execution, including WeChat action selection.
+- Require a valid active reversal before correction and reject correction periods earlier than the reversal, including previews.
+- Allow balance, profit, statement and review-pack reads for confirmed opening balances and closed zero-activity periods without inventing later periods.
+- Require confirmed opening balances and an ended accounting month in China time before locking a period; expose both blockers in closing checks and review exports.
+- Honor public unreadable amount fields before parsing; never persist uncertain monetary candidates as verified invoice facts or use missing invoice amounts for posting.
+- Validate the cumulative statement amount attached to a voucher; make identical link retries idempotent and reject empty evidence links.
+- Reject caller-supplied invoice/settlement evidence roles when previewing or posting; preserve automatic evidence from checked invoice and statement links.
+- Exercise attachment path-escape protection on ordinary Windows accounts using a directory junction test fixture.
 - Add an authenticated, on-demand WeChat QR panel with live status, expiration and refresh, plus a scoped login tool.
 - Read XLS/XLSX worksheets and paginated PDF text/page images directly from received attachments; preserve validation and posting confirmation.
 - Persist local-book business progress, material references and explicitly unverified continuation notes across sessions and restarts.
