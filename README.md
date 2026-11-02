@@ -37,6 +37,8 @@ Opening a book, replacing opening balances, posting, voiding, reversing and clos
 
 List paid live scenarios with `node packages/dsh-qianlai/e2e/run.mjs --list`; supply only your `DEEPSEEK_API_KEY` environment variable for live runs. On Windows, `DSH_ENTRY` selects the installed DSH `lib/bin.js` using the current Node (override it with `DSH_BIN`), and `ZSTD_BIN` can select zstd; stdin log decoding supports Unicode paths. Explicit `E2E_APPROVAL_MODE=allow` with `native-approval-flow`, or `reject` with `native-approval-rejection`, loads a synthetic answerer only in a fresh test home. Other financial scenarios can use those explicit modes too. Without a mode, normal host approval may wait for interaction. Choose a fresh `E2E_OUT`; existing scenario data is refused. Test answerers are absent from production configuration and do not replace real-user acceptance.
 
+Run `node packages/dsh-qianlai/e2e/run.mjs wechat-qr-` for dedicated QR-capability regression: real DSH/model, explicitly isolated synthetic iLink, ordinary QR requests, obsolete-capability claims and already-connected controls. `E2E_REPEAT=3` repeats each scenario; `E2E_PORT=0` allocates free ports. Use a fresh `E2E_OUT`. This does not rewrite old conversations or verify real-account scanning.
+
 After building, `node packages/dsh-qianlai/e2e/check-wechat-approval.mjs` uses `DEEPSEEK_API_KEY`, `DSH_ENTRY` and a separate temporary home to exercise preview, native approval, owner nonce, one posting and reply with real DSH/model and synthetic iLink only. It does not load an automatic approval answerer or use a real WeChat account, and cleans its home. Real scanning and server delivery still require separate acceptance.
 
 ## Tests and contribution

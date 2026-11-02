@@ -56,6 +56,8 @@ Windows 示例路径：`D:\work\dsh-qianlai\packages\dsh-qianlai`。使用独立
 
 真模型回归先用 `node packages/dsh-qianlai/e2e/run.mjs --list` 查看场景。模型密钥只通过 `DEEPSEEK_API_KEY` 环境变量提供。Windows 可设 `DSH_ENTRY` 为已安装 DSH 的 `lib/bin.js` 绝对路径，驱动会使用当前 Node；如需选择 Node 可设 `DSH_BIN`。`ZSTD_BIN` 可指定 zstd 可执行程序，日志通过 stdin 解压以兼容中文路径。
 
+微信二维码能力回归运行 `node packages/dsh-qianlai/e2e/run.mjs wechat-qr-`；仍使用真实 DSH/模型，但 iLink 是明确隔离的合成网络，不申请真实微信账号。覆盖普通二维码请求、引用旧能力说明后的再次请求及已连接控制。可设 `E2E_REPEAT=3` 重复，`E2E_PORT=0` 由系统分配空闲端口；每次选择新的 `E2E_OUT`。它不改写旧聊天，也不代替真人扫码验收。
+
 无人值守合成测试须显式设 `E2E_APPROVAL_MODE=allow` 后运行 `native-approval-flow`，或设为 `reject` 后运行 `native-approval-rejection`。驱动只在全新测试数据目录加载临时应答器，记录真实宿主批准结果；该应答器不在生产配置中，也不代替真人微信或桌面批准验收。其他含财务写入的自动场景也可显式选择批准模式；不设时沿用宿主交互，可能等待应答。每次使用新的 `E2E_OUT`，禁止复用已含数据的场景 home。测试会产生模型费用。
 
 微信原生确认的真模型检查：构建后设置 `DEEPSEEK_API_KEY`、`DSH_ENTRY` 和独立临时目录，再执行 `node packages/dsh-qianlai/e2e/check-wechat-approval.mjs`。它运行真实 DSH 和模型，仅将 iLink 替换为合成网络，依次验证预演、原生批准请求、老板随机码、一次正式入账和回复；不加载自动批准应答器，不使用真实微信账号，完成后清理自有测试 home。真人扫码与服务器实际送达仍需单独验收。
