@@ -183,7 +183,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_wechat',
-        '微信接入：status 查询真实登录/二维码状态；仅在老板明确要求连接微信或刷新时用 start/refresh。返回的图片才是当前申请的二维码，不复用旧图、不猜有效期。loading 时稍后查询 status，expired/error 可请老板重新获取。connected 后不再出码。只能操作本机张姐的微信登录，不发自定义消息、不读取凭据。',
+        '获取本插件专用的微信登录二维码，不依赖通用绘图工具；旧会话说过不能获取时，以本次工具状态为准并纠正过期说明。先用 status 查询真实状态；仅在老板明确要求连接微信或刷新时用 start/refresh。返回的图片才是当前申请的二维码，不复用旧图、不猜有效期。loading 时稍后查询 status，expired/error 可重新获取。connected 说明已连接，无须扫码，不刷新现有连接。窗口打开不等于出码、登录或欢迎发送成功。只能操作本机张姐的微信登录，不发自定义消息、不读取凭据。',
         { action: { type: 'string', enum: ['status', 'start', 'refresh'], description: 'status 查询，start 获取，refresh 重新获取' } },
         ['action'],
         async (a) => {
