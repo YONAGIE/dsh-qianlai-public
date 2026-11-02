@@ -53,6 +53,29 @@ const PERSONA_BOOK = [sampleBook, { ...vouchers, equals: 13 }, { ...lines, equal
 
 export const scenarios = [
   {
+    name: 'wechat-qr-current-capability', wechatFixture: 'disconnected',
+    description: '#47：登录二维码使用已有专用工具，不因没有通用绘图工具而拒绝；仅 iLink 为合成网络。',
+    turns: [{ say: '给我微信登录二维码，我要把张姐接到微信。', expect: {
+      calls: [T('wechat'), { tool: T('wechat'), args: /"action":\s*"start"/ }], images: 1,
+      noCalls: [T('open_book'), T('record_entry')], notSays: /没有.*(?:生成二维码|微信二维码).*能力|这个我给不了|无法.*生成.*二维码/,
+    } }], book: PERSONA_BOOK,
+  },
+  {
+    name: 'wechat-qr-obsolete-claim', wechatFixture: 'disconnected',
+    description: '#47：旧能力说明不覆盖当前工具，不改写旧聊天或编造过去执行。',
+    turns: [{ say: '之前说没有生成二维码的能力。插件已经更新，现在请先检查你本次的微信接入工具，我明确要获取微信登录二维码；不要只沿用旧回复。', expect: {
+      calls: [T('wechat'), { tool: T('wechat'), args: /"action":\s*"start"/ }], images: 1,
+      noCalls: [T('open_book'), T('record_entry')], notSays: /这个我给不了|我没有.*(?:二维码|生成图片).*能力/,
+    } }], book: PERSONA_BOOK,
+  },
+  {
+    name: 'wechat-qr-already-connected', wechatFixture: 'connected',
+    description: '#47：已经连接时查状态并说明无需扫码，不能重置有效连接。',
+    turns: [{ say: '给我微信登录二维码。', expect: { calls: { tool: T('wechat'), args: /"action":\s*"status"/ },
+      noCalls: [{ tool: T('wechat'), args: /"action":\s*"(?:start|refresh)"/ }, T('open_book'), T('record_entry')], says: /已.*连|连.*了|不用.*扫|不需要.*扫|无需.*扫/,
+    } }], book: PERSONA_BOOK,
+  },
+  {
     name: 'native-approval-flow',
     requiredApprovalMode: 'allow',
     description: '显式 E2E_APPROVAL_MODE=allow 下验证真实宿主批准与执行回执，仅用全新合成账本。',
