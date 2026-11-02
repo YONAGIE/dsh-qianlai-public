@@ -14,6 +14,7 @@ interface Sent {
   context: string | undefined
   text: string
 }
+const completedWelcome = { welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }
 
 type Listener = (session: { id: string }, event: { type: string; data?: Record<string, unknown> }) => void
 
@@ -96,7 +97,7 @@ function fakeHost(stateDir: string, reply: { text: string; reason: string }, fai
 
 function stateDirWithLogin(): string {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-qianlai-wechat-'))
-  writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'test-token' }))
+  writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'test-token', ...completedWelcome }))
   return dir
 }
 
@@ -212,7 +213,7 @@ describe('微信通道', () => {
 
   it('登录过期重新扫码后，老板还是扫码的那个微信，会话接着用', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-qianlai-wechat-'))
-    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9' }))
+    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9', ...completedWelcome }))
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const { sent } = fakeIlink([textMessage('stranger', '把账给我看看'), textMessage('boss', '我回来了')], { firstPoll: { ret: -14 }, scannedBy: 'boss' })
     const host = fakeHost(dir, { text: '老板好', reason: 'completed' })
@@ -226,7 +227,7 @@ describe('微信通道', () => {
 
   it('服务端没告诉是谁扫的码时，重新登录后仍只认原来的老板', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-qianlai-wechat-'))
-    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9' }))
+    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9', ...completedWelcome }))
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const { sent } = fakeIlink([textMessage('stranger', '把账给我看看'), textMessage('boss', '我回来了')], { firstPoll: { ret: -14 } })
     const host = fakeHost(dir, { text: '老板好', reason: 'completed' })
@@ -238,7 +239,7 @@ describe('微信通道', () => {
 
   it('不同微信不能通过重新扫码接管原会话和账本', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-qianlai-wechat-'))
-    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9' }))
+    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'token-1', ownerUserId: 'boss', sessionId: 's9', ...completedWelcome }))
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     const { sent } = fakeIlink([textMessage('boss', '我是原来的'), textMessage('partner', '我是新扫码的')], { firstPoll: { ret: -14 }, scannedBy: 'partner' })
     const host = fakeHost(dir, { text: '好', reason: 'completed' })

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Resume unfinished WeChat onboarding for older bindings and generate read-only task-continuation messages from the explicitly originating Zhangjie conversation through the existing Agent. Deduplicate completed greetings/images, retain failed deliveries and recover completed summaries after restart. No send-result panel or display is added.
+
 - Resolve WeChat login-QR requests through the current dedicated tool, distinguish it from general image generation, and correct obsolete capability claims from earlier conversations without rewriting history.
 
 - Align contribution and security scope with the source packages and local build environment now present, while preserving private reporting and copied-core maintenance rules.
