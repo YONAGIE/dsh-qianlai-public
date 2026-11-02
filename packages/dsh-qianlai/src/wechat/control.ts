@@ -7,7 +7,17 @@ export interface LoginView {
   requestedAt?: string
   message?: string
 }
-export interface LoginControl { run(action: LoginAction): Promise<LoginView> }
+export interface LoginControl { run(action: LoginAction, sourceSessionId?: string): Promise<LoginView> }
+
+// Only plugin-originated introduction turns are read-only, not owner messages.
+const introductions = new Set<string>()
+export function setIntroductionSession(sessionId: string, active: boolean): void {
+  if (active) introductions.add(sessionId)
+  else introductions.delete(sessionId)
+}
+export function isIntroductionSession(sessionId: string | undefined): boolean {
+  return sessionId !== undefined && introductions.has(sessionId)
+}
 
 // One controller per owning Host/state directory. No credentials cross this boundary.
 const controls = new Map<string, LoginControl>()
@@ -39,10 +49,12 @@ export function registerLoginRpc(connection: RpcConnection, control: LoginContro
       const reply = (result: unknown) => Response.json({ type: 'server-response', rpcId: envelope.rpcId, result }, { headers: { 'Cache-Control': 'no-store' } })
       const payload = envelope.payload
       const action = (payload as { action?: unknown } | null)?.action
-      if (!['status', 'start', 'refresh'].includes(String(action)) || !payload || Object.keys(payload).some(key => key !== 'action'))
+      const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId
+      if (!['status', 'start', 'refresh'].includes(String(action)) || !payload || Object.keys(payload).some(key => !['action', 'sessionId'].includes(key))
+          || (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[\w-]{1,128}$/.test(sessionId))))
         return reply({ ok: false, error: { code: 'invalid-argument', message: '无效的微信操作。', details: {} } })
       if (request.signal.aborted) return reply({ ok: false, error: { code: 'cancelled', message: '请求已取消。', details: {} } })
-      return reply({ ok: true, value: await control.run(action as LoginAction) })
+      return reply({ ok: true, value: await control.run(action as LoginAction, sessionId as string | undefined) })
     },
   })
 }

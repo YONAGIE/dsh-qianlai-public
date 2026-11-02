@@ -27,7 +27,7 @@ import { importStatement, readUpload, renameBankAccount, unrecordedStatementLine
 import { BookStore } from './store.js'
 import { saveWorkNote, workProgress, WORK_OPERATIONS } from './work-progress.js'
 import type { UploadOptions, UploadResult } from './uploads.js'
-import { loginControl, type LoginAction } from './wechat/control.js'
+import { isIntroductionSession, loginControl, type LoginAction } from './wechat/control.js'
 
 /**
  * DSH 插件入口。
@@ -112,7 +112,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       description: string,
       properties: Record<string, object>,
       required: readonly string[],
-      run: (args: Record<string, unknown>, signal?: AbortSignal) => unknown,
+      run: (args: Record<string, unknown>, signal?: AbortSignal, execution?: Execution) => unknown,
       asynchronous = false,
     ) => {
       const parameters = { type: 'object', properties, required }
@@ -127,7 +127,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           try {
             if (disposed) return refuse('TOOL_CANCELLED', '插件已停止，没有改动账本。')
             if (exec?.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
-            if (asynchronous) return await run(args, exec?.signal)
+            if (isIntroductionSession(exec?.agent?.session.id) && (WORK_OPERATIONS.has(name) || name === 'moneycome_save_work_note' || (name === 'moneycome_wechat' && args.action !== 'status')))
+              return refuse('INTRODUCTION_READ_ONLY', '本轮只整理微信接入后的业务摘要，不执行或批准账务操作。请等老板明确提出后再办理。')
+            if (asynchronous) return await run(args, exec?.signal, exec)
             const critical = CRITICAL_WRITES.has(name) && !(name === 'moneycome_record_entry' && args.preview === true)
             let receiptKey: string | undefined
             let argsHash = ''
@@ -186,10 +188,10 @@ export function apply(ctx: Context, config: Config = {}): void {
         '获取本插件专用的微信登录二维码，不依赖通用绘图工具；旧会话说过不能获取时，以本次工具状态为准并纠正过期说明。先用 status 查询真实状态；仅在老板明确要求连接微信或刷新时用 start/refresh。返回的图片才是当前申请的二维码，不复用旧图、不猜有效期。loading 时稍后查询 status，expired/error 可重新获取。connected 说明已连接，无须扫码，不刷新现有连接。窗口打开不等于出码、登录或欢迎发送成功。只能操作本机张姐的微信登录，不发自定义消息、不读取凭据。',
         { action: { type: 'string', enum: ['status', 'start', 'refresh'], description: 'status 查询，start 获取，refresh 重新获取' } },
         ['action'],
-        async (a) => {
+        async (a, _signal, execution) => {
           const control = loginControl(join(dshHome(), 'moneycome'))
           if (!control) return refuse('WECHAT_UNAVAILABLE', '微信接入服务尚未加载，请重新加载本插件后重试。')
-          const { qrDataUrl, ...result } = await control.run(a.action as LoginAction)
+          const { qrDataUrl, ...result } = await control.run(a.action as LoginAction, execution?.agent?.session.id)
           const attachments = ctx.get?.('attachments') as { saveImage(input: { data: Uint8Array; mediaType: string; name: string }): Promise<unknown> } | undefined
           const imageAttachments = qrDataUrl && attachments ? [await attachments.saveImage({ data: Buffer.from(qrDataUrl.split(',')[1]!, 'base64'), mediaType: 'image/png', name: '当前微信登录二维码' })] : []
           return { accepted: true, ...result, imageAttachments, ...(qrDataUrl && !attachments ? { message: '请点击会话头部“连接微信”查看当前二维码。' } : {}) }

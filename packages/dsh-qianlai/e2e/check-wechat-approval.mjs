@@ -26,7 +26,7 @@ try {
   openBook(store, { companyName: '合成微信批准企业', accountingStartMonth: '2026-01' })
   setOpeningBalances(store, loadPack(), [], new Date())
 } finally { store.close() }
-writeFileSync(join(stateDir, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-test-token', ownerUserId: 'synthetic-owner' }))
+writeFileSync(join(stateDir, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-test-token', ownerUserId: 'synthetic-owner', welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }))
 writeFileSync(marker, '{}')
 writeFileSync(preload, `
 import { renameSync, writeFileSync } from 'node:fs'

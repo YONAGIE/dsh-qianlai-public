@@ -22,7 +22,7 @@ async function until(condition: () => boolean, attempts = 100) {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'qianlai-outbox-'))
   roots.push(root)
-  writeFileSync(join(root, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session' }))
+  writeFileSync(join(root, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session', welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }))
   return root
 }
 function host(root: string) {
