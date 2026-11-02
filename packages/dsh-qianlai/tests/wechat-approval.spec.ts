@@ -23,7 +23,7 @@ async function until(condition: () => boolean) {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'qianlai-wechat-approval-'))
   roots.push(root)
-  writeFileSync(join(root, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session' }))
+  writeFileSync(join(root, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session', welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }))
   // A generic UI broker may wait indefinitely even with no browser attached.
   // The channel must claim its own session before that broker, and delegate others.
   const answers: Answer[] = [async (question, next) => question.agent.session.id !== 'synthetic-session' ? next()

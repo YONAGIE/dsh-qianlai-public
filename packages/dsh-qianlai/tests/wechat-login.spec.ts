@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -35,6 +35,31 @@ function hanging(signal?: AbortSignal | null) {
 }
 
 describe('微信登录与首次欢迎', () => {
+  it('升级前已绑定但从未登记欢迎的旧状态也发送一次欢迎和三张素材', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qianlai-legacy-welcome-'))
+    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-old-token', ownerUserId: 'synthetic-owner', contextToken: 'synthetic-context' }))
+    const sent: number[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = String(url)
+      if (path.endsWith('/getupdates')) return hanging(init?.signal)
+      if (path.endsWith('/getuploadurl')) return json({ upload_full_url: 'https://novac2c.cdn.weixin.qq.com/synthetic-upload' })
+      if (path.endsWith('/synthetic-upload')) return new Response('', { headers: { 'x-encrypted-param': 'synthetic-image' } })
+      if (path.endsWith('/sendmessage')) {
+        const body = JSON.parse(String(init?.body)) as { msg: { item_list: { type: number }[] } }
+        sent.push(body.msg.item_list[0]!.type)
+        return json({ ret: 0 })
+      }
+      throw Error('unexpected request')
+    }))
+    const first = host(dir)
+    await vi.waitFor(() => expect(sent).toEqual([1, 2, 2, 2]), { timeout: 1500, interval: 10 })
+    expect(JSON.parse(readFileSync(join(dir, 'wechat.json'), 'utf8')).welcomePending).toBe(false)
+    first.stop()
+    host(dir)
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(sent).toHaveLength(4)
+  })
+
   it('按需申请真实新码，过期不展示旧码，刷新无需重启', async () => {
     let count = 0
     let expired = false
@@ -152,5 +177,8 @@ describe('微信登录与首次欢迎', () => {
     expect(await (await route.fetch(request({ ...envelope, payload: { action: 'send', text: 'unexpected' } }))).json()).toMatchObject({ result: { ok: false } })
     expect(run).not.toHaveBeenCalled()
     expect(await (await route.fetch(request({ ...envelope, payload: { action: 'status' } }))).json()).toMatchObject({ result: { ok: true } })
+    expect(await (await route.fetch(request({ ...envelope, payload: { action: 'start', sessionId: 'synthetic-desktop' } }))).json()).toMatchObject({ result: { ok: true } })
+    expect(run).toHaveBeenLastCalledWith('start', 'synthetic-desktop')
+    expect(await (await route.fetch(request({ ...envelope, payload: { action: 'start', sessionId: '../other' } }))).json()).toMatchObject({ result: { ok: false } })
   })
 })
