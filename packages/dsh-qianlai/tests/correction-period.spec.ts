@@ -59,4 +59,37 @@ describe('更正不得先于冲销期间', () => {
     expect(voidVoucher(store, [], { voucherNo: 'PZ-202603-001', reason: '合成撤回冲销' }, now)).toMatchObject({ accepted: true })
     expect(recordEntry(store, pack, { ...entry, date: '2026-03-05', correctsVoucherNo: 'PZ-202601-001' }, now)).toMatchObject({ code: 'NOT_REVERSED' })
   })
+
+  it('更正时自动沿用原票，同样校验购销方向和金额，并保留原月的关联', () => {
+    const store = fixture()
+    const correction = { date: '2026-03-05', correctsVoucherNo: 'PZ-202601-001', summary: entry.summary, facts: entry.facts }
+    for (const preview of [true, false]) {
+      expect(recordEntry(store, pack, {
+        ...correction, preview, eventKind: 'sale_service', amounts: { invoice_total: '1300', invoice_net: '1287.13', invoice_tax: '12.87' },
+      }, now)).toMatchObject({ code: 'INVOICE_DIRECTION_MISMATCH' })
+      expect(recordEntry(store, pack, {
+        ...correction, preview, eventKind: 'office_supply', amounts: { invoice_total: '200' },
+      }, now)).toMatchObject({ code: 'INVOICE_AMOUNT_MISMATCH' })
+    }
+    expect(recordEntry(store, pack, { ...correction, eventKind: 'office_supply', amounts: entry.amounts }, now))
+      .toMatchObject({ voucherNo: 'PZ-202603-002', missingEvidence: [] })
+    expect(store.invoice(entry.invoiceNumber)?.voucherNo).toBe('PZ-202601-001')
+    expect(store.invoiceForVoucher(store.vouchers({ voucherNo: 'PZ-202603-002' })[0]!.id)?.invoiceNumber).toBe(entry.invoiceNumber)
+  })
+
+  it('更正采用新的有效票据时挂在更正凭证上，不能再拿去重复记账', () => {
+    const store = fixture()
+    const invoiceNumber = '00000000000000000002'
+    expect(checkInvoice(store, {
+      invoiceNumber, issueDate: '2026-03-05', buyerName: '合成客户', sellerName: '合成更正企业',
+      amountExclTax: '100.00', taxAmount: '1.00', totalInclTax: '101.00', taxRate: '1%',
+    }, now)).toMatchObject({ recordable: true })
+    const sale = { ...entry, invoiceNumber, date: '2026-03-05', eventKind: 'sale_service',
+      amounts: { invoice_total: '101', invoice_net: '100', invoice_tax: '1' } }
+    expect(recordEntry(store, pack, { ...sale, correctsVoucherNo: 'PZ-202601-001' }, now)).toMatchObject({ voucherNo: 'PZ-202603-002' })
+    expect(store.invoice(entry.invoiceNumber)?.voucherNo).toBe('PZ-202601-001')
+    expect(store.invoice(invoiceNumber)?.voucherNo).toBe('PZ-202603-002')
+    expect(store.invoiceForVoucher(store.vouchers({ voucherNo: 'PZ-202603-002' })[0]!.id)?.invoiceNumber).toBe(invoiceNumber)
+    expect(recordEntry(store, pack, sale, now)).toMatchObject({ code: 'INVOICE_ALREADY_RECORDED' })
+  })
 })
