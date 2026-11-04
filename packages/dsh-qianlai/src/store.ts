@@ -416,10 +416,26 @@ export class BookStore {
   }
 
   /** 凭证内部保存的更正关系，调用方另行检查该凭证的有效状态。 */
-  voucherReference(voucherNo: string, key: 'correction.reverses' | 'correction.of'): string | undefined {
+  voucherReference(voucherNo: string, key: 'correction.reverses' | 'correction.of' | 'correction.intent' | 'correction.replacementPeriod'): string | undefined {
     const row = this.db.prepare(`SELECT json_extract(facts_json, '$."' || ? || '"') AS ref FROM voucher WHERE voucher_no = ?`)
       .get(key, voucherNo) as { ref: unknown } | undefined
     return typeof row?.ref === 'string' ? row.ref : undefined
+  }
+
+  /** 只有明确约定在本月补记的有效冲销构成待办；作废的更正凭证不结清待办。 */
+  pendingCorrections(periodKey: string) {
+    return this.db.prepare(`
+      SELECT r.voucher_no AS reversalVoucherNo, json_extract(r.facts_json, '$."correction.reverses"') AS originalVoucherNo
+      FROM voucher r
+      WHERE r.event_kind = 'correction.reversal' AND r.voided_at IS NULL
+        AND json_extract(r.facts_json, '$."correction.intent"') = 'correct'
+        AND json_extract(r.facts_json, '$."correction.replacementPeriod"') = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM voucher v WHERE v.voided_at IS NULL AND v.period_key = ?
+            AND json_extract(v.facts_json, '$."correction.of"') = json_extract(r.facts_json, '$."correction.reverses"')
+        )
+      ORDER BY r.id
+    `).all(periodKey, periodKey) as { reversalVoucherNo: string; originalVoucherNo: string }[]
   }
 
   addEvidence(voucherId: number, role: string): void {

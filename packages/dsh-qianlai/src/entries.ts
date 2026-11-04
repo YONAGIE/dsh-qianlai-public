@@ -14,7 +14,7 @@ import {
 } from '@moneycome/fintax-core'
 
 import type { LoadedPack } from './pack.js'
-import { isCalendarDate, refuse, todayInChina, type Refusal } from './period.js'
+import { isCalendarDate, PERIOD_KEY, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore, InvoiceRecord, StatementLine } from './store.js'
 
 const EVENT_KIND = 'event.kind'
@@ -186,6 +186,11 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
     const reversal = reversalNo ? store.vouchers({ voucherNo: reversalNo })[0] : undefined
     if (!reversal || reversal.voided || reversal.eventKind !== REVERSAL_KIND)
       return refuse('NOT_REVERSED', `${original.voucherNo} 还没冲销。先用 moneycome_reverse_voucher 冲掉它，再记更正后的这一笔。`)
+    if (store.voucherReference(reversal.voucherNo, 'correction.intent') === 'cancel')
+      return refuse('REVERSAL_CANCEL_ONLY', `${reversal.voucherNo} 已按整笔撤销确认，无需重记。如果该决定有误，先核对原凭证和冲销月份。`)
+    const due = store.voucherReference(reversal.voucherNo, 'correction.replacementPeriod')
+    if (due && periodKey !== due)
+      return refuse('CORRECTION_PERIOD_MISMATCH', `${reversal.voucherNo} 已确认在 ${due} 补记，请核对更正所属月份。`)
     const reversalPeriod = reversal.voucherDate.slice(0, 7)
     if (periodKey < reversalPeriod)
       return refuse('CORRECTION_BEFORE_REVERSAL', `更正凭证不能记到冲销之前的月份。${reversal.voucherNo} 在 ${reversalPeriod}，更正要记在该月或以后尚未结账的月份。`, {
@@ -266,14 +271,14 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
 
 /**
  * 冲销一张已结账月份的凭证：在还没结账的月份里记一张逐行反向的凭证，金额相同、借贷对调。
- * 结了账的月份不动；冲销以后，再用 moneycome_record_entry 带 correctsVoucherNo 记对的那一笔。
+ * 结了账的月份不动。只在老板确认需要补记时记录其更正月份。
  * 结账生成的结转凭证不能冲，同一张凭证不能冲两次。
  */
 export function reverseVoucher(
   store: BookStore,
   pack: LoadedPack,
   transferKinds: readonly string[],
-  input: { voucherNo: string; date: string; reason: string },
+  input: { voucherNo: string; date: string; reason: string; intent?: string; replacementPeriod?: string },
   now: Date,
 ) {
   const company = store.company()
@@ -295,6 +300,15 @@ export function reverseVoucher(
   const periodKey = input.date.slice(0, 7)
   if (locked.includes(periodKey)) return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，冲销凭证要记在还没结账的月份。`)
   if (periodKey < originalPeriod) return refuse('DATE_BEFORE_ORIGINAL', '冲销凭证的日期不能早于原凭证。')
+  const { intent, replacementPeriod } = input
+  if (intent !== undefined && intent !== 'cancel' && intent !== 'correct')
+    return refuse('REVERSAL_INTENT_INVALID', '请确认原凭证是整笔撤销，还是需要补记。')
+  if (intent === 'correct') {
+    if (!replacementPeriod || !PERIOD_KEY.test(replacementPeriod) || replacementPeriod < periodKey || locked.includes(replacementPeriod))
+      return refuse('CORRECTION_PERIOD_INVALID', '需要补记时，请提供老板确认的更正月份（YYYY-MM），应为冲销当月或以后的未结月份。')
+  } else if (replacementPeriod !== undefined) {
+    return refuse('CORRECTION_PERIOD_INVALID', '只有明确需要补记时才填写更正月份。')
+  }
   const reason = input.reason.trim()
   if (reason.length < VOID_REASON_MIN_LENGTH || reason.length > VOID_REASON_MAX_LENGTH)
     return refuse('REASON_REQUIRED', `冲销要写清原因，${VOID_REASON_MIN_LENGTH} 到 ${VOID_REASON_MAX_LENGTH} 个字。`)
@@ -317,7 +331,11 @@ export function reverseVoucher(
       voucherDate: input.date,
       summary: `冲销 ${original.voucherNo}：${reason}`,
       eventKind: REVERSAL_KIND,
-      facts: { 'correction.reverses': original.voucherNo },
+      facts: {
+        'correction.reverses': original.voucherNo,
+        ...(intent ? { 'correction.intent': intent } : {}),
+        ...(replacementPeriod ? { 'correction.replacementPeriod': replacementPeriod } : {}),
+      },
       posting,
       requiredRoles: [],
       evidenceRoles: [],
@@ -329,7 +347,13 @@ export function reverseVoucher(
     voucherNo: saved.voucherNo,
     reverses: original.voucherNo,
     legs: legView(posting.legs),
-    next: `再用 moneycome_record_entry 带 correctsVoucherNo: "${original.voucherNo}" 记对的那一笔，日期也在 ${periodKey} 或以后没结账的月份。`,
+    ...(intent ? { intent } : {}),
+    ...(replacementPeriod ? { replacementPeriod } : {}),
+    next: intent === 'cancel'
+      ? '已按整笔撤销处理，无需重记。月末仍按正常流程核对流水和报表。'
+      : replacementPeriod
+        ? `已确认在 ${replacementPeriod} 补记。请用 moneycome_record_entry 带 correctsVoucherNo="${original.voucherNo}" 记更正凭证。`
+        : `请先确认原业务是否仍需入账。整笔误记撤销无需重记；需要更正时在未结月份使用 moneycome_record_entry，带 correctsVoucherNo="${original.voucherNo}"。`,
   }
 }
 
