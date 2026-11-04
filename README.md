@@ -47,6 +47,8 @@ After building, `node packages/dsh-qianlai/e2e/check-wechat-approval.mjs` uses `
 
 ## Tests and contribution
 
+The [business regression plan and results (Chinese)](docs/validation/business-regression.zh.md) include a runnable synthetic accounting flow, independent expected totals, channel scenarios and outstanding live acceptance.
+
 The [Q-008 reproduction kit](packages/dsh-qianlai/e2e/q008/README.md) includes fixed synthetic prompts, three frozen personas and selected visible replies. Offline validation needs no key. Paid live-model runs are explicit and use only the tester's DEEPSEEK_API_KEY environment variable. Never submit credentials, private conversations or real financial records.
 
 Follow [CONTRIBUTING](CONTRIBUTING.md), the [issue guide](docs/issue-reporting.md), and the existing PR template. Hosted CI is intentionally not enabled under the current maintenance rules; the historical workflow is archived as a non-workflow file. Historical checks and this import's local results are distinguished.
