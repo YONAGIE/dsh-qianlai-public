@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
+
 - Distinguish cancellation of an erroneous posting from a planned replacement. An explicitly scheduled correction blocks closing its designated month until the replacement is posted.
 
 - Validate purchase/sales invoice direction, check original evidence on corrections and reject all-zero postings. Match bank inflows and outflows separately before attaching statement rows.

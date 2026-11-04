@@ -118,7 +118,7 @@ const POSTING_MESSAGES: Record<string, string> = {
   LEDGER_AMOUNT_SOURCE_MISSING: '缺一个金额，见 details.amountSource。',
   LEDGER_AMOUNT_INVALID: '金额要写成不带逗号、最多两位小数的非负数，如 1280.00。',
   LEDGER_RECOGNITION_PERIOD_MISMATCH: '这类业务要在 facts 里写明所属月份（YYYY-MM），并且要和记账日期所在的月份一致。',
-  LEDGER_REFERENCED_BALANCE_REQUIRED: '这类业务要引用以前某一笔账的余额，体验版还不支持。',
+  LEDGER_REFERENCED_BALANCE_REQUIRED: '这类业务需要核对原事项的剩余余额，当前插件无法自动入账。请将原始凭证、对应月份的计算明细和剩余金额交会计复核。',
   LEDGER_UNKNOWN_SUBJECT: '会计包的记账规则引用了目录里没有的科目，这是会计包的问题，这一笔先不记。',
   LEDGER_UNBALANCED: '按会计包推出来的分录借贷不平，这是会计包的问题，这一笔先不记。',
 }
