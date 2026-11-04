@@ -368,11 +368,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_reverse_voucher',
-        '冲销一张已结账月份里记错的凭证：在还没结账的月份记一张逐行反向的冲销凭证，结了账的那个月不动。用于结账以后才发现记错了金额、科目或记法。先跟老板说清哪张错了、错在哪、冲销会记在哪个月（这个月的利润会跟着变），他同意后再调，reason 写清原因（4 到 200 个字）。冲销后再用 moneycome_record_entry 带 correctsVoucherNo 记对的那一笔，两步都做完才算改完。还没结账的月份记错了用 moneycome_void_voucher，不用这个。金额大、跨年度的差错先请会计看。',
+        '在未结月份逐行冲销已结月份的误记凭证。先向老板确认原凭证、原因、冲销日期及对本期利润的影响。整笔误记（如重复入账）确认无需重记时填 cancel；原业务仍成立时填 correct，并确认补记所属月份。用途或月份不清先问。仅撤销凭证不会退款或作废发票。涉及红字发票、已申报更正、跨年度或重大争议时先交会计复核。未结月份的误记使用 moneycome_void_voucher。',
         {
           voucherNo: str('要冲销的凭证号，如 PZ-202601-002'),
           date: str('冲销凭证的日期，YYYY-MM-DD，在还没结账的月份'),
           reason: str('为什么冲销，4 到 200 个字'),
+          intent: { type: 'string', enum: ['cancel', 'correct'], description: '经老板确认的用途：cancel 整笔误记撤销，correct 冲销后补记' },
+          replacementPeriod: str('仅 correct 必填，已确认更正凭证的所属月份 YYYY-MM'),
         },
         ['voucherNo', 'date', 'reason'],
         (a) =>
@@ -380,7 +382,9 @@ export function apply(ctx: Context, config: Config = {}): void {
             store,
             pack,
             balanceTransferItems(pack.payload).map((i) => i.itemId),
-            { voucherNo: String(a.voucherNo ?? ''), date: String(a.date ?? ''), reason: String(a.reason ?? '') },
+            { voucherNo: String(a.voucherNo ?? ''), date: String(a.date ?? ''), reason: String(a.reason ?? ''),
+              ...(typeof a.intent === 'string' ? { intent: a.intent } : {}),
+              ...(typeof a.replacementPeriod === 'string' ? { replacementPeriod: a.replacementPeriod } : {}) },
             new Date(),
           ),
       ),
@@ -503,7 +507,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_close_period',
-        '结账：结账检查全部通过才做，自动做损益结转、生成结转凭证，然后锁住这个月。只在老板明确说要结账时调用。结了账的月份不能再记账、作废、补凭据或导流水，也没有反结账；以后发现记错了，只能在没结账的月份冲销再更正（moneycome_reverse_voucher）。结账前要跟老板说清这一点。',
+        '结账检查全部通过后执行损益结转并锁月。只在老板明确要求结账时调用。先说明锁月后不能在该月记账、作废、补凭据或导流水，以后的账务差错需在未结月份冲销并按已确认的用途处理。',
         periodKey,
         ['periodKey'],
         (a) => closePeriod(store, pack, String(a.periodKey ?? ''), new Date()),

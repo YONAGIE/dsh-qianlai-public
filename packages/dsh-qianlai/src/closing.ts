@@ -6,7 +6,7 @@ import {
   type LedgerPosting,
 } from '@moneycome/fintax-core'
 
-import { packParameter } from './entries.js'
+import { packParameter, postingGuide } from './entries.js'
 import type { LoadedPack } from './pack.js'
 import { monthRange, PERIOD_KEY, previousPeriod, refuse, todayInChina } from './period.js'
 import { balanceTransferItems, readProfit } from './reports.js'
@@ -149,8 +149,15 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
           missing: b.missingRoles.map((r) => ROLE_NAMES[r] ?? r),
         }
       }
-      case 'closing_item_pending':
-        return { kind: b.kind, itemId: b.itemId, itemName: itemName(b.itemId) }
+      case 'closing_item_pending': {
+        const item = { kind: b.kind, itemId: b.itemId, itemName: itemName(b.itemId) }
+        const guide = postingGuide(pack.payload, b.itemId)
+        if (guide.accepted && guide.variants?.length && guide.variants.every(v => v.supported === false)) {
+          const reasons = [...new Set(guide.variants.map(v => v.reason))]
+          return { ...item, requiresManualReview: true, message: reasons.join(' ') }
+        }
+        return item
+      }
       case 'entity_fact_unknown':
         return { kind: b.kind, factKey: b.factKey, itemName: itemName(b.itemId) }
       case 'voucher_unbalanced':
@@ -174,6 +181,11 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
     checks.push(bankBalanceCheck(store, bankSubject, periodKey, complete))
   }
   const openingConfirmed = store.openingBalancesSetAt() !== undefined
+  const corrections = store.pendingCorrections(periodKey)
+  if (corrections.length) checks.push({
+    check: '已确认在本月补记的更正凭证已入账', passed: false,
+    blockers: corrections.map(row => ({ kind: 'correction_pending', ...row, replacementPeriod: periodKey })),
+  })
   const periodEnded = periodKey < todayInChina(now).slice(0, 7)
   checks.push(
     { check: '期初余额已经确认（含全零）', passed: openingConfirmed, blockers: openingConfirmed ? [] : [{ kind: 'opening_balances_unconfirmed' }] },
