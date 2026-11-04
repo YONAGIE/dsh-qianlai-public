@@ -162,6 +162,44 @@ describe('接下来要办的事', () => {
 })
 
 describe('季度申报准备单', () => {
+  it('同一税率的百分数和小数归到同一档，零税额保留为零', () => {
+    const store = januaryBook()
+    for (const [invoiceNumber, taxRate, taxAmount, totalInclTax, totalInWords] of [
+      ['26330000000087654322', '0.010', '200.00', '20200.00', '贰万零贰佰圆整'],
+      ['26330000000087654323', '0%', '0.00', '20000.00', '贰万圆整'],
+    ] as const) {
+      expect(checkInvoice(store, { ...SALE_INVOICE, invoiceNumber, taxRate, taxAmount, totalInclTax, totalInWords }, NOW)).toMatchObject({ recordable: true })
+    }
+    expect(quarterFilingPrep(store, pack, '2026-Q1', NOW)).toMatchObject({
+      outputInvoices: [
+        { taxRate: '1%', count: 2, amountExclTax: '40000.00', tax: '400.00' },
+        { taxRate: '0%', count: 1, amountExclTax: '20000.00', tax: '0.00' },
+      ],
+      invoicedAmountExclTax: '60000.00',
+    })
+  })
+
+  it('区分不确定金额和真零；已有票的不可读标记优先于候选数字', () => {
+    const store = januaryBook()
+    const invoiceNumber = '26330000000087654322'
+    const partial = { ...SALE_INVOICE, invoiceNumber, unreadable: ['amountExclTax', 'taxAmount', 'taxRate'] }
+    expect(checkInvoice(store, partial, NOW)).toMatchObject({ recordable: true })
+    expect(quarterFilingPrep(store, pack, '2026-Q1', NOW)).toMatchObject({
+      outputInvoices: [{ amountExclTax: '20000.00', tax: '200.00' }, { taxRate: '未读到税率', amountExclTax: null, tax: null }],
+      incompleteInvoices: [{ invoiceNumber, fields: ['amountExclTax', 'taxAmount', 'taxRate'] }],
+      invoicedAmountExclTax: null, revenueMinusInvoiced: null,
+    })
+    store.saveInvoice({
+      invoiceNumber, issueDate: partial.issueDate, direction: 'output', counterparty: null, totalCents: 2020000n,
+      facts: { ...partial, unreadable: ['taxAmountCents'] }, now: NOW,
+    })
+    expect(quarterFilingPrep(store, pack, '2026-Q1', NOW)).toMatchObject({
+      outputInvoices: [{ taxRate: '1%', count: 2, amountExclTax: '40000.00', tax: null }],
+      incompleteInvoices: [{ invoiceNumber, fields: ['taxAmount'] }],
+      invoicedAmountExclTax: '40000.00', revenueMinusInvoiced: '-20000.00',
+    })
+  })
+
   it('汇总销项发票与账上收入，只给数不算税', () => {
     const store = januaryBook()
     const prep = quarterFilingPrep(store, pack, '2026-Q1', new Date('2026-04-02T02:00:00Z'))

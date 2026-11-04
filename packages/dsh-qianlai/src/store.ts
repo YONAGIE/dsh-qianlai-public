@@ -571,6 +571,21 @@ export class BookStore {
     this.db.prepare('UPDATE invoice SET voucher_id = ? WHERE invoice_number = ?').run(voucherId, invoiceNumber)
   }
 
+  /** 更正凭证可沿用原票。沿真实更正关系找最近挂过的票，不改动已锁月的关联。 */
+  invoiceForVoucher(voucherId: number): InvoiceRecord | undefined {
+    const row = this.db.prepare(`
+      WITH RECURSIVE chain(id, parent_no) AS (
+        SELECT id, json_extract(facts_json, '$."correction.of"') FROM voucher WHERE id = ?
+        UNION ALL
+        SELECT v.id, json_extract(v.facts_json, '$."correction.of"') FROM voucher v
+          JOIN chain c ON v.voucher_no = c.parent_no AND v.id < c.id
+      )
+      SELECT i.invoice_number FROM chain c JOIN invoice i ON i.voucher_id = c.id
+      ORDER BY c.id DESC LIMIT 1
+    `).get(voucherId) as { invoice_number: string } | undefined
+    return row && this.invoice(row.invoice_number)
+  }
+
   /** 开票日期在某段时间里的发票，可按进项（input）、销项（output）筛。 */
   invoices(filter: { from: string; to: string; direction?: string }): InvoiceRecord[] {
     const rows = this.db

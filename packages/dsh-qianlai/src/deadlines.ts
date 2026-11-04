@@ -1,6 +1,7 @@
 import { formatCents, parseAmountToCents, type AccountingPackPayload } from '@moneycome/fintax-core'
 
 import { checkPeriod } from './balances.js'
+import { parseInvoiceTaxRate } from './invoices.js'
 import type { LoadedPack } from './pack.js'
 import { monthRange, refuse, todayInChina } from './period.js'
 import { balanceTransferItems } from './reports.js'
@@ -14,6 +15,21 @@ const VAT_QUARTERLY = 'vat.quarterly'
 const REVENUE_LINE = 'line.revenue'
 
 const QUARTER_KEY = /^(\d{4})-Q([1-4])$/
+
+const percent = new Intl.NumberFormat('en-US', { style: 'percent', maximumSignificantDigits: 15 })
+type InvoiceTotal = bigint | null
+const addReadAmounts = (a: InvoiceTotal, b: InvoiceTotal): InvoiceTotal => a === null || b === null ? null : a + b
+const displayAmount = (v: InvoiceTotal) => v === null ? null : formatCents(v)
+
+function invoiceFigure(facts: Readonly<Record<string, unknown>>, key: 'amountExclTax' | 'taxAmount' | 'taxRate') {
+  // Older stored invoices may retain candidate text alongside an unreadable marker.
+  const unreadable = facts.unreadable
+  if (Array.isArray(unreadable) && (unreadable.includes(key) || unreadable.includes(key + 'Cents'))) return undefined
+  const value = facts[key]
+  return typeof value === 'string' ? value : undefined
+}
+
+const invoiceCents = (value: string | undefined) => value === undefined ? null : parseAmountToCents(value.replace(/[¥￥,\s]/g, '')) ?? null
 
 /** 期间最后一个月，`YYYY-MM`。期间写法：月 `YYYY-MM`、季 `YYYY-Qn`、年 `YYYY`。 */
 function periodEndMonth(periodKey: string): string {
@@ -129,37 +145,48 @@ export function quarterFilingPrep(store: BookStore, pack: LoadedPack, quarter: s
   const match = QUARTER_KEY.exec(quarter)
   if (!match) return refuse('QUARTER_INVALID', `季度要写成 YYYY-Qn，如 2026-Q3，收到的是 ${quarter}。`)
   const firstMonth = `${match[1]}-${String((Number(match[2]) - 1) * 3 + 1).padStart(2, '0')}`
-  const months = [0, 1, 2].map((n) => addMonths(firstMonth, n))
-  const from = `${months[0]}-01`
-  const to = monthRange(months[2]!).to
   const today = todayInChina(now)
-  if (from > today) return refuse('PERIOD_FUTURE', `${quarter} 还没开始。`)
+  if (firstMonth > today.slice(0, 7)) return refuse('PERIOD_FUTURE', `${quarter} 还没开始。`)
+  const lastMonth = addMonths(firstMonth, 2)
+  const bookStart = company.accountingStartMonth
+  if (lastMonth < bookStart) return refuse('PERIOD_BEFORE_BOOK', `这本账从 ${bookStart} 开始记，没有 ${quarter} 的账。`)
+  const months = [0, 1, 2].map((n) => addMonths(firstMonth, n)).filter((month) => month >= bookStart)
+  const from = `${months[0]}-01`
+  const to = monthRange(lastMonth).to
 
   const revenueCodes = new Set(pack.payload.reportLines.filter((l) => l.lineId === REVENUE_LINE).flatMap((l) => l.subjectCodes))
   // 结账时的损益结转把收入转走了，不算进当月收入。
   const transfers = balanceTransferItems(pack.payload).map((i) => i.itemId)
   const monthly = months.map((month) => {
-    const inBook = month >= company.accountingStartMonth && checkPeriod(store, month)
+    const inBook = checkPeriod(store, month)
     const revenue =
-      inBook && !('accepted' in inBook)
+      !('accepted' in inBook)
         ? -store.movements(month, month, transfers).filter((m) => revenueCodes.has(m.subjectCode)).reduce((s, m) => s + m.netDebitCents, 0n)
         : 0n
     return { month, closed: store.lockedPeriods().includes(month), revenueOnBooks: revenue }
   })
 
-  const byRate = new Map<string, { count: number; net: bigint; tax: bigint }>()
+  const byRate = new Map<string, { count: number; net: InvoiceTotal; tax: InvoiceTotal }>()
   const notRecorded: string[] = []
-  const toCents = (v: unknown) => (typeof v === 'string' ? (parseAmountToCents(v.replace(/[¥￥,\s]/g, '')) ?? 0n) : 0n)
+  const incompleteInvoices: { invoiceNumber: string; fields: string[] }[] = []
   for (const invoice of store.invoices({ from, to, direction: 'output' })) {
-    const rate = typeof invoice.facts.taxRate === 'string' ? invoice.facts.taxRate : '未读到税率'
+    const net = invoiceCents(invoiceFigure(invoice.facts, 'amountExclTax'))
+    const tax = invoiceCents(invoiceFigure(invoice.facts, 'taxAmount'))
+    const parsedRate = parseInvoiceTaxRate(invoiceFigure(invoice.facts, 'taxRate') ?? '')
+    const rate = parsedRate === undefined ? '未读到税率' : percent.format(parsedRate)
+    const fields = []
+    if (net === null) fields.push('amountExclTax')
+    if (tax === null) fields.push('taxAmount')
+    if (parsedRate === undefined) fields.push('taxRate')
+    if (fields.length) incompleteInvoices.push({ invoiceNumber: invoice.invoiceNumber, fields })
     const group = byRate.get(rate) ?? { count: 0, net: 0n, tax: 0n }
     group.count += 1
-    group.net += toCents(invoice.facts.amountExclTax)
-    group.tax += toCents(invoice.facts.taxAmount)
+    group.net = addReadAmounts(group.net, net)
+    group.tax = addReadAmounts(group.tax, tax)
     byRate.set(rate, group)
     if (!invoice.voucherNo) notRecorded.push(invoice.invoiceNumber)
   }
-  const invoicedNet = [...byRate.values()].reduce((s, g) => s + g.net, 0n)
+  const invoicedNet = [...byRate.values()].reduce<InvoiceTotal>((sum, group) => addReadAmounts(sum, group.net), 0n)
   const revenueTotal = monthly.reduce((s, m) => s + m.revenueOnBooks, 0n)
   const deadline = pack.payload.deadlines.find((d) => d.deadlineId === VAT_QUARTERLY)
   const due = deadline ? (deadline.calendar?.find((c) => c.periodKey === quarter)?.dueDate ?? ruleDueDate(deadline, quarter)) : undefined
@@ -168,16 +195,20 @@ export function quarterFilingPrep(store: BookStore, pack: LoadedPack, quarter: s
     accepted: true as const,
     quarter,
     isSampleBook: company.isSample,
+    ...(firstMonth < bookStart ? { coverage: { from, to } } : {}),
     ...(due ? { dueDate: due } : {}),
     months: monthly.map((m) => ({ month: m.month, closed: m.closed, revenueOnBooks: formatCents(m.revenueOnBooks) })),
     revenueOnBooks: formatCents(revenueTotal),
-    outputInvoices: [...byRate].map(([rate, g]) => ({ taxRate: rate, count: g.count, amountExclTax: formatCents(g.net), tax: formatCents(g.tax) })),
-    invoicedAmountExclTax: formatCents(invoicedNet),
-    revenueMinusInvoiced: formatCents(revenueTotal - invoicedNet),
+    outputInvoices: [...byRate].map(([rate, g]) => ({ taxRate: rate, count: g.count, amountExclTax: displayAmount(g.net), tax: displayAmount(g.tax) })),
+    invoicedAmountExclTax: displayAmount(invoicedNet),
+    revenueMinusInvoiced: invoicedNet === null ? null : formatCents(revenueTotal - invoicedNet),
+    ...(incompleteInvoices.length ? { incompleteInvoices } : {}),
     ...(notRecorded.length ? { outputInvoicesNotRecorded: notRecorded } : {}),
     warnings: [
+      ...(firstMonth < bookStart ? [`本季度仅汇总 ${from} 至 ${to} 的账。建账前的收入和销项票需另行核对。`] : []),
       ...(monthly.some((m) => !m.closed) ? ['这个季度还有月份没结账，数字可能还会变。'] : []),
-      ...(revenueTotal !== invoicedNet ? ['账上收入和开出的发票金额不一致：可能有没开票的收入，或者有票还没记账，请会计核对。'] : []),
+      ...(incompleteInvoices.length ? ['部分销项发票金额或税率待核对，请按票号补核。相应金额无法汇总时留空。'] : []),
+      ...(invoicedNet !== null && revenueTotal !== invoicedNet ? ['账上收入和开出的发票金额不一致：可能有没开票的收入，或者有票还没记账，请会计核对。'] : []),
     ],
     reminder: '这张单子只汇总账上的数，不是申报表。免不免征、按什么征收率、附加税费多少、最后交多少，请会计按申报表算；张姐不代为申报。',
   }
