@@ -19,6 +19,13 @@ import type { BookStore, InvoiceRecord, StatementLine } from './store.js'
 
 const EVENT_KIND = 'event.kind'
 
+// 按企业在业务中的身份验票；没有明确购销方向的往来、结算等业务不在这里推断。
+const invoiceDirection: Readonly<Record<string, 'input' | 'output' | undefined>> = {
+  sale_service: 'output', sale_hardware: 'output',
+  purchase_goods: 'input', purchase_service: 'input', equipment_purchase: 'input',
+  office_supply: 'input', rent: 'input', travel: 'input', meal: 'input', utility: 'input',
+}
+
 /** 包里参数表的一项；没声明时为 undefined。 */
 export function packParameter(pack: AccountingPackPayload, parameterId: string): string | undefined {
   return pack.parameters.find((p) => p.parameterId === parameterId)?.value
@@ -29,6 +36,15 @@ function kindName(pack: AccountingPackPayload, eventKind: string): string | unde
     pack.evidenceRequirements.find((e) => e.eventKind === eventKind)?.eventKindName ??
     pack.closingItems.find((c) => c.itemId === eventKind)?.itemName
   )
+}
+
+/** 需要逐笔核实历史来源的规则，不能只靠本次输入的事实推分录。 */
+function unsupportedRuleReason(rule: ReturnType<typeof matchRule>): string | undefined {
+  if (isSkipRule(rule)) return undefined
+  if (rule.settlesPostedEvent)
+    return '当前账本无法逐笔核实原垫付凭证、垫付人、付款材料和未偿余额，暂不支持登记这笔还款。请将原垫付和还款凭据交会计核对。'
+  if (rule.referencedBalance) return POSTING_MESSAGES.LEDGER_REFERENCED_BALANCE_REQUIRED
+  return undefined
 }
 
 /**
@@ -56,12 +72,13 @@ export function postingGuide(pack: AccountingPackPayload, eventKind?: string) {
     const legs = isSkipRule(rule) ? [] : rule.legs
     for (const leg of legs) amounts.add(leg.amountSource)
     const recognition = isSkipRule(rule) ? undefined : rule.recognitionPeriodFactKey
+    const unsupported = unsupportedRuleReason(rule)
     return {
       when,
       amountSources: [...new Set(legs.map((l) => l.amountSource))],
       ...(recognition ? { periodFactKey: recognition } : {}),
       ...('treatment' in rule && rule.treatment ? { treatment: rule.treatment } : {}),
-      ...(!isSkipRule(rule) && rule.referencedBalance ? { supported: false } : {}),
+      ...(unsupported ? { supported: false, reason: unsupported } : {}),
     }
   })
   return {
@@ -147,16 +164,21 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
   let posting: LedgerPosting
   try {
     rule = matchRule(pack.payload, event)
-    if (!isSkipRule(rule) && rule.referencedBalance)
-      return refuse('NOT_SUPPORTED', POSTING_MESSAGES.LEDGER_REFERENCED_BALANCE_REQUIRED!, { ruleId: rule.ruleId })
+    const unsupported = unsupportedRuleReason(rule)
+    if (unsupported) return refuse('NOT_SUPPORTED', unsupported, { ruleId: rule.ruleId })
     posting = postParsedEvent(pack.payload, pack.packRef, event)
   } catch (error) {
     if (!(error instanceof LedgerPostingError)) throw error
     return refuse(error.code, POSTING_MESSAGES[error.code] ?? error.message, error.details)
   }
 
+  const legs = legView(posting.legs)
+  if (!legs.length)
+    return refuse('ZERO_POSTING', '这笔业务的所有分录金额都是零，不生成凭证。请核实金额。')
+
   const evidence = new Set(input.evidenceRoles ?? [])
   let corrected: string | undefined
+  let inheritedInvoice: InvoiceRecord | undefined
   if (input.correctsVoucherNo !== undefined) {
     const [original] = store.vouchers({ voucherNo: input.correctsVoucherNo })
     if (!original) return refuse('VOUCHER_NOT_FOUND', `没有凭证 ${input.correctsVoucherNo}。`)
@@ -171,16 +193,22 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
       })
     const existing = store.voucherLinkedTo('correction.of', original.voucherNo)
     if (existing) return refuse('ALREADY_CORRECTED', `${original.voucherNo} 已经有更正凭证 ${existing} 了。`)
-    // 原凭证上的凭据（发票、合同、回单）仍然有效，更正后的这一笔照样算有。
-    for (const role of original.evidenceRoles) evidence.add(role)
+    // 继承发票时仍须按更正后的业务和金额验票，其余凭据沿用。
+    for (const role of original.evidenceRoles) if (role !== 'invoice') evidence.add(role)
+    if (original.evidenceRoles.includes('invoice')) inheritedInvoice = store.invoiceForVoucher(original.id)
     corrected = original.voucherNo
   }
-  if (input.invoiceNumber !== undefined) {
-    const invoice = store.invoice(input.invoiceNumber)
-    if (!invoice)
-      return refuse('INVOICE_NOT_CHECKED', `发票 ${input.invoiceNumber} 还没核对过，先用 moneycome_check_invoice 核一遍。`)
-    if (invoice.voucherNo && invoice.voucherNo !== corrected)
-      return refuse('INVOICE_ALREADY_RECORDED', `发票 ${input.invoiceNumber} 已经记在 ${invoice.voucherNo} 里了，同一张票不能记两次。`)
+  const invoice = input.invoiceNumber === undefined ? inheritedInvoice : store.invoice(input.invoiceNumber)
+  if (input.invoiceNumber !== undefined && !invoice)
+    return refuse('INVOICE_NOT_CHECKED', `发票 ${input.invoiceNumber} 还没核对过，先用 moneycome_check_invoice 核一遍。`)
+  if (invoice) {
+    if (invoice.voucherNo && invoice.invoiceNumber !== inheritedInvoice?.invoiceNumber)
+      return refuse('INVOICE_ALREADY_RECORDED', `发票 ${invoice.invoiceNumber} 已经记在 ${invoice.voucherNo} 里了，同一张票不能记两次。`)
+    const expected = invoiceDirection[input.eventKind]
+    if (expected && invoice.direction !== expected)
+      return refuse('INVOICE_DIRECTION_MISMATCH', `发票 ${invoice.invoiceNumber} 的购销方向和这笔业务不符，需要本企业作为${expected === 'input' ? '买方的进项' : '卖方的销项'}发票。`, {
+        expected, actual: invoice.direction,
+      })
     const differs = invoiceAmountMismatch(invoice, input.amounts)
     if (differs) return differs
     evidence.add('invoice')
@@ -209,7 +237,7 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
     ruleRoles ?? pack.payload.evidenceRequirements.find((e) => e.eventKind === input.eventKind)?.requiredRoles ?? []
   const view = {
     periodKey,
-    legs: legView(posting.legs),
+    legs,
     ...('treatment' in rule && rule.treatment ? { treatment: rule.treatment } : {}),
     ...('requiresTask' in rule && rule.requiresTask ? { followUp: rule.requiresTask.title } : {}),
     missingEvidence: requiredRoles.filter((r) => !evidence.has(r)),
@@ -228,8 +256,8 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
       evidenceRoles: [...evidence],
       now,
     })
-    // 更正时发票仍挂在原凭证上：那张票在结账的月份里记过，记录不改。
-    if (input.invoiceNumber !== undefined && !corrected) store.attachInvoice(input.invoiceNumber, saved.id)
+    // 原票保留在历史凭证上；更正时新提供的替代票挂在本次凭证上。
+    if (invoice && !invoice.voucherNo) store.attachInvoice(invoice.invoiceNumber, saved.id)
     for (const id of lineIds) store.attachStatementLine(id, saved.id)
     return saved
   })
@@ -338,7 +366,7 @@ function otherPeriodLines(lines: readonly StatementLine[], periodKey: string): R
 }
 
 /**
- * 挂上流水的凭证，银行科目上的净额要等于这几行流水的合计。
+ * 银行科目的借方发生额、贷方发生额分别对应银行流水收入、支出，不能把相反方向的流水相抵。
  * 银行科目号来自会计包参数 `transaction.account.bank.subject`；包没声明就不比。
  */
 function statementMismatch(
@@ -348,18 +376,23 @@ function statementMismatch(
 ): Refusal | undefined {
   const bankSubject = packParameter(pack, 'transaction.account.bank.subject')
   if (!bankSubject) return undefined
-  const bankNet = posting.legs
-    .filter((l) => l.subjectCode === bankSubject)
-    .reduce((sum, l) => {
-      const [whole = '0', fraction = '00'] = l.amount.split('.')
-      const cents = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, '0'))
-      return sum + (l.direction === 'debit' ? cents : -cents)
-    }, 0n)
-  const statementNet = lines.reduce((sum, l) => sum + l.signedCents, 0n)
-  if (bankNet === statementNet) return undefined
-  return refuse('STATEMENT_AMOUNT_MISMATCH', '这笔账记到银行存款上的金额，和挂上的流水合计对不上。', {
-    bankAmount: formatCents(bankNet),
-    statementAmount: formatCents(statementNet),
+  let bankIn = 0n, bankOut = 0n
+  for (const leg of posting.legs) {
+    if (leg.subjectCode !== bankSubject) continue
+    const cents = parseAmountToCents(leg.amount)!
+    if (leg.direction === 'debit') bankIn += cents
+    else bankOut += cents
+  }
+  let statementIn = 0n, statementOut = 0n
+  for (const line of lines) {
+    if (line.signedCents > 0n) statementIn += line.signedCents
+    else statementOut -= line.signedCents
+  }
+  if ((bankIn > 0n || bankOut > 0n) && bankIn === statementIn && bankOut === statementOut) return undefined
+  return refuse('STATEMENT_AMOUNT_MISMATCH', '凭证的银行存款收、付发生额必须分别对上所选流水。请核实是否选错凭证或流水行。', {
+    bankAmount: formatCents(bankIn - bankOut), statementAmount: formatCents(statementIn - statementOut),
+    bankIn: formatCents(bankIn), bankOut: formatCents(bankOut),
+    statementIn: formatCents(statementIn), statementOut: formatCents(statementOut),
   })
 }
 
