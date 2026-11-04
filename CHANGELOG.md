@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate purchase/sales invoice direction, check original evidence on corrections and reject all-zero postings. Match bank inflows and outflows separately before attaching statement rows.
+- Block personal-advance repayments when the original advance, payer, payment evidence and remaining balance cannot be verified per transaction. The posting guide exposes this limitation. Recording an employee-paid expense remains available.
+- Quarterly filing preparation distinguishes unreadable amounts from zero, groups equivalent tax rates, and reports a partial quarter when the book starts mid-quarter.
+- Decode BOM-marked UTF-16LE/BE statement text and clarify which spreadsheet fixtures are valid or corrupted.
+
 - Resume unfinished WeChat onboarding for older bindings and generate read-only task-continuation messages from the explicitly originating Zhangjie conversation through the existing Agent. Deduplicate completed greetings/images, retain failed deliveries and recover completed summaries after restart. No send-result panel or display is added.
 
 - Resolve WeChat login-QR requests through the current dedicated tool, distinguish it from general image generation, and correct obsolete capability claims from earlier conversations without rewriting history.
