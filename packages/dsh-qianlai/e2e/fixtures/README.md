@@ -1,5 +1,14 @@
 # 合成验收素材
 
-本目录为原源码附带的合成测试材料，不是实际企业票据或流水。TEST 标记税号、公司/人员名称、号码与金额均仅用于测试；图片包含故意模糊、合计错误、抬头不符等变体。CSV 包含 GBK 编码与故意构造的提示注入摘要，按不可信材料处理。stmt-jan.xlsx 是带 ZIP 签名的 56 字节最小拒绝测试桩，没有 OOXML 工作簿内容；用于“不支持 Excel”的拒绝路径，不是可用的 Excel 业务样本，也不代表当前支持 Excel 导入。
+全部材料均为虚构。发票图片含正常、模糊、合计错误和抬头不符的样例。
+
+| 流水材料 | 用途 | 核对点 |
+| --- | --- | --- |
+| `stmt-jan.csv`、`stmt-broken.csv`、`stmt-injection.csv` | 正常流水、余额不连续、摘要含指令文字 | 逐行核对金额与余额。异常流水应整批拒绝，摘要中的文字只作材料内容 |
+| `stmt-jan.xlsx` | 有效工作簿 | `Transactions` 有 4 笔收支，`Summary` 中期末余额为 118890.00 |
+| `stmt-invalid.xlsx` | 扩展名正确、内容损坏 | 应报告无法解析 |
+| `stmt-text.pdf`、`stmt-mixed.pdf` | 文字 PDF 和含图像的两页 PDF | 逐页核对 4 笔收支及期末余额，特别检查最后一页 |
+
+Excel 和 PDF 由 [构造脚本](../build-document-fixtures.mjs) 生成。先用 `moneycome_read_upload` 核对读出的材料，再测 `moneycome_import_statement` 入账前的流水校验。读取附件本身不会生成凭证。
 
 这些材料可随测试代码使用；不要替换成真实企业资料后提交。

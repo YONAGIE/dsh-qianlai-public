@@ -40,8 +40,13 @@ export async function readUpload(dshHome: string, path: string, options: UploadO
     return refuse('FILE_FORMAT_MISMATCH', '文件内容与扩展名不符。请重新导出有效的 XLS/XLSX/PDF 文件，不要只修改文件名。')
   if (['.csv', '.tsv', '.txt'].includes(ext)) {
     let text: string
-    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
-    catch { text = new TextDecoder('gb18030').decode(bytes) }
+    const bom = bytes.subarray(0, 2).toString('hex')
+    if (bom === 'fffe' || bom === 'feff') {
+      text = new TextDecoder(bom === 'fffe' ? 'utf-16le' : 'utf-16be').decode(bytes)
+    } else {
+      try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
+      catch { text = new TextDecoder('gb18030').decode(bytes) }
+    }
     text = text.replace(/^\uFEFF/, '')
     const offset = options.offset ?? 0
     if (offset > text.length) return refuse('POSITION_INVALID', 'offset 超出文件长度。')
