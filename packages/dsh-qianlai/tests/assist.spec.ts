@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -228,6 +228,32 @@ describe('季度申报准备单', () => {
 })
 
 describe('复核包', () => {
+  it('固定资产和预付月末事项须交会计复核，工资仍提示正常办理', () => {
+    const store = januaryBook()
+    const dir = mkdtempSync(join(tmpdir(), 'qianlai-month-end-'))
+    try {
+      const before = store.vouchers({ periodKey: '2026-01' })
+      setCompanyFacts(store, pack, { 'entity.has_fixed_asset': 'yes', 'entity.has_prepaid': 'yes', 'entity.has_payroll': 'yes' })
+      const check = closingCheck(store, pack, '2026-01', NOW)
+      if (!('checks' in check)) throw Error('缺少结账检查')
+      const items = check.checks.flatMap(c => c.blockers).filter(b => 'itemId' in b)
+      for (const itemId of ['closing.depreciation', 'closing.prepaid_amortization']) {
+        expect(items).toContainEqual(expect.objectContaining({ itemId, requiresManualReview: true, message: expect.stringContaining('会计') }))
+      }
+      expect(items).toContainEqual({ kind: 'closing_item_pending', itemId: 'closing.payroll_accrual', itemName: expect.any(String) })
+      const result = exportReviewPack(store, pack, '2026-01', dir, NOW)
+      if (!result.accepted) throw Error(result.message)
+      const tasks = readFileSync(join(result.dir, '7-还没处理完的事.csv'), 'utf8')
+      expect(tasks).toMatch(/折旧[^\r\n]*会计/)
+      expect(tasks).toMatch(/摊销[^\r\n]*会计/)
+      expect(closePeriod(store, pack, '2026-01', NOW)).toMatchObject({ code: 'CLOSING_BLOCKED' })
+      expect(store.vouchers({ periodKey: '2026-01' })).toEqual(before)
+    } finally {
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('导出报表、凭证、余额、流水、发票、待处理事项，Excel 能直接打开', () => {
     const store = januaryBook()
     const root = mkdtempSync(join(tmpdir(), 'dsh-qianlai-export-'))

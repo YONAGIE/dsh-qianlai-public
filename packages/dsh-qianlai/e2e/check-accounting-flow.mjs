@@ -86,6 +86,12 @@ try {
     assert.ok(exported('3-凭证.csv').includes(voucherNo))
     assert.ok(exported('5-银行流水.csv').includes(voucherNo))
   }
+  const reverseFee = { voucherNo: charge.voucherNo, date: '2026-02-01', reason: '合成测试：手续费需重新归类', intent: 'correct' }
+  assert.equal((await call('reverse_voucher', reverseFee)).accepted, false)
+  await ok('reverse_voucher', { ...reverseFee, replacementPeriod: '2026-02' })
+  const february = await ok('closing_check', { periodKey: '2026-02' })
+  assert.ok(february.checks.flatMap(check => check.blockers).some(blocker =>
+    blocker.kind === 'correction_pending' && blocker.originalVoucherNo === charge.voucherNo))
   console.log(`PASS 2 business vouchers, profit 90.00, assets 1091.00, period locked, ${files.length} review files`)
 } finally {
   dispose?.()
