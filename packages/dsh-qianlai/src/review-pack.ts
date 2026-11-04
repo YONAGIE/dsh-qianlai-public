@@ -52,6 +52,8 @@ function blockerText(blocker: Record<string, unknown>): string {
       return `${pick('voucherNo', 'summary')} 缺 ${(blocker.missing as string[] | undefined)?.join('、') ?? ''}`
     case 'closing_item_pending':
       return `月末事项没做：${pick('itemName')}`
+    case 'correction_pending':
+      return `原凭证 ${pick('originalVoucherNo')} 已由 ${pick('reversalVoucherNo')} 冲销，约定在 ${pick('replacementPeriod')} 补记的更正凭证尚未入账`
     case 'entity_fact_unknown':
       return `公司情况没登记：${pick('itemName')}（${pick('factKey')}）`
     case 'voucher_unbalanced':

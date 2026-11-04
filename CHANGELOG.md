@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Distinguish cancellation of an erroneous posting from a planned replacement. An explicitly scheduled correction blocks closing its designated month until the replacement is posted.
+
 - Validate purchase/sales invoice direction, check original evidence on corrections and reject all-zero postings. Match bank inflows and outflows separately before attaching statement rows.
 - Block personal-advance repayments when the original advance, payer, payment evidence and remaining balance cannot be verified per transaction. The posting guide exposes this limitation. Recording an employee-paid expense remains available.
 - Quarterly filing preparation distinguishes unreadable amounts from zero, groups equivalent tax rates, and reports a partial quarter when the book starts mid-quarter.
