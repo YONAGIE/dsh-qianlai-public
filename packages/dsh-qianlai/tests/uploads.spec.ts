@@ -17,6 +17,19 @@ function fixture() {
 }
 
 describe('财务上传解析', () => {
+  it.each([
+    ['utf16le.tsv', Buffer.from('fffee5651f670900310032002e0033003400', 'hex')],
+    ['utf16be.txt', Buffer.from('feff65e5671f000900310032002e00330034', 'hex')],
+    ['utf8.csv', Buffer.from('日期\t12.34', 'utf8')],
+    ['gb18030.csv', Buffer.from('c8d5c6da0931322e3334', 'hex')],
+  ] as const)('%s 保留流水日期和金额，并按解码后的字符续读', async (name, bytes) => {
+    const { home, directory } = fixture()
+    const path = join(directory, name)
+    writeFileSync(path, bytes)
+    expect(await readUpload(home, path)).toMatchObject({ accepted: true, text: '日期\t12.34' })
+    expect(await readUpload(home, path, { offset: 3 })).toMatchObject({ accepted: true, text: '12.34' })
+  })
+
   it.each(['xlsx', 'xls'] as const)('%s 保留日期、金额显示值、原行号和全部工作表', async extension => {
     const { home, directory } = fixture()
     const book = XLSX.utils.book_new()

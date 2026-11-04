@@ -60,4 +60,39 @@ describe('流水关联总额与幂等', () => {
     expect(linkStatementLines(store, pack, { voucherNo: cash.voucherNo, statementLineIds: [] })).toMatchObject({ code: 'STATEMENT_LINES_REQUIRED' })
     expect(store.vouchers({ voucherNo: cash.voucherNo })[0]!.evidenceRoles).not.toContain('settlement')
   })
+
+  it('一进一出不能相抵后挂现金凭证，也不能混入金额本已匹配的银行凭证', () => {
+    const { store } = fixture()
+    const imported = importStatement(store, {
+      accountRef: '合成银行 尾号 5678', periodStart: '2026-01-01', periodEnd: '2026-01-31', printedOpeningBalance: '10.00',
+      rows: [
+        { rowNumber: 1, occurredAt: '2026-01-10', amount: '100.00', direction: '收入', balanceAfter: '110.00' },
+        { rowNumber: 2, occurredAt: '2026-01-11', amount: '100.00', direction: '支出', balanceAfter: '10.00' },
+        { rowNumber: 3, occurredAt: '2026-01-12', amount: '10.00', direction: '支出', balanceAfter: '0.00' },
+      ],
+    }, now)
+    if (!imported.accepted) throw Error('statement fixture failed')
+    const ids = imported.lines.map(line => line.lineId)
+    const cash = { date: '2026-01-10', summary: '合成现金采购', eventKind: 'office_supply', facts: { 'settlement.method': 'cash' }, amounts: { invoice_total: '101.00' } }
+    for (const preview of [true, false]) {
+      expect(recordEntry(store, pack, { ...cash, statementLineIds: ids.slice(0, 2), preview }, now)).toMatchObject({ code: 'STATEMENT_AMOUNT_MISMATCH' })
+    }
+    const voucher = recordEntry(store, pack, cash, now)
+    if (!voucher.accepted || !('voucherNo' in voucher)) throw Error('cash fixture failed')
+    expect(linkStatementLines(store, pack, { voucherNo: voucher.voucherNo, statementLineIds: ids.slice(0, 2) })).toMatchObject({
+      code: 'STATEMENT_AMOUNT_MISMATCH', details: { bankIn: '0.00', bankOut: '0.00', statementIn: '100.00', statementOut: '100.00' },
+    })
+    expect(linkStatementLines(store, pack, { voucherNo: 'PZ-202601-001', statementLineIds: ids })).toMatchObject({ code: 'STATEMENT_AMOUNT_MISMATCH' })
+    expect(store.statementLines({ ids }).map(line => line.voucherNo)).toEqual([null, null, null])
+  })
+
+  it.each(['record', 'link'])('同向两条 10 元付款可合计匹配一笔 20 元凭证（%s）', mode => {
+    const { store, ids } = fixture()
+    const input = { date: '2026-01-11', summary: '两次收取合成手续费', eventKind: 'bank_fee',
+      facts: { 'settlement.method': 'bank' }, amounts: { settlement: '20.00' } }
+    const voucher = recordEntry(store, pack, { ...input, ...(mode === 'record' ? { statementLineIds: ids } : {}) }, now)
+    if (!voucher.accepted || !('voucherNo' in voucher)) throw Error('voucher fixture failed')
+    if (mode === 'link') expect(linkStatementLines(store, pack, { voucherNo: voucher.voucherNo, statementLineIds: ids })).toMatchObject({ accepted: true })
+    expect(store.statementLines({ ids }).map(line => line.voucherNo)).toEqual([voucher.voucherNo, voucher.voucherNo])
+  })
 })

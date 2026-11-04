@@ -72,6 +72,8 @@ Windows 示例路径：`D:\work\dsh-qianlai\packages\dsh-qianlai`。使用独立
 
 ## 协作、许可和状态
 
+[主体业务回归计划与本轮结果](docs/validation/business-regression.zh.md)涵盖建账、记账、对账、结账、季度准备、跨年恢复与微信。主流程可用合成账本复跑并核对报表金额。
+
 - [问题反馈](https://github.com/qianlai-ai/dsh-qianlai/issues/new/choose)、[讨论](https://github.com/qianlai-ai/dsh-qianlai/discussions)、[贡献指南](CONTRIBUTING.md)、[九字段规范](docs/issue-reporting.md)。
 - [原五个 PR 的修复和验证记录](docs/history/legacy-prs.md)、[来源与隐私审查](docs/history/import-review.json)。历史验证与本次验证分别标注，不能将历史 CI 当作本库 CI。
 - 按当前维护规则，本次不启用远端 CI。原配置以非工作流文件归档，构建和运行检查在本地执行。

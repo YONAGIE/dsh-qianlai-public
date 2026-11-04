@@ -55,8 +55,9 @@ function cents(text: string): number | undefined {
   return value === undefined || !exactCents(value) ? undefined : Number(value)
 }
 
-function rate(text: string): number | undefined {
+export function parseInvoiceTaxRate(text: string): number | undefined {
   const trimmed = text.trim()
+  if (!trimmed.replace(/%$/, '').trim()) return undefined
   const value = trimmed.endsWith('%') ? Number(trimmed.slice(0, -1)) / 100 : Number(trimmed)
   // 税率在 0 到 1 之间；写成 13 这种没带百分号的，不替它猜。
   return Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined
@@ -74,7 +75,7 @@ function toFacts(reading: InvoiceReading): InvoiceExtractedFacts {
     taxAmountCents: parsedField(reading, 'taxAmountCents', reading.taxAmount, cents),
     totalInclTaxCents: parsedField(reading, 'totalInclTaxCents', reading.totalInclTax, cents),
     totalInWords: field(reading, 'totalInWords', reading.totalInWords),
-    taxRate: parsedField(reading, 'taxRate', reading.taxRate, rate),
+    taxRate: parsedField(reading, 'taxRate', reading.taxRate, parseInvoiceTaxRate),
     lineItems: field(reading, 'lineItems', reading.lineItems),
   }
 }
