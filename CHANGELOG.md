@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Record WeChat welcome send attempts, response codes and retry stages in the local channel log. The log records whether a conversation context is present and omits credentials and message contents.
+
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
 
 - Distinguish cancellation of an erroneous posting from a planned replacement. An explicitly scheduled correction blocks closing its designated month until the replacement is posted.

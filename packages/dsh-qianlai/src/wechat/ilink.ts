@@ -63,6 +63,57 @@ function headers(token = ''): Record<string, string> {
 /** sendmessage 成功时只回 `{message_id}`，没有 ret；所以只有带了非零码才算失败。 */
 const failed = (d: IlinkResponse) => (d.ret !== undefined && d.ret !== 0) || (d.errcode !== undefined && d.errcode !== 0)
 
+type SendOperation = 'sendmessage' | 'getuploadurl' | 'cdn-upload'
+type SendFailure = 'http' | 'api' | 'timeout' | 'aborted' | 'network' | 'invalid-response' | 'untrusted-destination'
+
+// Keep only protocol fields that can be logged without exposing credentials or message data.
+export class IlinkSendError extends Error {
+  constructor(operation: SendOperation, reason: SendFailure, httpStatus?: number, response?: IlinkResponse) {
+    const codes = (['ret', 'errcode'] as const).flatMap(key => {
+      const value = response?.[key]
+      return Number.isSafeInteger(value) ? [`${key}=${value}`] : []
+    })
+    super([`operation=${operation}`, `reason=${reason}`, ...(httpStatus === undefined ? [] : [`http=${httpStatus}`]), ...codes].join(' '))
+  }
+}
+
+function sendFailure(error: unknown): SendFailure {
+  if (error instanceof Error && error.name === 'TimeoutError') return 'timeout'
+  if (error instanceof Error && error.name === 'AbortError') return 'aborted'
+  if (error instanceof SyntaxError) return 'invalid-response'
+  return 'network'
+}
+
+async function sendRequest(operation: SendOperation, url: string | URL, init: RequestInit): Promise<Response> {
+  let response: Response
+  try {
+    response = await fetch(url, init)
+  } catch (error) {
+    throw new IlinkSendError(operation, sendFailure(error))
+  }
+  if (!response.ok) {
+    // iLink can return business codes alongside a failed HTTP status. CDN responses
+    // are not part of that JSON protocol.
+    const data = operation !== 'cdn-upload' && response.headers.get('content-type')?.includes('json')
+      ? await response.json().catch(() => undefined) as IlinkResponse | undefined
+      : undefined
+    throw new IlinkSendError(operation, 'http', response.status, data)
+  }
+  return response
+}
+
+async function sendResult<T extends IlinkResponse>(operation: SendOperation, response: Response): Promise<T> {
+  let data: T
+  try {
+    data = await response.json() as T
+  } catch (error) {
+    throw new IlinkSendError(operation, sendFailure(error), response.status)
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new IlinkSendError(operation, 'invalid-response', response.status)
+  if (failed(data)) throw new IlinkSendError(operation, 'api', response.status, data)
+  return data
+}
+
 /** 出码：不需要任何凭据，每调一次是一个全新的 bot。`imgUrl` 要自己画成二维码。 */
 export async function getBotQrcode(signal?: AbortSignal): Promise<{ qrcode: string; imgUrl: string }> {
   const r = await fetch(`${ILINK}/ilink/bot/get_bot_qrcode?bot_type=3`, { headers: headers(), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000) })
@@ -204,7 +255,7 @@ export class IlinkConnection {
   }
 
   async sendText(toUserId: string, contextToken: string | undefined, text: string, clientId = `mc-${randomUUID()}`): Promise<void> {
-    const r = await fetch(`${ILINK}/ilink/bot/sendmessage`, {
+    const r = await sendRequest('sendmessage', `${ILINK}/ilink/bot/sendmessage`, {
       method: 'POST',
       headers: headers(this.botToken),
       signal: AbortSignal.timeout(15_000),
@@ -221,9 +272,7 @@ export class IlinkConnection {
         base_info: { channel_version: CHANNEL_VERSION },
       }),
     })
-    if (!r.ok) throw new Error(`sendmessage HTTP ${r.status}`)
-    const d = (await r.json()) as IlinkResponse
-    if (failed(d)) throw new Error(`sendmessage ret=${d.ret} errcode=${d.errcode} ${d.errmsg ?? ''}`)
+    await sendResult('sendmessage', r)
   }
 
   /** Sends only a caller-selected bundled image; no remote URL or arbitrary file access. */
@@ -232,22 +281,23 @@ export class IlinkConnection {
     const cipher = createCipheriv('aes-128-ecb', key, null)
     const encrypted = Buffer.concat([cipher.update(bytes), cipher.final()])
     const filekey = randomBytes(16).toString('hex')
-    const response = await fetch(`${ILINK}/ilink/bot/getuploadurl`, {
+    const response = await sendRequest('getuploadurl', `${ILINK}/ilink/bot/getuploadurl`, {
       method: 'POST', headers: headers(this.botToken), signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ filekey, media_type: 1, to_user_id: toUserId, rawsize: bytes.length,
         rawfilemd5: createHash('md5').update(bytes).digest('hex'), filesize: encrypted.length,
         no_need_thumb: true, aeskey: key.toString('hex'), base_info: { channel_version: CHANNEL_VERSION } }),
     })
-    if (!response.ok) throw Error(`getuploadurl HTTP ${response.status}`)
-    const data = await response.json() as IlinkResponse & { upload_full_url?: string; upload_param?: string }
-    if (failed(data) || (!data.upload_full_url && !data.upload_param)) throw Error('getuploadurl failed')
-    const url = new URL(data.upload_full_url || `https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=${encodeURIComponent(data.upload_param!)}&filekey=${filekey}`)
+    const data = await sendResult<IlinkResponse & { upload_full_url?: string; upload_param?: string }>('getuploadurl', response)
+    if (!data.upload_full_url && !data.upload_param) throw new IlinkSendError('getuploadurl', 'invalid-response', response.status)
+    const uploadUrl = data.upload_full_url || `https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=${encodeURIComponent(data.upload_param!)}&filekey=${filekey}`
+    const url = URL.parse(uploadUrl)
+    if (!url) throw new IlinkSendError('getuploadurl', 'invalid-response', response.status)
     if (url.protocol !== 'https:' || !url.hostname.endsWith('.weixin.qq.com') || url.username || url.password)
-      throw Error('Untrusted WeChat upload destination')
-    const uploaded = await fetch(url, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(encrypted), signal: AbortSignal.timeout(30_000) })
+      throw new IlinkSendError('getuploadurl', 'untrusted-destination', response.status)
+    const uploaded = await sendRequest('cdn-upload', url, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(encrypted), signal: AbortSignal.timeout(30_000) })
     const parameter = uploaded.headers.get('x-encrypted-param')
-    if (uploaded.status !== 200 || !parameter) throw Error('WeChat image upload failed')
-    const sent = await fetch(`${ILINK}/ilink/bot/sendmessage`, {
+    if (uploaded.status !== 200 || !parameter) throw new IlinkSendError('cdn-upload', 'invalid-response', uploaded.status)
+    const sent = await sendRequest('sendmessage', `${ILINK}/ilink/bot/sendmessage`, {
       method: 'POST', headers: headers(this.botToken), signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ msg: { from_user_id: '', to_user_id: toUserId, client_id: clientId,
         message_type: 2, message_state: 2, ...(contextToken ? { context_token: contextToken } : {}),
@@ -255,7 +305,7 @@ export class IlinkConnection {
           aes_key: Buffer.from(key.toString('hex')).toString('base64'), encrypt_type: 1 }, mid_size: encrypted.length } }],
       }, base_info: { channel_version: CHANNEL_VERSION } }),
     })
-    if (!sent.ok || failed(await sent.json() as IlinkResponse)) throw Error('WeChat image message failed')
+    await sendResult('sendmessage', sent)
   }
 
   /** 「对方正在输入」，尽力而为，失败不影响回复。 */

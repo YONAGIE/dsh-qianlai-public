@@ -53,7 +53,7 @@ function network() {
     if (path.endsWith('/sendtyping')) return json({ ret: 0 })
     if (path.endsWith('/sendmessage')) {
       const body = JSON.parse(String(init?.body)) as { msg: { client_id: string; context_token?: string; item_list: { type: number; text_item?: { text: string } }[] } }
-      if (contextRequired && !body.msg.context_token) return json({ ret: -2, errmsg: 'synthetic context required' })
+      if (contextRequired && !body.msg.context_token) return json({ ret: -2, errcode: 42, errmsg: 'private-server-detail' })
       if (failSummary && body.msg.client_id.startsWith('mc-handoff-')) return new Response('', { status: 503 })
       const item = body.msg.item_list[0]!
       sent.push({ id: body.msg.client_id, type: item.type, ...(item.text_item ? { text: item.text_item.text } : {}) })
@@ -151,11 +151,20 @@ describe('微信欢迎与桌面任务主动续接', () => {
   it('服务端要求先有入站上下文时，旧绑定在首条消息后补齐未完成欢迎', async () => {
     const net = network(); net.requireContext()
     const dir = directory({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner' }), active = host(dir)
-    await vi.waitFor(() => expect(readState(dir).welcomePending).toBe(true))
+    const readLog = () => readFileSync(join(dir, 'wechat.log'), 'utf8')
+    const rejection = /welcome delivery incomplete welcome=([0-9a-f]{12}) attempt=1 trigger=saved-binding step=text hasContext=false operation=sendmessage reason=api http=200 ret=-2 errcode=42/
+    await vi.waitFor(() => expect(readLog()).toMatch(rejection))
+    const trace = readLog().match(rejection)![1]
+    expect(readState(dir).welcomePending).toBe(true)
     expect(net.sent).toHaveLength(0)
     net.hello()
     await vi.waitFor(() => expect(net.sent.filter(item => item.id.startsWith('mc-welcome-'))).toHaveLength(4))
     expect(readState(dir).welcomePending).toBe(false)
+    const log = readLog()
+    expect(log).toContain(`owner message welcome=${trace} hasIncomingContext=true hasContext=true`)
+    expect(log).toContain(`welcome accepted welcome=${trace} attempt=2 trigger=owner-message step=text hasContext=true`)
+    expect(log).toContain(`welcome complete welcome=${trace} attempt=2 trigger=owner-message`)
+    expect(log).not.toMatch(/synthetic-token|synthetic-owner|synthetic-context|private-server-detail/)
     active.stop()
   })
   it('摘要发送失败时保留回复，重启续发而不再调用模型', async () => {
