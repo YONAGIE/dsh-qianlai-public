@@ -33,7 +33,17 @@ export async function readUpload(dshHome: string, path: string, options: UploadO
   const ext = extname(real).toLowerCase()
   if (!['.csv', '.tsv', '.txt', '.xls', '.xlsx', '.pdf'].includes(ext))
     return refuse('FILE_TYPE_UNSUPPORTED', '支持 CSV、TSV、TXT、XLS、XLSX 和 PDF；图片可以直接上传查看。')
-  const bytes = readFileSync(real)
+  return parseUpload(readFileSync(real), ext, options, signal)
+}
+
+/** The caller has already authorized and bounded the referenced PDF bytes. */
+export function parseReferencedPdf(bytes: Uint8Array, page: number, signal?: AbortSignal): Promise<UploadResult> {
+  if (!Number.isSafeInteger(page) || page < 1)
+    return Promise.resolve(refuse('POSITION_INVALID', '页码必须是正整数。'))
+  return parseUpload(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength), '.pdf', { page }, signal)
+}
+
+async function parseUpload(bytes: Buffer, ext: string, options: UploadOptions, signal?: AbortSignal): Promise<UploadResult> {
   if ((ext === '.xlsx' && !bytes.subarray(0, 4).equals(Buffer.from('504b0304', 'hex'))) ||
       (ext === '.xls' && !bytes.subarray(0, 8).equals(Buffer.from('d0cf11e0a1b11ae1', 'hex'))) ||
       (ext === '.pdf' && !bytes.subarray(0, 1024).includes(Buffer.from('%PDF-'))))

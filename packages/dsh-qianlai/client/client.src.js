@@ -3,7 +3,7 @@
  * 张姐会话的界面插件（浏览器端）。
  *
  * 当前会话的模式是「钱来张姐」时：
- * - 会话头部加张姐头像；会话头部和新会话页提供微信连接及财务附件入口。
+ * - 会话头部加一个张姐头像和微信连接入口；新会话页也可以直接扫码接入。
  * - 通过 DSH 主题服务的 `overrideTokens` 叠一层钱来配色：DeepSeek 蓝色色阶换成钱来绿，侧栏换浅绿灰底。
  *   离开张姐会话、切回别的模式，这层配色撤掉，DSH 恢复原样；用户的明暗偏好不动。
  * 其他模式的会话什么都不渲染。
@@ -21,10 +21,8 @@ window.__ModuleLoader__.load({
 
     const PRESET = 'moneycome-zhangjie'
     const AVATAR = '__AVATAR_DATA_URL__'
-    const PDF_LIMIT = 8 * 1024 * 1024
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
     let connection
-    let financeUploads
 
     function WechatPanel({ sessionId }) {
       const titleId = useId()
@@ -73,197 +71,6 @@ window.__ModuleLoader__.load({
             jsx('button', { type: 'button', style: { ...buttonStyle, background: '#fff', color: '#24433a' }, onClick: () => setOpen(false), children: '关闭' }),
           ] }),
         ] }) : null,
-      ] })
-    }
-
-    function financeUploadSession(services, sessionId) {
-      if (!services || services.sessions.subagentAddress(sessionId)) return undefined
-      const { byId } = services.sessions.list.getSnapshot()
-      if (byId[sessionId]?.projectionValues?.agentPreset !== PRESET) return undefined
-      return services.sessions.binding(sessionId)?.session
-    }
-
-    function FinanceUploadPanel({ sessionId }) {
-      const titleId = useId()
-      const helpId = useId()
-      const inputId = useId()
-      const noteId = useId()
-      const dialog = useRef(null)
-      const picker = useRef(null)
-      const current = useRef(null)
-      const [open, setOpen] = useState(false)
-      const [file, setFile] = useState(null)
-      const [note, setNote] = useState('')
-      const [phase, setPhase] = useState('idle')
-      const [error, setError] = useState('')
-
-      useEffect(() => {
-        if (open) dialog.current?.showModal()
-      }, [open])
-      useEffect(() => () => {
-        current.current?.controller.abort()
-        current.current = null
-      }, [])
-
-      function close() {
-        if (current.current?.submitted) return
-        current.current?.controller.abort()
-        current.current = null
-        dialog.current?.close()
-        setOpen(false)
-        setFile(null)
-        setNote('')
-        setPhase('idle')
-        setError('')
-      }
-
-      function select(files) {
-        if (current.current || files.length === 0) return
-        const selected = files[0]
-        if (files.length !== 1 || !/\.pdf$/i.test(selected.name)) {
-          setFile(null)
-          setError('请选择一份 PDF 文件。')
-          return
-        }
-        if (selected.size === 0 || selected.size > PDF_LIMIT) {
-          setFile(null)
-          setError(selected.size === 0 ? '这份 PDF 是空文件，请重新选择。' : '这份 PDF 超过 8 MB，请拆分后再发送。')
-          return
-        }
-        setFile(selected)
-        setError('')
-      }
-
-      function claimDrop(event) {
-        event.preventDefault()
-        event.stopPropagation()
-      }
-
-      async function send() {
-        if (!file || current.current) return
-        const services = financeUploads
-        const session = financeUploadSession(services, sessionId)
-        if (!session) {
-          setError('当前张姐会话无法接收附件，请打开或新建一个张姐会话。')
-          return
-        }
-        const attempt = { controller: new AbortController(), submitted: false }
-        current.current = attempt
-        setPhase('uploading')
-        setError('')
-        try {
-          const header = await file.slice(0, 1024).text()
-          if (current.current !== attempt) return
-          if (!header.includes('%PDF-')) {
-            setError('文件内容不是有效的 PDF，请检查文件后再选择。')
-            return
-          }
-          const uploaded = await services.fileUpload.upload(sessionId, file, file.name, attempt.controller.signal)
-          if (current.current !== attempt) return
-          if (!uploaded.ok) {
-            setError('上传失败，请检查 DSH 连接并重试。')
-            return
-          }
-          if (services !== financeUploads || financeUploadSession(services, sessionId) !== session) {
-            setError('会话已变化，请在当前张姐会话中重新选择文件。')
-            return
-          }
-          attempt.submitted = true
-          setPhase('sending')
-          // A first prompt can unmount the new-session hero before admission returns.
-          // Once dispatched, let the host finish the explicitly requested send.
-          const result = await session.prompt([
-            { type: 'file', receiptId: uploaded.value.receiptId },
-            { type: 'text', text: note.trim() || '请读取并核对这份财务材料。' },
-          ], 'queue')
-          if (current.current !== attempt) return
-          if (!result.ok) {
-            setError('发送未确认，请先查看会话中是否已收到附件。')
-            return
-          }
-          dialog.current?.close()
-          setOpen(false)
-          setFile(null)
-          setNote('')
-        } catch {
-          if (current.current === attempt) {
-            setError(attempt.submitted ? '发送未确认，请先查看会话中是否已收到附件。' : '无法读取或上传 PDF，请检查文件和连接后重试。')
-          }
-        } finally {
-          if (current.current === attempt) {
-            current.current = null
-            setPhase('idle')
-          }
-        }
-      }
-
-      const busy = phase !== 'idle'
-      return jsx('span', { children: [
-        jsx('button', { type: 'button', style: buttonStyle, onClick: () => setOpen(true), children: '上传财务资料' }),
-        open ? jsx('dialog', {
-          ref: dialog,
-          'aria-labelledby': titleId,
-          'aria-describedby': helpId,
-          onCancel: event => { event.preventDefault(); close() },
-          onDragEnter: claimDrop,
-          onDragLeave: claimDrop,
-          onDragOver: claimDrop,
-          onDrop: claimDrop,
-          style: { boxSizing: 'border-box', border: '1px solid #c4eacf', borderRadius: 16, padding: 24, width: 'min(420px, calc(100vw - 48px))', color: '#24433a', background: '#fff' },
-          children: [
-            jsx('h2', { id: titleId, style: { margin: '0 0 12px', fontSize: 20 }, children: '上传财务资料' }),
-            jsx('p', { id: helpId, children: '每次发送一份 PDF，最大 8 MB。' }),
-            jsx('div', {
-              role: 'group',
-              'aria-label': 'PDF 拖放区',
-              onDragOver: event => {
-                claimDrop(event)
-                event.dataTransfer.dropEffect = busy ? 'none' : 'copy'
-              },
-              onDrop: event => {
-                claimDrop(event)
-                select(event.dataTransfer.files)
-              },
-              style: { border: '1px dashed #87bfa0', borderRadius: 8, padding: 12 },
-              children: [
-                jsx('p', { style: { marginTop: 0 }, children: '拖入 PDF 到这里，或选择文件。' }),
-                jsx('button', { type: 'button', style: buttonStyle, disabled: busy, 'aria-controls': inputId, onClick: () => picker.current?.click(), children: '选择 PDF' }),
-                jsx('input', {
-                  ref: picker,
-                  id: inputId,
-                  type: 'file',
-                  accept: '.pdf,application/pdf',
-                  'aria-label': '选择 PDF 文件',
-                  hidden: true,
-                  disabled: busy,
-                  onChange: event => {
-                    select(event.currentTarget.files)
-                    event.currentTarget.value = ''
-                  },
-                }),
-              ],
-            }),
-            jsx('label', {
-              htmlFor: noteId,
-              style: { display: 'block', marginTop: 12 },
-              children: '给张姐的说明（可选）',
-            }),
-            jsx('textarea', {
-              id: noteId,
-              value: note,
-              disabled: busy,
-              onChange: event => setNote(event.currentTarget.value),
-              rows: 2,
-              style: { width: '100%', boxSizing: 'border-box', font: 'inherit', resize: 'vertical' },
-            }),
-            jsx('p', { role: 'status', style: { overflowWrap: 'anywhere' }, children: phase === 'uploading' ? '正在上传…' : phase === 'sending' ? '正在发送…' : file ? `已选：${file.name}` : '' }),
-            error ? jsx('p', { role: 'alert', children: error }) : null,
-            jsx('div', { style: { display: 'flex', gap: 12 }, children: [
-              jsx('button', { type: 'button', style: buttonStyle, disabled: !file || busy, onClick: () => void send(), children: '发送给张姐' }),
-              jsx('button', { type: 'button', style: buttonStyle, disabled: phase === 'sending', onClick: close, children: phase === 'uploading' ? '取消上传' : '关闭' }),
-            ] }),
-          ],
-        }) : null,
       ] })
     }
 
@@ -331,21 +138,14 @@ window.__ModuleLoader__.load({
     function ZhangjieAvatar({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx(ZhangjieActions, { sessionId, showAvatar: true }) : null
+      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId })] }) : null
     }
 
+    /** 新会话页也提供微信入口。 */
     function ZhangjieTheme({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx(ZhangjieActions, { sessionId }) : null
-    }
-
-    function ZhangjieActions({ sessionId, showAvatar }) {
-      return jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [
-        showAvatar ? jsx(Avatar, {}) : null,
-        jsx(WechatPanel, { sessionId }),
-        jsx(FinanceUploadPanel, { sessionId }, sessionId),
-      ] })
+      return active ? jsx(WechatPanel, { sessionId }) : null
     }
 
     const inject = ['slots']
@@ -354,10 +154,6 @@ window.__ModuleLoader__.load({
       ctx.inject(['connection'], scope => {
         connection = scope.connection
         scope.effect(() => () => { connection = undefined }, 'dsh-qianlai: connection')
-      })
-      ctx.inject(['fileUpload', 'sessions'], scope => {
-        financeUploads = { fileUpload: scope.fileUpload, sessions: scope.sessions }
-        scope.effect(() => () => { financeUploads = undefined }, 'dsh-qianlai: finance upload')
       })
       ctx.inject(['theme'], (scope) => {
         theme = scope.theme

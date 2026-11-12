@@ -52,7 +52,7 @@ Full user documentation: [repository README](https://github.com/qianlai-ai/dsh-q
 
 | Entry | Layer | What it does |
 |---|---|---|
-| `preset-moneycome-zhangjie` | agent preset | The mode: a persona prefix plus this package's tools. No shell, file-system or web tools. |
+| `preset-moneycome-zhangjie` | agent preset | The mode: a persona prefix plus this package's tools. No shell, general-purpose file-system or web tools. |
 | `moneycome-ui` | host, `mode: ui` | Loads the browser half (`client/client.src.js`): avatar in the session header and a token override on `ctx.theme` while a Zhangjie session or the Zhangjie choice on the new-session page is shown. |
 | `moneycome-wechat` | host | `dsh-qianlai/wechat`, loaded by default with on-demand login; `MONEYCOME_WECHAT=1` enables automatic QR login. Long-polls Tencent iLink and forwards owner messages to a dedicated session through `sessionController`. |
 
@@ -67,12 +67,12 @@ The books are one SQLite file opened with `node:sqlite` in WAL mode. Amounts are
 <a id="model-experience"></a>
 ## Model Experience
 
-The Zhangjie preset includes a Chinese persona and 27 business tools. All tools are prefixed `moneycome_`:
+The Zhangjie preset includes a Chinese persona and 28 business tools. All tools are prefixed `moneycome_`:
 
 - Book: `book_status`, `open_book`, `set_opening_balances`, `set_company_facts`
 - Reading: `read_balances`, `read_profit`, `financial_statements`, `list_vouchers`, `unrecorded_statement_lines`, `posting_guide`
 - For the accountant and the tax calendar: `export_review_pack`, `upcoming`, `quarter_filing_prep`
-- Materials: `check_invoice`, `read_upload`, `import_statement`, `rename_bank_account`
+- Materials: `check_invoice`, `read_upload`, `read_referenced_pdf`, `import_statement`, `rename_bank_account`
 - Writing: `record_entry` (with `preview` and `correctsVoucherNo`), `link_statement`, `add_evidence`, `void_voucher`, `reverse_voucher`
 - Month end: `closing_check`, `close_period`
 - Continuation and WeChat: `work_progress`, `save_work_note`, `wechat`

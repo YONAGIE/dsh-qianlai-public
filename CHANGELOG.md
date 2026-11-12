@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add a Zhangjie PDF attachment dialog for picking or dropping a file and sending it through the existing DSH upload service.
+- Read the PDF referenced in the current Zhangjie turn from the DSH Desktop file picker or chat composer drop. DSH asks before reading a PDF outside the workspace.
 
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
 
