@@ -52,7 +52,7 @@ dsh --profile web
 
 | 条目 | 层 | 做什么 |
 |---|---|---|
-| `preset-moneycome-zhangjie` | agent 预设 | 模式本身：人设前缀加本包的工具。不带命令行、文件读写和联网工具。 |
+| `preset-moneycome-zhangjie` | agent 预设 | 模式本身：人设前缀加本包的工具。不带命令行、通用文件读写和联网工具。 |
 | `moneycome-ui` | 宿主层，`mode: ui` | 加载浏览器半边（`client/client.src.js`）：会话头部的头像；显示张姐会话、或新会话页选中张姐时，在 `ctx.theme` 上叠一层配色。 |
 | `moneycome-wechat` | 宿主层 | `dsh-qianlai/wechat`，默认加载但按需出码，`MONEYCOME_WECHAT=1` 时自动扫码。长轮询腾讯 iLink，把老板的消息经 `sessionController` 交给一个专用会话。 |
 
@@ -67,12 +67,12 @@ dsh --profile web
 <a id="model-experience"></a>
 ## 模型体验
 
-张姐预设包含中文人设和 27 个业务工具。工具名都以 `moneycome_` 开头：
+张姐预设包含中文人设和 28 个业务工具。工具名都以 `moneycome_` 开头：
 
 - 账本：`book_status`、`open_book`、`set_opening_balances`、`set_company_facts`
 - 查询：`read_balances`、`read_profit`、`financial_statements`、`list_vouchers`、`unrecorded_statement_lines`、`posting_guide`
 - 给会计和办税：`export_review_pack`、`upcoming`、`quarter_filing_prep`
-- 材料：`check_invoice`、`read_upload`、`import_statement`、`rename_bank_account`
+- 材料：`check_invoice`、`read_upload`、`read_referenced_pdf`、`import_statement`、`rename_bank_account`
 - 写账：`record_entry`（带 `preview` 试推、`correctsVoucherNo` 更正）、`link_statement`、`add_evidence`、`void_voucher`、`reverse_voucher`
 - 月末：`closing_check`、`close_period`
 - 续接与微信：`work_progress`、`save_work_note`、`wechat`
