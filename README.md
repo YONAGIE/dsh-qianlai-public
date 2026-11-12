@@ -25,6 +25,8 @@ node packages/dsh-qianlai/e2e/q008/run.mjs --validate
 
 After building, install the absolute path of `packages/dsh-qianlai` through the DSH desktop plugin page or `dsh plugin --profile web add /absolute/path/to/packages/dsh-qianlai`. Do not install the workspace root. Use an isolated DSH_HOME. Workspace dependency distribution/npm installation is a separate release milestone.
 
+In a Zhangjie conversation in DSH Desktop, choose a PDF with the chat composer's file picker or drop it directly into the composer, then send the message. Zhangjie can read one PDF up to 8 MB per turn. DSH asks for permission before reading a file outside the workspace.
+
 For local package inspection, `pnpm pack:all` builds both packages and uses pnpm's native recursive pack to write `moneycome-fintax-core-0.1.0.tgz` and `dsh-qianlai-0.1.0.tgz` to the root `dist/` directory. The plugin archive declares the matching core version; a local archive consumer must resolve it to the supplied core archive (for example using a package-manager override). This command does not publish either package or establish registry-install availability.
 
 Then run `pnpm test:packages` to install those archives in a fresh temporary consumer with the core override, keeping pnpm's default supply-chain protection. It checks tool loading, Chinese XLS/XLSX and CSV reads, the WeChat export, and bundled SheetJS/license byte identity. It may fetch registry metadata/dependencies, disables install lifecycle scripts, uses no model or real account, and cleans its consumer directory. SheetJS CE remains the existing official 0.20.3 build, bundled at compile time instead of an exotic runtime URL dependency.

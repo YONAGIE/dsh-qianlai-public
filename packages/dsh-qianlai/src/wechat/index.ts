@@ -585,7 +585,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       save()
       const requestId = typeof message.msg_id === 'string' && message.msg_id.trim()
         ? `mc-in-${createHash('sha256').update(JSON.stringify([from, message.msg_id])).digest('hex')}`
-        : randomUUID()
+        : `mc-in-${randomUUID()}`
       if (state.handledMessages?.includes(requestId)) return
       const admitted = () => {
         if (!message.msg_id) return

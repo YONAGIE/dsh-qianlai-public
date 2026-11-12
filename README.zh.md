@@ -40,6 +40,8 @@ dsh plugin --profile web add /absolute/path/to/dsh-qianlai/packages/dsh-qianlai
 
 Windows 示例路径：`D:\work\dsh-qianlai\packages\dsh-qianlai`。使用独立 `DSH_HOME`，避免测试影响日常数据与登录配置。当前源码使用 workspace 财税核心依赖，分发包的依赖发布与安装仍须单独验收；本次不提供未经核实的 npm 安装命令。
 
+在 DSH 桌面版的钱来张姐会话里，用输入框的「文件」选择一份 PDF，或直接拖到聊天框，再发送消息。每轮可读一份不超过 8 MB 的 PDF，工作区外的文件需在 DSH 确认本次读取。
+
 本地检查分发产物可运行 `pnpm pack:all`：先构建两包，再使用 pnpm 原生递归打包，在仓库根 `dist/` 生成 `moneycome-fintax-core-0.1.0.tgz` 和 `dsh-qianlai-0.1.0.tgz`。插件包依赖对应版本财税核心；本地使用这些归档时须将该依赖解析到配套核心归档（如使用包管理器 override）。此命令不发布 npm，也不代表注册表安装已可用。
 
 随后运行 `pnpm test:packages`，会在新临时消费者中安装归档并配置核心 override，保留 pnpm 默认供应链保护，核对工具加载、中文 XLS/XLSX 与 CSV 读取、微信导出入口，以及附带 SheetJS/许可证的字节一致性。测试可能获取公开依赖和元数据，关闭安装生命周期脚本，不使用真实模型或账号，完成后清理消费者目录。SheetJS CE 沿用官方 0.20.3，改为构建时附带，避免 URL 运行时子依赖阻断安装。

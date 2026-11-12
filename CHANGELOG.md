@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read the PDF referenced in the current Zhangjie turn from the DSH Desktop file picker or chat composer drop. DSH asks before reading a PDF outside the workspace.
+
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
 
 - Distinguish cancellation of an erroneous posting from a planned replacement. An explicitly scheduled correction blocks closing its designated month until the replacement is posted.
