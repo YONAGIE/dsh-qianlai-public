@@ -38,6 +38,8 @@ node packages/dsh-qianlai/e2e/q008/run.mjs --validate
 dsh plugin --profile web add /absolute/path/to/dsh-qianlai/packages/dsh-qianlai
 ```
 
+在桌面版选中「钱来张姐」后，点「上传财务资料」，用系统文件选择器或拖入面板上传一份不超过 8 MB 的 PDF。填写说明（可选），再点「发送给张姐」。
+
 Windows 示例路径：`D:\work\dsh-qianlai\packages\dsh-qianlai`。使用独立 `DSH_HOME`，避免测试影响日常数据与登录配置。当前源码使用 workspace 财税核心依赖，分发包的依赖发布与安装仍须单独验收；本次不提供未经核实的 npm 安装命令。
 
 本地检查分发产物可运行 `pnpm pack:all`：先构建两包，再使用 pnpm 原生递归打包，在仓库根 `dist/` 生成 `moneycome-fintax-core-0.1.0.tgz` 和 `dsh-qianlai-0.1.0.tgz`。插件包依赖对应版本财税核心；本地使用这些归档时须将该依赖解析到配套核心归档（如使用包管理器 override）。此命令不发布 npm，也不代表注册表安装已可用。

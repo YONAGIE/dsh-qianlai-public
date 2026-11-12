@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add a Zhangjie PDF attachment dialog for picking or dropping a file and sending it through the existing DSH upload service.
+
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
 
 - Distinguish cancellation of an erroneous posting from a planned replacement. An explicitly scheduled correction blocks closing its designated month until the replacement is posted.
