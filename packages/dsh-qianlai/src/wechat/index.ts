@@ -214,6 +214,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     const turns = new Map<number, { text: string; typing: NodeJS.Timeout; handoff?: string }>()
     const pendingRequests = new Set<string>()
     let lastTurnStart = 0
+    const tools = ctx.get('tools') as { guard?(check: (execution: { name: string; agent?: { session: { id: string } } }) => string | undefined): () => void } | undefined
+    const offQuestionGuard = tools?.guard?.(execution => {
+      const sessionId = execution.agent?.session.id
+      if (execution.name === 'ask_user_question' && sessionId && sessionId === state.sessionId)
+        return '微信会话请用一条带选项的文字提问。'
+    })
 
     const welcome = async () => {
       if (!state.welcomePending || welcomeRunning || !connection || !state.ownerUserId || stopped) return
@@ -745,7 +751,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rpc = ctx.get('connection') as RpcConnection | undefined
     let offRpc: ReturnType<typeof registerLoginRpc> | undefined
     try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
-    catch (error) { offControl(); offEvents(); offApprovals(); throw error }
+    catch (error) { offControl(); offEvents(); offApprovals(); offQuestionGuard?.(); throw error }
     if (state.botToken) connect(state.botToken)
     else if (config.autoStart !== false) void login()
 
@@ -762,6 +768,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       connection?.stop()
       offEvents()
       offApprovals()
+      offQuestionGuard?.()
       for (const pending of turns.values()) clearInterval(pending.typing)
     }
   })

@@ -76,7 +76,10 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, item:
 interface Context {
   effect(fn: () => () => void): void
   on?(event: 'session/event', listener: (session: PdfReferenceSession, event: PdfReferenceEvent) => void): () => void
-  tools: { register(tool: ToolDefinition): () => void }
+  tools: {
+    register(tool: ToolDefinition): () => void
+    guard?(check: (execution: { name: string; arguments?: { questions?: unknown } }) => string | undefined): () => void
+  }
   get?(name: string): unknown
 }
 
@@ -110,6 +113,11 @@ export function apply(ctx: Context, config: Config = {}): void {
     seedSampleBook(store, pack, new Date())
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
     const stopObserving = ctx.on?.('session/event', (session, event) => pdfReferences.observe(session, event))
+    const stopQuestionGuard = ctx.tools.guard?.((execution) => {
+      if (execution.name !== 'ask_user_question') return
+      const questions = execution.arguments?.questions
+      if (Array.isArray(questions) && questions.length > 1) return '每次只确认一个事实，请只问当前阻塞的一项。'
+    })
     let disposed = false
     const attachPageImages = async ({ images = [], ...result }: UploadResult, page: number, signal?: AbortSignal): Promise<UploadResult> => {
       const attachments = ctx.get?.('attachments') as { saveImage(input: { data: Uint8Array; mediaType: string; name: string }): Promise<unknown> } | undefined
@@ -542,6 +550,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     return () => {
       disposed = true
       stopObserving?.()
+      stopQuestionGuard?.()
       for (const dispose of disposers) dispose()
       store.close()
     }

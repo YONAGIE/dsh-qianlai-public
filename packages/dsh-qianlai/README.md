@@ -32,6 +32,8 @@ dsh --profile web
 
 Open the printed URL, pick **钱来张姐** in the mode picker above the input box, and start a session. The first start creates fictional sample books; ask Zhangjie to open your own company's books when you are ready, and she clears the sample after you agree.
 
+When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Posting to the ledger requires its own approval. WeChat presents the choices in text.
+
 Select Zhangjie and click **连接微信** → **获取二维码**. Scan with the owner’s WeChat; status updates live and expired codes can be refreshed. An explicit request to Zhangjie can also start login. `MONEYCOME_WECHAT=1` retains automatic terminal QR login. A different scanner cannot take over the existing book.
 
 First binding attempts a welcome and three savable bundled portraits. Robot remark/avatar settings depend on the actual WeChat version; the plugin never changes your personal profile. If the server requires an inbound context token, send the bot a message to resume unfinished welcome steps. Successful steps are persisted, preventing restart duplication of completed welcomes; context-free delivery still requires real-account verification.
