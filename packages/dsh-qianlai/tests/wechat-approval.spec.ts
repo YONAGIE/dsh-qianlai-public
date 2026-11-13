@@ -9,6 +9,7 @@ import { apply } from '../src/wechat/index.js'
 
 interface Question { agent: { session: { id: string } }; toolName: string; reason: string; signal: AbortSignal }
 type Answer = (question: Question, next: () => Promise<string>) => Promise<string>
+type ToolGuard = (execution: { name: string; agent: { session: { id: string } } }) => string | undefined
 const stops: (() => void)[] = []
 const roots: string[] = []
 afterEach(() => {
@@ -29,6 +30,7 @@ function fixture() {
   const answers: Answer[] = [async (question, next) => question.agent.session.id !== 'synthetic-session' ? next()
     : new Promise(resolve => question.signal.addEventListener('abort', () => resolve('cancelled'), { once: true }))]
   let dispose = () => {}
+  let questionGuard: ToolGuard | undefined
   let deliver: ((response: Response) => void) | undefined
   const sent: string[] = []
   const prompt = vi.fn(async () => ({}))
@@ -51,7 +53,12 @@ function fixture() {
       return () => {}
     },
     // The real host has no agent-scoped approval service before session creation.
-    get: () => undefined,
+    get: (name: string) => name === 'tools' ? {
+      guard(check: ToolGuard) {
+        questionGuard = check
+        return () => { questionGuard = undefined }
+      },
+    } : undefined,
     logger: { info() {}, warn() {}, error() {} }, sessionController: { create: async () => ({ sessionId: 'synthetic-session' }), prompt },
   } as never, { stateDir: root })
   const send = async (text: string, from = 'synthetic-owner') => {
@@ -66,9 +73,18 @@ function fixture() {
     const dispatch = (index: number): Promise<string> => answers[index]?.(question, () => dispatch(index + 1)) ?? Promise.resolve('next-answerer')
     return dispatch(0)
   }
-  return { root, sent, prompt, send, ask, stop: () => dispose() }
+  const checkTool = (name: string, sessionId = 'synthetic-session') => questionGuard?.({ name, agent: { session: { id: sessionId } } })
+  return { root, sent, prompt, send, ask, checkTool, stop: () => dispose() }
 }
 describe('微信原生批准应答', () => {
+  it('微信的事实确认回退到文字，桌面和记账批准仍按原流程', () => {
+    const test = fixture()
+    expect(test.checkTool('ask_user_question')).toContain('带选项的文字')
+    expect(test.checkTool('ask_user_question', 'synthetic-desktop')).toBeUndefined()
+    expect(test.checkTool('moneycome_record_entry')).toBeUndefined()
+    test.stop()
+    expect(test.checkTool('ask_user_question')).toBeUndefined()
+  })
   it('只有绑定老板携带本次随机码可批准，确认消息不转给模型', async () => {
     const test = fixture()
     let settled = false
