@@ -7,6 +7,7 @@ import {
   type PdfReferenceApproval,
   type PdfReferenceEvent,
   type PdfReferenceFileSystem,
+  type PdfReferencePermissionPresets,
   type PdfReferenceSession,
 } from '../src/referenced-pdf.js'
 
@@ -15,6 +16,11 @@ const PDF = Uint8Array.from(Buffer.from('%PDF-1.7\nsynthetic'))
 const RPC_ID = 'd4383afc-d384-4b09-9d8b-663d9ae7b3fc'
 const PDF_LIMIT = 8 * 1024 * 1024
 const OUTSIDE = resolve('synthetic-external', '合成 材料.PDF')
+
+const fullAccess: PdfReferencePermissionPresets = {
+  current: () => 'danger-full-access',
+  resolve: () => ({ sandbox: 'danger-full-access', approval: 'never' }),
+}
 
 function setup() {
   let sequence = 0
@@ -86,6 +92,82 @@ describe('native PDF reference authorization', () => {
     await refs.read(execution, approval)
     expect(approve).toHaveBeenCalledTimes(1)
     expect(fs.readBytes).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the current PDF under verified full access, then asks when the same session switches back', async () => {
+    const { refs, execution, session, fs, approve, approval, start, user } = setup()
+    let preset = 'danger-full-access'
+    const presets: PdfReferencePermissionPresets = {
+      ...fullAccess,
+      current(activeSession) {
+        expect(activeSession).toBe(session)
+        return preset
+      },
+    }
+    start()
+    user(`@"${OUTSIDE}"`)
+    expect(await refs.read(execution, approval, presets)).toEqual({ accepted: true, bytes: PDF })
+    expect(approve).not.toHaveBeenCalled()
+    expect(fs.readBytes).toHaveBeenCalledTimes(1)
+    preset = 'workspace-write'
+    expect(await refs.read(execution, approval, presets)).toMatchObject({ code: 'PDF_REFERENCE_PERMISSION_CHANGED' })
+    start(2)
+    user(`@"${OUTSIDE}"`)
+    expect(await refs.read(execution, approval, presets)).toEqual({ accepted: true, bytes: PDF })
+    expect(approve).toHaveBeenCalledTimes(1)
+    expect(fs.readBytes).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    { sandbox: 'workspace-write', approval: 'never' },
+    { sandbox: 'danger-full-access', approval: 'ask' },
+  ])('requires approval when a configured preset name does not match the full-access bundle (%j)', async bundle => {
+    const { refs, execution, fs, approve, approval, start, user } = setup()
+    start()
+    user(`@"${OUTSIDE}"`)
+    approve.mockResolvedValueOnce('rejected')
+    expect(await refs.read(execution, approval, { ...fullAccess, resolve: () => bundle })).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(approve).toHaveBeenCalledTimes(1)
+    expect(fs.readBytes).not.toHaveBeenCalled()
+  })
+
+  it('does not grant access when the host cannot resolve its active preset', async () => {
+    const { refs, execution, fs, start, user } = setup()
+    const presets: PdfReferencePermissionPresets = {
+      ...fullAccess,
+      resolve() { throw new Error('Preset unavailable') },
+    }
+    start()
+    user(`@"${OUTSIDE}"`)
+    expect(await refs.read(execution, undefined, presets)).toMatchObject({ code: 'APPROVAL_UNAVAILABLE' })
+    expect(fs.readBytes).not.toHaveBeenCalled()
+  })
+
+  it('stops before reading if full access is removed during path revalidation', async () => {
+    const { refs, execution, fs, file, approve, approval, start, user } = setup()
+    let preset = 'danger-full-access'
+    const presets = { ...fullAccess, current: () => preset }
+    const info = { type: 'file' as const, version: file.version, size: file.bytes.length }
+    fs.stat.mockResolvedValueOnce(info).mockImplementationOnce(async () => {
+      preset = 'workspace-write'
+      return info
+    })
+    start()
+    user(`@"${OUTSIDE}"`)
+    expect(await refs.read(execution, approval, presets)).toMatchObject({ code: 'PDF_REFERENCE_PERMISSION_CHANGED' })
+    expect(approve).not.toHaveBeenCalled()
+    expect(fs.readBytes).not.toHaveBeenCalled()
+  })
+
+  it('does not grant full access to another turn or an injected file reference', async () => {
+    const { refs, execution, fs, start, observe, user } = setup()
+    start()
+    user(`@"${OUTSIDE}"`)
+    observe('turn/end', { turn: 1 })
+    start(2)
+    observe('assistant/message', { content: [{ type: 'text', text: `@"${OUTSIDE}"` }] })
+    expect(await refs.read(execution, undefined, fullAccess)).toMatchObject({ code: 'PDF_REFERENCE_REQUIRED' })
+    expect(fs.resolve).not.toHaveBeenCalled()
   })
 
   it('fails closed on denied or unavailable approval', async () => {

@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Read the PDF referenced in the current Zhangjie turn from the DSH Desktop file picker or chat composer drop. DSH asks before reading a PDF outside the workspace.
+- Read the PDF referenced in the current Zhangjie turn from the DSH Desktop file picker or chat composer drop.
+- Honor DSH Full access when reading the current turn's PDF outside the workspace. With workspace-write permissions, DSH asks before reading the file.
 
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
 
