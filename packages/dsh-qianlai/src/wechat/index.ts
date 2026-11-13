@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import type * as QRCodeType from 'qrcode'
 
-import { downloadMedia, getBotQrcode, IlinkConnection, imageMediaType, pollQrStatus, type IlinkMessage } from './ilink.js'
+import { downloadMedia, getBotQrcode, IlinkConnection, IlinkSendError, imageMediaType, pollQrStatus, type IlinkMessage } from './ilink.js'
 import { isIntroductionSession, registerLoginControl, registerLoginRpc, setIntroductionSession, type LoginControl, type LoginView, type RpcConnection } from './control.js'
 
 // Windows 受限安装可能生成 Node 未识别的 Global junction；先取得原生真实路径，
@@ -59,6 +59,7 @@ type PromptPart =
 
 /** 从微信消息里取出来、还没交给会话的内容。文件要先上传到会话才拿得到 receiptId。 */
 type Incoming = Exclude<PromptPart, { type: 'file' }> | { type: 'fileBytes'; name: string; bytes: Buffer }
+type OnboardingTrigger = 'scan-confirmed' | 'saved-binding' | 'owner-message' | 'desktop-request'
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 /** DSH 的 RemoteError 按 `code` 区分；会话被删了是 `session/not-found`。 */
@@ -204,7 +205,8 @@ export function apply(ctx: Context, config: Config = {}): void {
     let view: LoginView = { status: state.botToken ? 'connected' : 'disconnected' }
     let welcomeRunning = false
     let onboardingRunning = false
-    let onboardingAgain = false
+    let onboardingAgain: OnboardingTrigger | undefined
+    let welcomeAttempts = 0
     let creatingSession: Promise<string> | undefined
     let flushing: Promise<void> | undefined
     let sendRetry: NodeJS.Timeout | undefined
@@ -221,11 +223,25 @@ export function apply(ctx: Context, config: Config = {}): void {
         return '微信会话请用一条带选项的文字提问。'
     })
 
-    const welcome = async () => {
+    const welcomeTrace = () => typeof state.welcomeId === 'string'
+      ? createHash('sha256').update(state.welcomeId).digest('hex').slice(0, 12)
+      : 'none'
+    const welcome = async (trigger: OnboardingTrigger) => {
       if (!state.welcomePending || welcomeRunning || !connection || !state.ownerUserId || stopped) return
       welcomeRunning = true
       const target = connection
       const owner = state.ownerUserId
+      const trace = `welcome=${welcomeTrace()} attempt=${++welcomeAttempts} trigger=${trigger}`
+      let step = 'prepare'
+      let hasContext = Boolean(state.contextToken)
+      const sendStep = async (part: string, send: (contextToken: string | undefined) => Promise<void>) => {
+        const token = state.contextToken
+        step = part
+        hasContext = Boolean(token)
+        log.info(`moneycome-wechat: welcome sending ${trace} step=${step} hasContext=${hasContext}`)
+        await send(token)
+        log.info(`moneycome-wechat: welcome accepted ${trace} step=${step} hasContext=${hasContext}`)
+      }
       try {
         if ((state.welcomeProgress ?? 0) === 0) {
           let summary = ''
@@ -243,8 +259,8 @@ export function apply(ctx: Context, config: Config = {}): void {
               }
             } finally { store.close() }
           }
-          await target.sendText(owner, state.contextToken,
-            '您好，我是钱来张姐，AI 财务助手。您可以发票据、Excel/PDF 流水，或询问本机账本；记账前会请您确认。\n可在这个机器人的聊天资料中查看是否有备注和头像设置项；若有，可把机器人备注为“钱来张姐”，长按下面图片保存后选用。不同微信版本支持情况不同，请勿修改您本人的头像或昵称；我不能代改微信资料。' + summary, `mc-welcome-${state.welcomeId}-intro`)
+          await sendStep('text', token => target.sendText(owner, token,
+            '您好，我是钱来张姐，AI 财务助手。您可以发票据、Excel/PDF 流水，或询问本机账本；记账前会请您确认。\n可在这个机器人的聊天资料中查看是否有备注和头像设置项；若有，可把机器人备注为“钱来张姐”，长按下面图片保存后选用。不同微信版本支持情况不同，请勿修改您本人的头像或昵称；我不能代改微信资料。' + summary, `mc-welcome-${state.welcomeId}-intro`))
           if (stopped || connection !== target) return
           state.welcomeProgress = 1
           save()
@@ -252,17 +268,20 @@ export function apply(ctx: Context, config: Config = {}): void {
         const assets = ['avatar.png', 'welcome.png', 'reassure.png']
         for (let i = (state.welcomeProgress ?? 1) - 1; i < assets.length; i++) {
           if (stopped || connection !== target) return
+          step = `image-${i + 1}-prepare`
           const bytes = readFileSync(fileURLToPath(new URL(`../../assets/zhangjie/${assets[i]}`, import.meta.url)))
-          await target.sendImage(owner, state.contextToken, bytes, `mc-welcome-${state.welcomeId}-${i}`)
+          await sendStep(`image-${i + 1}`, token => target.sendImage(owner, token, bytes, `mc-welcome-${state.welcomeId}-${i}`))
           if (stopped || connection !== target) return
           state.welcomeProgress = i + 2
           save()
         }
         state.welcomePending = false
         save()
-      } catch {
+        log.info(`moneycome-wechat: welcome complete ${trace}`)
+      } catch (error) {
         // Some iLink deployments need an inbound context token. Retry the unsent step after the owner's first message.
-        log.warn('moneycome-wechat: welcome delivery incomplete; will resume on the next owner message')
+        const detail = error instanceof IlinkSendError ? error.message : 'reason=local-error'
+        log.warn(`moneycome-wechat: welcome delivery incomplete ${trace} step=${step} hasContext=${hasContext} ${detail}; will resume on the next owner message`)
       } finally { welcomeRunning = false }
     }
 
@@ -497,11 +516,16 @@ export function apply(ctx: Context, config: Config = {}): void {
         catch (error) { pendingRequests.delete(current.requestId); throw error }
       } catch { log.warn('moneycome-wechat: desktop handoff submission deferred') }
     }
-    const onboarding = async () => {
-      if (onboardingRunning) { onboardingAgain = true; return }
+    const onboarding = async (trigger: OnboardingTrigger) => {
+      if (onboardingRunning) { onboardingAgain = trigger; return }
       onboardingRunning = true
       try {
-        do { onboardingAgain = false; await welcome(); await handoff() } while (onboardingAgain && !stopped)
+        do {
+          onboardingAgain = undefined
+          await welcome(trigger)
+          await handoff()
+          trigger = onboardingAgain ?? trigger
+        } while (onboardingAgain && !stopped)
       } finally { onboardingRunning = false }
     }
 
@@ -589,6 +613,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (message.context_token) state.contextToken = message.context_token
       prepareWelcome()
       save()
+      if (state.welcomePending)
+        log.info(`moneycome-wechat: owner message welcome=${welcomeTrace()} hasIncomingContext=${Boolean(message.context_token)} hasContext=${Boolean(state.contextToken)}`)
       const requestId = typeof message.msg_id === 'string' && message.msg_id.trim()
         ? `mc-in-${createHash('sha256').update(JSON.stringify([from, message.msg_id])).digest('hex')}`
         : `mc-in-${randomUUID()}`
@@ -616,7 +642,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
         return
       }
-      void onboarding()
+      void onboarding('owner-message')
       void connection?.sendTyping(from, state.contextToken)
       const { items, notes } = await collect(message)
       if (notes.length) await reply(notes.join('\n'))
@@ -649,7 +675,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     }
 
-    const connect = (botToken: string) => {
+    const connect = (botToken: string, trigger: 'scan-confirmed' | 'saved-binding') => {
       connection?.stop()
       view = { status: 'connected', message: '微信已连接。若微信还没有欢迎消息，请先发一句“你好”，取得消息上下文后会补发。' }
       connection = new IlinkConnection(botToken, onMessage, {
@@ -678,9 +704,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         },
       })
       connection.start()
-      log.info('moneycome-wechat: connected')
       prepareWelcome()
-      void onboarding()
+      log.info(`moneycome-wechat: connected trigger=${trigger} welcome=${welcomeTrace()} hasContext=${Boolean(state.contextToken)}`)
+      void onboarding(trigger)
       void flushReplies()
     }
 
@@ -715,7 +741,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             prepareWelcome()
             save()
             process.stdout.write('微信已接上。用这个微信给张姐发一句话，她就能回你。\n')
-            connect(status.botToken)
+            connect(status.botToken, 'scan-confirmed')
             return
           }
           if (status.status === 'expired') {
@@ -740,7 +766,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (stopped) return { status: 'error', message: '微信服务已停止，请重新加载插件。' }
         if (action !== 'status' && sourceSessionId) {
           await captureDesktop(sourceSessionId)
-          if (view.status === 'connected') void onboarding()
+          if (view.status === 'connected') void onboarding('desktop-request')
         }
         if (action !== 'status' && view.status !== 'connected') {
           if (action === 'refresh' || !['loading', 'waiting', 'scanned'].includes(view.status)) void login()
@@ -753,7 +779,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     let offRpc: ReturnType<typeof registerLoginRpc> | undefined
     try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
     catch (error) { offControl(); offEvents(); offApprovals(); offQuestionGuard?.(); throw error }
-    if (state.botToken) connect(state.botToken)
+    if (state.botToken) connect(state.botToken, 'saved-binding')
     else if (config.autoStart !== false) void login()
 
     return () => {
