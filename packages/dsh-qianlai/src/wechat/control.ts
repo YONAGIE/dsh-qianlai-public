@@ -7,7 +7,10 @@ export interface LoginView {
   requestedAt?: string
   message?: string
 }
-export interface LoginControl { run(action: LoginAction, sourceSessionId?: string): Promise<LoginView> }
+export interface LoginControl {
+  run(action: LoginAction, sourceSessionId?: string): Promise<LoginView>
+  ownsSession?(sessionId: string): boolean
+}
 
 // Only plugin-originated introduction turns are read-only, not owner messages.
 const introductions = new Set<string>()
@@ -28,6 +31,13 @@ export function registerLoginControl(directory: string, control: LoginControl): 
   return () => { if (controls.get(key) === control) controls.delete(key) }
 }
 export function loginControl(directory: string): LoginControl | undefined { return controls.get(resolve(directory)) }
+
+export function isWechatSession(sessionId: string): boolean {
+  for (const control of controls.values()) {
+    if (control.ownsSession?.(sessionId)) return true
+  }
+  return false
+}
 
 export interface RpcConnection {
   fetch: {
