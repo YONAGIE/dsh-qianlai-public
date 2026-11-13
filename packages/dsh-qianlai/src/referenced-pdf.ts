@@ -33,6 +33,11 @@ export interface PdfReferenceApproval {
   }): Promise<string>
 }
 
+export interface PdfReferencePermissionPresets {
+  current(session: PdfReferenceSession): string
+  resolve(name: string): { readonly sandbox: string; readonly approval: string }
+}
+
 interface Target {
   readonly targetKey: string
   readonly displayPath: string
@@ -60,7 +65,7 @@ interface ReferencedPdf {
 interface Claim {
   readonly paths: readonly string[]
   attempted: boolean
-  pdf?: ReferencedPdf
+  pdf?: { readonly bytes: Uint8Array; readonly requiresFullAccess: boolean }
 }
 
 interface Turn {
@@ -158,18 +163,36 @@ export function createPdfReferences(getFs: () => PdfReferenceFileSystem | undefi
       : undefined
   }
 
-  async function read(exec: PdfReferenceExecution | undefined, approval: PdfReferenceApproval | undefined): Promise<Refusal | ReferencedPdf> {
+  async function read(
+    exec: PdfReferenceExecution | undefined,
+    approval: PdfReferenceApproval | undefined,
+    presets?: PdfReferencePermissionPresets,
+  ): Promise<Refusal | ReferencedPdf> {
     const agent = exec?.agent
     const callId = exec?.callId
     if (!agent || !exec || !callId) return refuse('PDF_REFERENCE_REQUIRED', '请先在当前张姐会话里发送要读取的 PDF。')
     const { session } = agent
     const claim = turns.get(session)?.claim
     const cancelled = () => refuse('PDF_REFERENCE_CANCELLED', '本次 PDF 读取已取消，请重新发送文件。')
+    const permissionChanged = () => refuse('PDF_REFERENCE_PERMISSION_CHANGED', '会话权限已变更，请重新发送这份 PDF。')
     const current = () => !exec.signal.aborted && turns.get(session)?.claim === claim
+    const hasFullAccess = () => {
+      try {
+        const name = presets?.current(session)
+        if (name !== 'danger-full-access' || !presets) return false
+        const { sandbox, approval } = presets.resolve(name)
+        return sandbox === 'danger-full-access' && approval === 'never'
+      } catch {
+        return false
+      }
+    }
     if (exec.signal.aborted) return cancelled()
     if (!claim || claim.paths.length === 0) return refuse('PDF_REFERENCE_REQUIRED', '请先在当前对话里添加并发送要读取的 PDF。')
     if (claim.paths.length !== 1) return refuse('PDF_REFERENCE_AMBIGUOUS', '本条消息有多份 PDF，请一次发送一份。')
-    if (claim.pdf) return { ...claim.pdf, bytes: claim.pdf.bytes.slice() }
+    if (claim.pdf) {
+      if (claim.pdf.requiresFullAccess && !hasFullAccess()) return permissionChanged()
+      return { accepted: true, bytes: claim.pdf.bytes.slice() }
+    }
     if (claim.attempted) return refuse('PDF_REFERENCE_ALREADY_CHECKED', '本条 PDF 引用已处理或正在读取，若需重试请重新发送文件。')
 
     const path = claim.paths[0]!
@@ -184,7 +207,8 @@ export function createPdfReferences(getFs: () => PdfReferenceFileSystem | undefi
       const selected = await locatePdf(fs, cwd, path, exec.signal)
       if (!current()) return cancelled()
       if (!selected.accepted) return selected
-      if (!selected.inside) {
+      const requiresFullAccess = !selected.inside && hasFullAccess()
+      if (!selected.inside && !requiresFullAccess) {
         if (!approval) return refuse('APPROVAL_UNAVAILABLE', '当前 DSH 无法批准读取工作区外的 PDF。')
         const decision = await approval.request({
           agent, callId, toolName: 'moneycome_read_referenced_pdf', signal: exec.signal,
@@ -197,17 +221,18 @@ export function createPdfReferences(getFs: () => PdfReferenceFileSystem | undefi
       // Recheck path identity on both sides of the bounded host read before releasing any content.
       const beforeRead = await locatePdf(fs, cwd, path, exec.signal)
       if (!current()) return cancelled()
+      if (requiresFullAccess && !hasFullAccess()) return permissionChanged()
       if (!samePdf(selected, beforeRead))
         return refuse('PDF_REFERENCE_CHANGED', '文件或工作区在读取前发生变化，请重新发送 PDF。')
       const bytes = await fs.readBytes(beforeRead.target, exec.signal, PDF_LIMIT)
       const afterRead = await locatePdf(fs, cwd, path, exec.signal)
       if (!current()) return cancelled()
+      if (requiresFullAccess && !hasFullAccess()) return permissionChanged()
       if (!samePdf(beforeRead, afterRead) || (afterRead.size !== undefined && bytes.length !== afterRead.size))
         return refuse('PDF_REFERENCE_CHANGED', '文件在读取时发生变化，请重新发送 PDF。')
       if (bytes.length > PDF_LIMIT) return refuse('FILE_TOO_LARGE', '这份 PDF 超过 8 MB，请拆分后再发送。')
-      const pdf: ReferencedPdf = { accepted: true, bytes: Uint8Array.from(bytes) }
-      claim.pdf = pdf
-      return { ...pdf, bytes: pdf.bytes.slice() }
+      claim.pdf = { bytes: Uint8Array.from(bytes), requiresFullAccess }
+      return { accepted: true, bytes: claim.pdf.bytes.slice() }
     } catch (error) {
       if (!current()) return cancelled()
       if ((error as { code?: string } | null)?.code === 'FS_TOO_LARGE')
