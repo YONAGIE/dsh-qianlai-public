@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Ask one unresolved fact at a time and use DSH's native question card for choices in Zhangjie conversations. WeChat uses text choices.
+
 - Read the PDF referenced in the current Zhangjie turn from the DSH Desktop file picker or chat composer drop.
 - Honor DSH Full access when reading the current turn's PDF outside the workspace. With workspace-write permissions, DSH asks before reading the file.
 
