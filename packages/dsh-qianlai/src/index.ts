@@ -19,6 +19,7 @@ import {
 } from './entries.js'
 import { checkInvoice, type InvoiceReading } from './invoices.js'
 import { loadPack } from './pack.js'
+import { hasFullAccess, type PermissionPresets } from './permissions.js'
 import { refuse } from './period.js'
 import {
   createPdfReferences,
@@ -26,7 +27,6 @@ import {
   type PdfReferenceEvent,
   type PdfReferenceExecution as Execution,
   type PdfReferenceFileSystem,
-  type PdfReferencePermissionPresets,
   type PdfReferenceSession,
 } from './referenced-pdf.js'
 import { balanceTransferItems, readProfit, readStatements } from './reports.js'
@@ -36,7 +36,7 @@ import { importStatement, readUpload, renameBankAccount, unrecordedStatementLine
 import { BookStore } from './store.js'
 import { saveWorkNote, workProgress, WORK_OPERATIONS } from './work-progress.js'
 import { parseReferencedPdf, type UploadOptions, type UploadResult } from './uploads.js'
-import { isIntroductionSession, loginControl, type LoginAction } from './wechat/control.js'
+import { isIntroductionSession, isWechatSession, loginControl, type LoginAction } from './wechat/control.js'
 
 /**
  * DSH 插件入口。
@@ -152,7 +152,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             const critical = CRITICAL_WRITES.has(name) && !(name === 'moneycome_record_entry' && args.preview === true)
             let receiptKey: string | undefined
             let argsHash = ''
-            let revision = ''
+            let approvedRevision: string | undefined
             const previous = () => {
               const saved = receiptKey ? store.toolReceipt(receiptKey) : undefined
               if (!saved) return undefined
@@ -161,28 +161,35 @@ export function apply(ctx: Context, config: Config = {}): void {
                 : refuse('CALL_ID_CONFLICT', '同一次宿主调用的参数已变化，不能重复执行。请重新核对并取得新的确认。')
             }
             if (critical) {
-              const approval = ctx.get?.('approval') as Approval | undefined
-              if (!approval?.request || !exec?.agent?.session.id || !exec.callId)
+              const agent = exec?.agent
+              if (!agent?.session.id || !exec?.callId)
                 return refuse('APPROVAL_UNAVAILABLE', '当前宿主无法确认这项账务操作，没有改动账本。请使用支持批准交互的 DSH 会话。')
-              receiptKey = createHash('sha256').update(JSON.stringify([exec.agent.session.id, exec.callId])).digest('hex')
+              const { session } = agent
+              receiptKey = createHash('sha256').update(JSON.stringify([session.id, exec.callId])).digest('hex')
               argsHash = createHash('sha256').update(canonical(args)).digest('hex')
               const cached = previous()
               if (cached !== undefined) return cached
-              revision = store.approvalRevision()
-              const preview = name === 'moneycome_record_entry'
-                ? recordEntry(store, pack, { ...args, preview: true } as unknown as RecordEntryInput, new Date()) : undefined
-              if (preview && !preview.accepted) return preview
-              const reason = `账本：${store.company()?.name ?? '未开账'}\n操作：${name}\n参数：${canonical(args)}${preview ? `\n当前预演：${canonical(preview)}` : ''}\n只批准本次操作；拒绝或取消不会执行。`
-              const outcome = await approval.request({ agent: exec.agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
-              if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
-              if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
+              const presets = ctx.get?.('permissionPresets') as PermissionPresets | undefined
+              if (isWechatSession(session.id) || !hasFullAccess(session, presets)) {
+                const approval = ctx.get?.('approval') as Approval | undefined
+                if (!approval?.request)
+                  return refuse('APPROVAL_UNAVAILABLE', '当前宿主无法确认这项账务操作，没有改动账本。请使用支持批准交互的 DSH 会话。')
+                approvedRevision = store.approvalRevision()
+                const preview = name === 'moneycome_record_entry'
+                  ? recordEntry(store, pack, { ...args, preview: true } as unknown as RecordEntryInput, new Date()) : undefined
+                if (preview && !preview.accepted) return preview
+                const reason = `账本：${store.company()?.name ?? '未开账'}\n操作：${name}\n参数：${canonical(args)}${preview ? `\n当前预演：${canonical(preview)}` : ''}\n只批准本次操作；拒绝或取消不会执行。`
+                const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
+                if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
+                if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
+              }
             }
             // 整个工具调用放在一个写事务里：另一个进程开着同一本账时，两边的检查和写入不会交错。
             return store.transaction(() => {
               if (critical) {
                 const cached = previous()
                 if (cached !== undefined) return cached
-                if (revision !== store.approvalRevision())
+                if (approvedRevision !== undefined && approvedRevision !== store.approvalRevision())
                   return refuse('BOOK_CHANGED', '等待确认期间账本已变化，请重新核对并确认。没有执行这项操作。')
               }
               const result = run(args)
@@ -457,7 +464,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           const reference = await pdfReferences.read(
             execution,
             ctx.get?.('approval') as Approval | undefined,
-            ctx.get?.('permissionPresets') as PdfReferencePermissionPresets | undefined,
+            ctx.get?.('permissionPresets') as PermissionPresets | undefined,
           )
           if (!reference.accepted) return reference
           return attachPageImages(await parseReferencedPdf(reference.bytes, page, signal), page, signal)

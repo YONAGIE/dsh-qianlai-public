@@ -735,6 +735,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     }
     const control: LoginControl = {
+      ownsSession: sessionId => sessionId === state.sessionId,
       async run(action, sourceSessionId) {
         if (stopped) return { status: 'error', message: '微信服务已停止，请重新加载插件。' }
         if (action !== 'status' && sourceSessionId) {
