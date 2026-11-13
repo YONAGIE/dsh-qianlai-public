@@ -40,7 +40,7 @@ dsh plugin --profile web add /absolute/path/to/dsh-qianlai/packages/dsh-qianlai
 
 Windows 示例路径：`D:\work\dsh-qianlai\packages\dsh-qianlai`。使用独立 `DSH_HOME`，避免测试影响日常数据与登录配置。当前源码使用 workspace 财税核心依赖，分发包的依赖发布与安装仍须单独验收；本次不提供未经核实的 npm 安装命令。
 
-在 DSH 桌面版的钱来张姐会话里，用输入框的「文件」选择一份 PDF，或直接拖到聊天框，再发送消息。每轮可读一份不超过 8 MB 的 PDF。「完全权限」下可直接读取本轮引用的工作区外 PDF。「工作区内修改」下，工作区外的 PDF 需在 DSH 确认本次读取。
+在 DSH 桌面版的钱来张姐会话里，用输入框的「文件」选择 PDF，或直接拖到聊天框。可以在一条消息里发送多份，每份最多 8 MB。「完全权限」下可直接读取本轮引用的工作区外 PDF。「工作区内修改」下，DSH 会在读取每份工作区外的 PDF 前请求批准。
 
 本地检查分发产物可运行 `pnpm pack:all`：先构建两包，再使用 pnpm 原生递归打包，在仓库根 `dist/` 生成 `moneycome-fintax-core-0.1.0.tgz` 和 `dsh-qianlai-0.1.0.tgz`。插件包依赖对应版本财税核心；本地使用这些归档时须将该依赖解析到配套核心归档（如使用包管理器 override）。此命令不发布 npm，也不代表注册表安装已可用。
 

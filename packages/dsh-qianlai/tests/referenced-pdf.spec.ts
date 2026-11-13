@@ -38,8 +38,8 @@ function setup() {
       const path = relative(root.targetKey, target.targetKey)
       return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path)
     },
-    stat: vi.fn(async () => ({ type: 'file' as const, version: file.version, size: file.bytes.length })),
-    readBytes: vi.fn(async () => file.bytes),
+    stat: vi.fn<PdfReferenceFileSystem['stat']>(async () => ({ type: 'file', version: file.version, size: file.bytes.length })),
+    readBytes: vi.fn<PdfReferenceFileSystem['readBytes']>(async () => file.bytes),
   } satisfies PdfReferenceFileSystem
   // Cordis can return a new service proxy for the same underlying filesystem.
   const refs = createPdfReferences(() => new Proxy(fs, {}))
@@ -62,9 +62,9 @@ describe('native PDF reference authorization', () => {
     start()
     user('请读一下 @"资料 合成.PDF"')
     const first = await refs.read(execution, approval)
-    expect(first).toEqual({ accepted: true, bytes: PDF })
+    expect(first).toMatchObject({ accepted: true, bytes: PDF, fileIndex: 1, fileCount: 1 })
     if (first.accepted) first.bytes[0] = 0
-    expect(await refs.read(execution, approval)).toEqual({ accepted: true, bytes: PDF })
+    expect(await refs.read(execution, approval)).toMatchObject({ accepted: true, bytes: PDF })
     expect(approve).not.toHaveBeenCalled()
     expect(fs.readBytes).toHaveBeenCalledTimes(1)
     expect(fs.readBytes).toHaveBeenCalledWith(
@@ -84,7 +84,7 @@ describe('native PDF reference authorization', () => {
       expect(await refs.read(execution, approval)).toMatchObject({ code: 'PDF_REFERENCE_ALREADY_CHECKED' })
       return 'allowed-once'
     })
-    expect(await refs.read(execution, approval)).toEqual({ accepted: true, bytes: PDF })
+    expect(await refs.read(execution, approval)).toMatchObject({ accepted: true, bytes: PDF })
     expect(approve).toHaveBeenCalledWith(expect.objectContaining({
       agent: execution.agent, callId: execution.callId, toolName: 'moneycome_read_referenced_pdf',
       signal: execution.signal, reason: expect.stringContaining(OUTSIDE),
@@ -106,14 +106,14 @@ describe('native PDF reference authorization', () => {
     }
     start()
     user(`@"${OUTSIDE}"`)
-    expect(await refs.read(execution, approval, presets)).toEqual({ accepted: true, bytes: PDF })
+    expect(await refs.read(execution, approval, presets)).toMatchObject({ accepted: true, bytes: PDF })
     expect(approve).not.toHaveBeenCalled()
     expect(fs.readBytes).toHaveBeenCalledTimes(1)
     preset = 'workspace-write'
     expect(await refs.read(execution, approval, presets)).toMatchObject({ code: 'PDF_REFERENCE_PERMISSION_CHANGED' })
     start(2)
     user(`@"${OUTSIDE}"`)
-    expect(await refs.read(execution, approval, presets)).toEqual({ accepted: true, bytes: PDF })
+    expect(await refs.read(execution, approval, presets)).toMatchObject({ accepted: true, bytes: PDF })
     expect(approve).toHaveBeenCalledTimes(1)
     expect(fs.readBytes).toHaveBeenCalledTimes(2)
   })
@@ -205,13 +205,69 @@ describe('native PDF reference authorization', () => {
     expect(fs.resolve).not.toHaveBeenCalled()
   })
 
-  it('requires the exact live session and one unambiguous PDF in its current user message', async () => {
+  it('reads the selected PDF in message order and caches each file separately for subsequent pages', async () => {
+    const { refs, execution, fs, start, user } = setup()
+    const secondPdf = Uint8Array.from(Buffer.from('%PDF-1.7\nsecond'))
+    fs.stat.mockImplementation(async target => ({
+      type: 'file', version: '1', size: target.targetKey === join(CWD, '合成 二.pdf') ? secondPdf.length : PDF.length,
+    }))
+    fs.readBytes.mockImplementation(async target =>
+      target.targetKey === join(CWD, '合成 二.pdf') ? secondPdf : PDF,
+    )
+    start()
+    user('@one.pdf @"合成 二.pdf" @one.pdf')
+    expect(await refs.read(execution, undefined)).toEqual({ accepted: true, bytes: PDF, fileIndex: 1, fileCount: 2 })
+    const second = await refs.read(execution, undefined, undefined, 2)
+    expect(second).toEqual({ accepted: true, bytes: secondPdf, fileIndex: 2, fileCount: 2 })
+    if (second.accepted) second.bytes[0] = 0
+    expect(await refs.read(execution, undefined, undefined, 2)).toMatchObject({ accepted: true, bytes: secondPdf })
+    expect(fs.readBytes).toHaveBeenCalledTimes(2)
+  })
+
+  it('authorizes external PDFs individually and allows another file after a denial', async () => {
+    const { refs, execution, fs, approval, approve, start, user } = setup()
+    const other = resolve('synthetic-external', '另一个.pdf')
+    start()
+    user(`@"${OUTSIDE}" @"${other}"`)
+    approve.mockResolvedValueOnce('rejected')
+    expect(await refs.read(execution, approval)).toMatchObject({ code: 'APPROVAL_REQUIRED', fileIndex: 1, fileCount: 2 })
+    expect(fs.readBytes).not.toHaveBeenCalled()
+    expect(await refs.read({ ...execution, callId: 'call-2' }, approval, undefined, 2))
+      .toMatchObject({ accepted: true, bytes: PDF, fileIndex: 2, fileCount: 2 })
+    expect(approve.mock.calls.map(([request]) => request.reason)).toEqual([
+      expect.stringContaining(OUTSIDE), expect.stringContaining(other),
+    ])
+    expect(fs.readBytes).toHaveBeenCalledExactlyOnceWith(
+      { targetKey: other, displayPath: other }, execution.signal, PDF_LIMIT,
+    )
+  })
+
+  it('allows six PDFs and rejects an oversized batch before file access or approval', async () => {
+    const { refs, execution, fs, approve, approval, start, user } = setup()
+    const six = Array.from({ length: 6 }, (_, i) => `@file${i + 1}.pdf`).join(' ')
+    start()
+    user(`${six} @file7.pdf`)
+    expect(await refs.read(execution, approval)).toMatchObject({ code: 'PDF_REFERENCE_LIMIT_EXCEEDED' })
+    user(six)
+    for (const fileIndex of [0, -1, 1.5, 7]) {
+      expect(await refs.read(execution, approval, undefined, fileIndex))
+        .toMatchObject({ code: 'PDF_REFERENCE_INDEX_INVALID', details: { fileCount: 6 } })
+    }
+    expect(fs.resolve).not.toHaveBeenCalled()
+    expect(approve).not.toHaveBeenCalled()
+    for (let fileIndex = 1; fileIndex <= 6; fileIndex++) {
+      expect(await refs.read(execution, approval, undefined, fileIndex))
+        .toMatchObject({ accepted: true, fileIndex, fileCount: 6 })
+    }
+    expect(fs.readBytes).toHaveBeenCalledTimes(6)
+  })
+
+  it('requires the exact live session and its current user message', async () => {
     const { refs, execution, session, fs, start, user } = setup()
     start()
     user('@one.pdf @two.pdf')
-    expect(await refs.read(execution, undefined)).toMatchObject({ code: 'PDF_REFERENCE_AMBIGUOUS' })
-    user('@only.pdf')
-    expect(await refs.read({ ...execution, agent: { session: { ...session } } }, undefined)).toMatchObject({ code: 'PDF_REFERENCE_REQUIRED' })
+    expect(await refs.read({ ...execution, agent: { session: { ...session } } }, undefined, undefined, 2))
+      .toMatchObject({ code: 'PDF_REFERENCE_REQUIRED' })
     user('先等等')
     expect(await refs.read(execution, undefined)).toMatchObject({ code: 'PDF_REFERENCE_REQUIRED' })
     expect(fs.resolve).not.toHaveBeenCalled()
