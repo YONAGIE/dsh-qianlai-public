@@ -32,7 +32,7 @@ dsh --profile web
 
 Open the printed URL, pick **钱来张姐** in the mode picker above the input box, and start a session. The first start creates fictional sample books; ask Zhangjie to open your own company's books when you are ready, and she clears the sample after you agree.
 
-When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Posting to the ledger requires its own approval. WeChat presents the choices in text.
+When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Full access posts after you confirm the entry in chat. Workspace-write requests DSH approval before posting. WeChat presents the choices in text.
 
 Select Zhangjie and click **连接微信** → **获取二维码**. Scan with the owner’s WeChat; status updates live and expired codes can be refreshed. An explicit request to Zhangjie can also start login. `MONEYCOME_WECHAT=1` retains automatic terminal QR login. A different scanner cannot take over the existing book.
 
@@ -92,7 +92,7 @@ The persona and tool catalog are static, so they stay in the cached prefix. Noth
 <a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
 
-- One company per machine; no accounts, roles or approval flow.
+- One company per machine. The plugin uses DSH session permissions and WeChat owner confirmation.
 - Postings that depend on earlier balances (depreciation, prepaid expense amortisation, accrued expenses) are not supported, so companies with fixed assets or prepaid expenses cannot close a month yet.
 - Closed months cannot be reopened; errors found later are fixed with a reversing voucher and a correcting entry in an open month.
 - Filing reminders track dates only; the plugin does not know whether a return has been filed, and the filing prep sheet totals the books without computing tax.

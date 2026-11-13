@@ -2,12 +2,12 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
+import type { PermissionPresets } from '../src/permissions.js'
 import {
   createPdfReferences,
   type PdfReferenceApproval,
   type PdfReferenceEvent,
   type PdfReferenceFileSystem,
-  type PdfReferencePermissionPresets,
   type PdfReferenceSession,
 } from '../src/referenced-pdf.js'
 
@@ -17,7 +17,7 @@ const RPC_ID = 'd4383afc-d384-4b09-9d8b-663d9ae7b3fc'
 const PDF_LIMIT = 8 * 1024 * 1024
 const OUTSIDE = resolve('synthetic-external', '合成 材料.PDF')
 
-const fullAccess: PdfReferencePermissionPresets = {
+const fullAccess: PermissionPresets = {
   current: () => 'danger-full-access',
   resolve: () => ({ sandbox: 'danger-full-access', approval: 'never' }),
 }
@@ -97,7 +97,7 @@ describe('native PDF reference authorization', () => {
   it('reads the current PDF under verified full access, then asks when the same session switches back', async () => {
     const { refs, execution, session, fs, approve, approval, start, user } = setup()
     let preset = 'danger-full-access'
-    const presets: PdfReferencePermissionPresets = {
+    const presets: PermissionPresets = {
       ...fullAccess,
       current(activeSession) {
         expect(activeSession).toBe(session)
@@ -133,7 +133,7 @@ describe('native PDF reference authorization', () => {
 
   it('does not grant access when the host cannot resolve its active preset', async () => {
     const { refs, execution, fs, start, user } = setup()
-    const presets: PdfReferencePermissionPresets = {
+    const presets: PermissionPresets = {
       ...fullAccess,
       resolve() { throw new Error('Preset unavailable') },
     }
