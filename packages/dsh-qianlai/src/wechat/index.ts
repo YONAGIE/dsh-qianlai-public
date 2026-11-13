@@ -216,6 +216,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     const turns = new Map<number, { text: string; typing: NodeJS.Timeout; handoff?: string }>()
     const pendingRequests = new Set<string>()
     let lastTurnStart = 0
+    const tools = ctx.get('tools') as { guard?(check: (execution: { name: string; agent?: { session: { id: string } } }) => string | undefined): () => void } | undefined
+    const offQuestionGuard = tools?.guard?.(execution => {
+      const sessionId = execution.agent?.session.id
+      if (execution.name === 'ask_user_question' && sessionId && sessionId === state.sessionId)
+        return '微信会话请用一条带选项的文字提问。'
+    })
 
     const welcomeTrace = () => typeof state.welcomeId === 'string'
       ? createHash('sha256').update(state.welcomeId).digest('hex').slice(0, 12)
@@ -611,7 +617,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         log.info(`moneycome-wechat: owner message welcome=${welcomeTrace()} hasIncomingContext=${Boolean(message.context_token)} hasContext=${Boolean(state.contextToken)}`)
       const requestId = typeof message.msg_id === 'string' && message.msg_id.trim()
         ? `mc-in-${createHash('sha256').update(JSON.stringify([from, message.msg_id])).digest('hex')}`
-        : randomUUID()
+        : `mc-in-${randomUUID()}`
       if (state.handledMessages?.includes(requestId)) return
       const admitted = () => {
         if (!message.msg_id) return
@@ -755,6 +761,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     }
     const control: LoginControl = {
+      ownsSession: sessionId => sessionId === state.sessionId,
       async run(action, sourceSessionId) {
         if (stopped) return { status: 'error', message: '微信服务已停止，请重新加载插件。' }
         if (action !== 'status' && sourceSessionId) {
@@ -771,7 +778,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rpc = ctx.get('connection') as RpcConnection | undefined
     let offRpc: ReturnType<typeof registerLoginRpc> | undefined
     try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
-    catch (error) { offControl(); offEvents(); offApprovals(); throw error }
+    catch (error) { offControl(); offEvents(); offApprovals(); offQuestionGuard?.(); throw error }
     if (state.botToken) connect(state.botToken, 'saved-binding')
     else if (config.autoStart !== false) void login()
 
@@ -788,6 +795,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       connection?.stop()
       offEvents()
       offApprovals()
+      offQuestionGuard?.()
       for (const pending of turns.values()) clearInterval(pending.typing)
     }
   })

@@ -32,6 +32,8 @@ dsh --profile web
 
 Open the printed URL, pick **钱来张姐** in the mode picker above the input box, and start a session. The first start creates fictional sample books; ask Zhangjie to open your own company's books when you are ready, and she clears the sample after you agree.
 
+When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Full access posts after you confirm the entry in chat. Workspace-write requests DSH approval before posting. WeChat presents the choices in text.
+
 Select Zhangjie and click **连接微信** → **获取二维码**. Scan with the owner’s WeChat; status updates live and expired codes can be refreshed. An explicit request to Zhangjie can also start login. `MONEYCOME_WECHAT=1` retains automatic terminal QR login. A different scanner cannot take over the existing book.
 
 First binding attempts a welcome and three savable bundled portraits. Robot remark/avatar settings depend on the actual WeChat version; the plugin never changes your personal profile. If the server requires an inbound context token, send the bot a message to resume unfinished welcome steps. Successful steps are persisted, preventing restart duplication of completed welcomes; context-free delivery still requires real-account verification.
@@ -52,7 +54,7 @@ Full user documentation: [repository README](https://github.com/qianlai-ai/dsh-q
 
 | Entry | Layer | What it does |
 |---|---|---|
-| `preset-moneycome-zhangjie` | agent preset | The mode: a persona prefix plus this package's tools. No shell, file-system or web tools. |
+| `preset-moneycome-zhangjie` | agent preset | The mode: a persona prefix plus this package's tools. No shell, general-purpose file-system or web tools. |
 | `moneycome-ui` | host, `mode: ui` | Loads the browser half (`client/client.src.js`): avatar in the session header and a token override on `ctx.theme` while a Zhangjie session or the Zhangjie choice on the new-session page is shown. |
 | `moneycome-wechat` | host | `dsh-qianlai/wechat`, loaded by default with on-demand login; `MONEYCOME_WECHAT=1` enables automatic QR login. Long-polls Tencent iLink and forwards owner messages to a dedicated session through `sessionController`. |
 
@@ -67,12 +69,12 @@ The books are one SQLite file opened with `node:sqlite` in WAL mode. Amounts are
 <a id="model-experience"></a>
 ## Model Experience
 
-The Zhangjie preset includes a Chinese persona and 27 business tools. All tools are prefixed `moneycome_`:
+The Zhangjie preset includes a Chinese persona and 28 business tools. All tools are prefixed `moneycome_`:
 
 - Book: `book_status`, `open_book`, `set_opening_balances`, `set_company_facts`
 - Reading: `read_balances`, `read_profit`, `financial_statements`, `list_vouchers`, `unrecorded_statement_lines`, `posting_guide`
 - For the accountant and the tax calendar: `export_review_pack`, `upcoming`, `quarter_filing_prep`
-- Materials: `check_invoice`, `read_upload`, `import_statement`, `rename_bank_account`
+- Materials: `check_invoice`, `read_upload`, `read_referenced_pdf`, `import_statement`, `rename_bank_account`
 - Writing: `record_entry` (with `preview` and `correctsVoucherNo`), `link_statement`, `add_evidence`, `void_voucher`, `reverse_voucher`
 - Month end: `closing_check`, `close_period`
 - Continuation and WeChat: `work_progress`, `save_work_note`, `wechat`
@@ -90,7 +92,7 @@ The persona and tool catalog are static, so they stay in the cached prefix. Noth
 <a id="known-limitations-and-deferred-work"></a>
 ## Known Limitations and Deferred Work
 
-- One company per machine; no accounts, roles or approval flow.
+- One company per machine. The plugin uses DSH session permissions and WeChat owner confirmation.
 - Postings that depend on earlier balances (depreciation, prepaid expense amortisation, accrued expenses) are not supported, so companies with fixed assets or prepaid expenses cannot close a month yet.
 - Closed months cannot be reopened; errors found later are fixed with a reversing voucher and a correcting entry in an open month.
 - Filing reminders track dates only; the plugin does not know whether a return has been filed, and the filing prep sheet totals the books without computing tax.

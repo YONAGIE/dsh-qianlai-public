@@ -32,6 +32,8 @@ dsh --profile web
 
 打开终端打印的地址，在输入框上方的模式下拉里选「钱来张姐」，开一个会话。第一次启动自带一本虚构企业的样本账；要记自己公司的账时跟张姐说一声，她会在你同意后清掉样本账。
 
+需要确认业务事实时，张姐一次只问当前卡住的一项。DSH 聊天里有明确选项时可在提问卡上选择或填写答案并提交。题目和已提交的答案会保留在原对话里，可在重开会话后回看。正式记账按会话权限执行，完全权限下确认业务后直接记账，工作区内修改模式会弹出宿主审批。微信会话使用文字选项。
+
 接微信：选择张姐后点「连接微信」→「获取二维码」，用本人微信扫码；状态实时更新，过期可刷新。也可明确让张姐连接微信。`MONEYCOME_WECHAT=1` 保留终端自动扫码。绑定后不能用另一个微信接管原账本。
 
 首次绑定会尝试发送欢迎与三张可保存的张姐素材，并说明机器人备注/头像设置入口以微信实际版本为准；不会修改您本人的资料。若服务端需要消息上下文，给机器人发一句话后继续发送尚未完成的步骤。只有已确认发送成功的步骤才落盘，重启不会重复已完成的欢迎；服务端是否接受无上下文主动发送仍须真实账号验收。
@@ -52,7 +54,7 @@ dsh --profile web
 
 | 条目 | 层 | 做什么 |
 |---|---|---|
-| `preset-moneycome-zhangjie` | agent 预设 | 模式本身：人设前缀加本包的工具。不带命令行、文件读写和联网工具。 |
+| `preset-moneycome-zhangjie` | agent 预设 | 模式本身：人设前缀加本包的工具。不带命令行、通用文件读写和联网工具。 |
 | `moneycome-ui` | 宿主层，`mode: ui` | 加载浏览器半边（`client/client.src.js`）：会话头部的头像；显示张姐会话、或新会话页选中张姐时，在 `ctx.theme` 上叠一层配色。 |
 | `moneycome-wechat` | 宿主层 | `dsh-qianlai/wechat`，默认加载但按需出码，`MONEYCOME_WECHAT=1` 时自动扫码。长轮询腾讯 iLink，把老板的消息经 `sessionController` 交给一个专用会话。 |
 
@@ -67,12 +69,12 @@ dsh --profile web
 <a id="model-experience"></a>
 ## 模型体验
 
-张姐预设包含中文人设和 27 个业务工具。工具名都以 `moneycome_` 开头：
+张姐预设包含中文人设和 28 个业务工具。工具名都以 `moneycome_` 开头：
 
 - 账本：`book_status`、`open_book`、`set_opening_balances`、`set_company_facts`
 - 查询：`read_balances`、`read_profit`、`financial_statements`、`list_vouchers`、`unrecorded_statement_lines`、`posting_guide`
 - 给会计和办税：`export_review_pack`、`upcoming`、`quarter_filing_prep`
-- 材料：`check_invoice`、`read_upload`、`import_statement`、`rename_bank_account`
+- 材料：`check_invoice`、`read_upload`、`read_referenced_pdf`、`import_statement`、`rename_bank_account`
 - 写账：`record_entry`（带 `preview` 试推、`correctsVoucherNo` 更正）、`link_statement`、`add_evidence`、`void_voucher`、`reverse_voucher`
 - 月末：`closing_check`、`close_period`
 - 续接与微信：`work_progress`、`save_work_note`、`wechat`
@@ -90,7 +92,7 @@ dsh --profile web
 <a id="known-limitations-and-deferred-work"></a>
 ## 已知限制与延期工作
 
-- 一台电脑只记一家公司；没有账号、角色和审批。
+- 一台电脑只记一家公司，使用 DSH 会话权限和微信绑定者确认。
 - 要引用以前余额的记法还不支持（折旧、预付费用摊销、暂估费用），有固定资产或预付费用的公司结不了账。
 - 结了账的月份不能反结账；以后发现记错，在没结账的月份冲销再更正。
 - 办税提醒只管日期，插件不知道报没报；申报准备单只汇总账上的数，不算税。

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openBook } from '../src/book.js'
 import { apply } from '../src/index.js'
 import { BookStore } from '../src/store.js'
+import { registerLoginControl } from '../src/wechat/control.js'
 
 interface Execution { signal: AbortSignal; callId: string; agent: { session: { id: string } } }
 interface Tool { execute(args: Record<string, unknown>, exec?: Execution): Promise<unknown> }
@@ -21,7 +22,15 @@ afterEach(() => {
 const entry = { date: '2026-01-10', summary: '合成银行手续费', eventKind: 'bank_fee',
   facts: { 'settlement.method': 'bank' }, amounts: { settlement: '10.00' } }
 const execution = (): Execution => ({ signal: new AbortController().signal, callId: randomUUID(), agent: { session: { id: 'synthetic-approval-session' } } })
-function fixture(decide: (request: unknown) => Promise<string> = async () => 'allowed-once', existingPath?: string) {
+const fullAccess = {
+  current: () => 'danger-full-access',
+  resolve: () => ({ sandbox: 'danger-full-access', approval: 'never' }),
+}
+function fixture(
+  decide: (request: unknown) => Promise<string> = async () => 'allowed-once',
+  existingPath?: string,
+  presets?: typeof fullAccess,
+) {
   const root = mkdtempSync(join(tmpdir(), 'qianlai-approval-'))
   roots.push(root)
   const bookPath = existingPath ?? join(root, 'book.sqlite')
@@ -33,13 +42,60 @@ function fixture(decide: (request: unknown) => Promise<string> = async () => 'al
   const request = vi.fn(decide)
   const tools = new Map<string, Tool>()
   apply({ effect: fn => { disposers.push(fn()) }, tools: { register: tool => { tools.set(tool.name, tool as Tool); return () => {} } },
-    get: name => name === 'approval' ? { request } : undefined,
+    get: name => name === 'approval' ? { request } : name === 'permissionPresets' ? presets : undefined,
   }, { bookPath })
   const call = (args: Record<string, unknown>, exec?: Execution) => tools.get('moneycome_record_entry')!.execute(args, exec)
   const count = () => { const store = new BookStore(bookPath); try { return store.vouchers({ periodKey: '2026-01' }).length } finally { store.close() } }
   return { bookPath, call, request, count, tools }
 }
 describe('记账的可信批准与调用重试', () => {
+  it('完全权限下可正式记账，同一次调用重试只落一笔', async () => {
+    const test = fixture(async () => 'rejected', undefined, fullAccess)
+    const exec = execution()
+    const result = await test.call(entry, exec)
+    expect(result).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-001' })
+    expect(await test.call(entry, exec)).toEqual(result)
+    expect(await test.call({ ...entry, amounts: { settlement: '20.00' } }, exec)).toMatchObject({ code: 'CALL_ID_CONFLICT' })
+    expect(test.request).not.toHaveBeenCalled()
+    expect(test.count()).toBe(1)
+  })
+  it('同一会话切回工作区内修改后，下一笔重新走批准', async () => {
+    let preset = 'danger-full-access'
+    const test = fixture(async () => 'rejected', undefined, { ...fullAccess, current: () => preset })
+    const exec = execution()
+    expect(await test.call(entry, exec)).toMatchObject({ accepted: true })
+    preset = 'workspace-write'
+    expect(await test.call(entry, { ...exec, callId: randomUUID() })).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(1)
+  })
+  it.each([
+    { sandbox: 'danger-full-access', approval: 'ask' },
+    { sandbox: 'workspace-write', approval: 'never' },
+  ])('完整权限组合不匹配时仍须批准（%j）', async bundle => {
+    const test = fixture(async () => 'rejected', undefined, { ...fullAccess, resolve: () => bundle })
+    expect(await test.call(entry, execution())).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(0)
+  })
+  it('完全权限仍校验账务数据和调用取消状态', async () => {
+    const test = fixture(async () => 'rejected', undefined, fullAccess)
+    expect(await test.call({ ...entry, amounts: { settlement: '0' } }, execution())).toMatchObject({ code: 'ZERO_POSTING' })
+    expect(await test.call(entry, { ...execution(), signal: AbortSignal.abort() })).toMatchObject({ code: 'TOOL_CANCELLED' })
+    expect(test.request).not.toHaveBeenCalled()
+    expect(test.count()).toBe(0)
+  })
+  it('微信会话的宿主批准不会被完全权限跳过', async () => {
+    const test = fixture(async () => 'rejected', undefined, fullAccess)
+    const exec = execution()
+    disposers.push(registerLoginControl(join(dirname(test.bookPath), 'wechat'), {
+      run: async () => ({ status: 'connected' }),
+      ownsSession: id => id === exec.agent.session.id,
+    }))
+    expect(await test.call(entry, exec)).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(0)
+  })
   it('没有宿主调用身份时不能用模型填写的 confirmed 字段替代批准', async () => {
     const test = fixture()
     expect(await test.call({ ...entry, confirmed: true })).toMatchObject({ accepted: false, code: 'APPROVAL_UNAVAILABLE' })

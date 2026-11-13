@@ -4,6 +4,14 @@
 
 - Record WeChat welcome send attempts, response codes and retry stages in the local channel log. The log records whether a conversation context is present and omits credentials and message contents.
 
+- Honor DSH Full access for confirmed ledger writes. Workspace-write uses one-time DSH approval, and WeChat uses owner confirmation.
+
+- Ask one unresolved fact at a time and use DSH's native question card for choices in Zhangjie conversations. WeChat uses text choices.
+- Show submitted question-card answers in the original Zhangjie conversation on older DSH clients, including answers submitted before the plugin update.
+
+- Read the PDF referenced in the current Zhangjie turn from the DSH Desktop file picker or chat composer drop.
+- Honor DSH Full access when reading the current turn's PDF outside the workspace. With workspace-write permissions, DSH asks before reading the file.
+
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.
 
 - Distinguish cancellation of an erroneous posting from a planned replacement. An explicitly scheduled correction blocks closing its designated month until the replacement is posted.
