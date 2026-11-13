@@ -4,6 +4,7 @@
  *
  * 当前会话的模式是「钱来张姐」时：
  * - 会话头部加一个张姐头像和微信连接入口；新会话页也可以直接扫码接入。
+ * - 旧版 DSH 的对话补充已经提交的选择卡问答。
  * - 通过 DSH 主题服务的 `overrideTokens` 叠一层钱来配色：DeepSeek 蓝色色阶换成钱来绿，侧栏换浅绿灰底。
  *   离开张姐会话、切回别的模式，这层配色撤掉，DSH 恢复原样；用户的明暗偏好不动。
  * 其他模式的会话什么都不渲染。
@@ -20,6 +21,7 @@ window.__ModuleLoader__.load({
     const { jsx } = require('react/jsx-runtime')
 
     const PRESET = 'moneycome-zhangjie'
+    const QUESTION_HISTORY = 'moneycome-question-history'
     const AVATAR = '__AVATAR_DATA_URL__'
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
     let connection
@@ -148,6 +150,103 @@ window.__ModuleLoader__.load({
       return active ? jsx(WechatPanel, { sessionId }) : null
     }
 
+    function parseJson(text) {
+      try {
+        return JSON.parse(text)
+      } catch {
+        return null
+      }
+    }
+
+    function questionResultText(event) {
+      const message = event.data.message
+      const content = message?.content
+      if (event.surfaceOp !== 'append' || message?.isError || message?.source?.kind !== 'tool'
+        || content?.length !== 1 || content[0]?.type !== 'text') return null
+      return typeof content[0].text === 'string' ? content[0].text : null
+    }
+
+    function questionHistoryDefinition(events) {
+      return {
+        kind: QUESTION_HISTORY,
+        target: 'chat',
+        match: {
+          'tool/call': event => event.data.name === 'ask_user_question'
+            ? { id: event.data.callId, role: 'start' }
+            : null,
+          'tool/result': event => {
+            const text = questionResultText(event)
+            // Only ask-user results can add a row. Keep matches when history
+            // loads the result before its call, without retaining unrelated results.
+            return text?.includes('"answers"')
+              ? { id: event.data.message.source.callId, role: 'update' }
+              : null
+          },
+        },
+        start: (_context, { event }) => {
+          const questions = parseJson(event.data.arguments)?.questions
+          if (!Array.isArray(questions) || questions.length === 0
+            || !questions.every(item => typeof item?.id === 'string' && typeof item.question === 'string')) return null
+          return { questions, pairs: null }
+        },
+        update: ({ state }, { event }) => {
+          if (state === null) return state
+          const result = parseJson(questionResultText(event))
+          if (result?.pending || !Array.isArray(result?.answers) || result.answers.length !== state.questions.length) return state
+          const answers = new Map(result.answers.map(item => [item?.id, item]))
+          const pairs = []
+          for (const { id, question } of state.questions) {
+            const answer = answers.get(id)
+            if (!Array.isArray(answer?.selected) || !answer.selected.every(value => typeof value === 'string')
+              || (answer.custom !== undefined && typeof answer.custom !== 'string')) return state
+            const values = [...answer.selected]
+            if (answer.custom?.trim()) values.push(answer.custom)
+            pairs.push({ id, question, answer: values.length ? values.join('、') : null })
+          }
+          return { ...state, pairs, anchorSeq: event.seq }
+        },
+        buildViewNode: ({ key, id, state, start }) => {
+          if (!state?.pairs) return null
+          // DSH 0.2.2 projects settled answers itself. Follow the installed
+          // client capability so a host update cannot produce a duplicate.
+          if (events.entries().some(definition => definition.kind === 'answered-user-question')) return null
+          return {
+            key, id, kind: QUESTION_HISTORY, target: 'chat', anchorSeq: state.anchorSeq,
+            location: start.location, groupTree: 'turn', visibility: 'visible', data: state.pairs,
+          }
+        },
+      }
+    }
+
+    function ZhangjieQuestionHistory({ node, sessionId, useSessions }) {
+      if (usePreset(sessionId, useSessions) !== PRESET) return null
+      return jsx('div', {
+        role: 'group',
+        'aria-label': '选择卡问答记录',
+        'data-qianlai-question-answer': node.id,
+        style: { display: 'flex', justifyContent: 'flex-end', padding: '4px 0' },
+        children: jsx('dl', {
+          style: {
+            display: 'grid', gap: 8, maxWidth: 'min(85%, 44rem)', margin: 0, padding: '10px 16px',
+            borderRadius: 'var(--dsw-radius-xl)', background: 'var(--dsw-specific-bubble)',
+            color: 'var(--dsw-alias-label-primary)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+          },
+          children: node.data.map(({ id, question, answer }) => jsx('div', {
+            children: [
+              jsx('dt', { style: { color: 'var(--dsw-alias-label-secondary)' }, children: question }),
+              jsx('dd', {
+                style: { margin: '3px 0 0' },
+                children: answer === null ? '已跳过' : [
+                  jsx('span', { style: { color: 'var(--dsw-alias-label-secondary)', marginInlineEnd: 8 }, children: '你的回答' }),
+                  answer,
+                ],
+              }),
+            ],
+          }, id)),
+        }),
+      })
+    }
+
     const inject = ['slots']
 
     function apply(ctx) {
@@ -173,6 +272,16 @@ window.__ModuleLoader__.load({
         ctx.slots.register(
           { name: 'conversation.hero.options', id: 'moneycome-zhangjie', order: -20 },
           ZhangjieTheme,
+        ),
+      )
+      ctx.inject(['uiConversation'], scope => {
+        const { events } = scope.uiConversation
+        events.register(questionHistoryDefinition(events))
+      })
+      ctx.slots.inject('conversation.chat.node', () =>
+        ctx.slots.register(
+          { name: 'conversation.chat.node', key: QUESTION_HISTORY },
+          ZhangjieQuestionHistory,
         ),
       )
     }
