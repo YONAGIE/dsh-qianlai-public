@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { Browser, Page } from 'playwright-core'
 
 import { openTaxBrowser } from './tax-browser.js'
+import regions from './tax-regions.json' with { type: 'json' }
 import { openZhejiangLogin, readZhejiangTaxInfo, TaxPortalError, type TaxProfile } from './zhejiang-tax.js'
 import type { RpcConnection } from './wechat/control.js'
 
@@ -32,6 +33,7 @@ interface Sessions {
 
 const portalFallback = '请在官方页面完成企业扫码并打开「纳税人信息查询」，也可以上传官方导出或截图继续建档。'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const cities: Readonly<Record<string, readonly string[]>> = regions
 
 export function registerTaxOnboarding(connection: RpcConnection, dshHome: string, sessions?: Sessions) {
   let current: Flow | undefined
@@ -120,15 +122,19 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
       const refuse = (message: string) => reply({ ok: false, error: { code: 'invalid-argument', message, details: {} } })
       const payload = envelope.payload
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return refuse('请选择建档操作。')
-      const { action, id, region, companyName, taxId, sessionId } = payload
+      const { action, id, province, city, companyName, taxId, sessionId } = payload
       if (typeof id !== 'string' || !UUID.test(id) || typeof action !== 'string'
           || !['start', 'status', 'read', 'cancel', 'submit'].includes(action) || request.signal.aborted) return refuse('请选择建档操作。')
       const value = (flow?: Flow) => reply({ ok: true, value: flow ? { phase: flow.phase, message: flow.message, profile: flow.profile } : { phase: 'idle' } })
       if (action === 'start') {
-        if (region !== 'zhejiang' || typeof companyName !== 'string' || !companyName.trim() || companyName.length > 200
+        if (typeof province !== 'string' || typeof city !== 'string' || !Object.hasOwn(cities, province) || !cities[province]?.includes(city))
+          return refuse('请先选择省份和城市或地区。')
+        if (province !== '浙江省' || city === '宁波市')
+          return refuse('所选地区暂未接入扫码取数。请提供该地区电子税务局的官方导出或截图。')
+        if (typeof companyName !== 'string' || !companyName.trim() || companyName.length > 200
             || /[\p{Cc}\p{Cf}]/u.test(companyName) || typeof taxId !== 'string' || !/^[0-9A-Z]{18}$/.test(taxId)
             || (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[\w-]{1,128}$/.test(sessionId))))
-          return refuse('请确认浙江地区、企业全称和 18 位统一社会信用代码。')
+          return refuse('请确认企业全称和 18 位统一社会信用代码。')
         if (current && !['failed', 'submitted'].includes(current.phase)) {
           return current.id === id ? value(current) : refuse('另一个建档窗口正在使用税务浏览器，请先完成或关闭它。')
         }

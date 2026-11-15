@@ -22,6 +22,7 @@ window.__ModuleLoader__.load({
 
     const PRESET = 'moneycome-zhangjie'
     const QUESTION_HISTORY = 'moneycome-question-history'
+    const TAX_REGION_CITIES = /* tax-region-catalogue */ {}
     const AVATAR = '__AVATAR_DATA_URL__'
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
     let connection
@@ -103,10 +104,12 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = useState(false)
       const [companyName, setCompanyName] = useState('')
       const [taxId, setTaxId] = useState('')
-      const [region, setRegion] = useState('')
+      const [province, setProvince] = useState('')
+      const [city, setCity] = useState('')
       const [view, setView] = useState({ phase: 'idle' })
       const [message, setMessage] = useState('')
       const busy = ['opening', 'reading', 'submitting'].includes(view.phase)
+      const supported = province === '浙江省' && city && city !== '宁波市'
       const inputStyle = { display: 'block', boxSizing: 'border-box', width: '100%', marginTop: 5, padding: 8, font: 'inherit', color: '#24433a', border: '1px solid #a3cdb6', borderRadius: 6 }
       const labelStyle = { display: 'block', margin: '12px 0' }
 
@@ -142,7 +145,7 @@ window.__ModuleLoader__.load({
       const start = event => {
         event.preventDefault()
         flow.current ??= window.crypto.randomUUID()
-        void request('start', { region, companyName, taxId: taxId.trim().toUpperCase(), ...(sessionId ? { sessionId } : {}) })
+        void request('start', { province, city, companyName, taxId: taxId.trim().toUpperCase(), ...(sessionId ? { sessionId } : {}) })
       }
       const begin = () => {
         setView({ phase: 'idle' })
@@ -159,17 +162,24 @@ window.__ModuleLoader__.load({
         }, children: [
           jsx('h2', { id: titleId, style: { margin: 0, fontSize: 20 }, children: '扫码读取企业税务资料' }),
           ['idle', 'failed'].includes(view.phase) ? jsx('form', { onSubmit: start, children: [
-            jsx('label', { style: labelStyle, children: ['税务地区', jsx('select', {
-              style: inputStyle, required: true, value: region, onChange: event => setRegion(event.target.value),
-              children: [jsx('option', { value: '', children: '选择税务地区' }), jsx('option', { value: 'zhejiang', children: '浙江省（宁波除外）' })],
+            jsx('label', { style: labelStyle, children: ['省份', jsx('select', {
+              style: inputStyle, required: true, value: province, onChange: event => { setProvince(event.target.value); setCity('') },
+              children: [jsx('option', { value: '', children: '选择省、自治区或直辖市' }),
+                ...Object.keys(TAX_REGION_CITIES).map(name => jsx('option', { value: name, children: name }, name))],
             })] }),
-            jsx('label', { style: labelStyle, children: ['企业全称', jsx('input', {
+            jsx('label', { style: labelStyle, children: ['城市或地区', jsx('select', {
+              style: inputStyle, required: true, disabled: !province, value: city, onChange: event => setCity(event.target.value),
+              children: [jsx('option', { value: '', children: '选择城市或地区' }),
+                ...(TAX_REGION_CITIES[province] ?? []).map(name => jsx('option', { value: name, children: name }, name))],
+            })] }),
+            city && !supported ? jsx('p', { role: 'status', children: '所选地区暂未接入扫码取数。可把电子税务局的官方导出或截图发给张姐继续建档。' }) : null,
+            supported ? jsx('label', { style: labelStyle, children: ['企业全称', jsx('input', {
               style: inputStyle, required: true, maxLength: 200, value: companyName, onChange: event => setCompanyName(event.target.value),
-            })] }),
-            jsx('label', { style: labelStyle, children: ['统一社会信用代码', jsx('input', {
+            })] }) : null,
+            supported ? jsx('label', { style: labelStyle, children: ['统一社会信用代码', jsx('input', {
               style: inputStyle, required: true, pattern: '[0-9A-Za-z]{18}', value: taxId, onChange: event => setTaxId(event.target.value),
-            })] }),
-            jsx('button', { type: 'submit', style: buttonStyle, children: '打开官方扫码页' }),
+            })] }) : null,
+            supported ? jsx('button', { type: 'submit', style: buttonStyle, children: '打开官方扫码页' }) : null,
           ] }) : null,
           busy ? jsx('p', { role: 'status', children: busyText[view.phase] }) : null,
           view.phase === 'waiting' ? jsx('p', { children: '请在打开的官方窗口使用电子税务局 APP 扫码，确认企业后回来读取。' }) : null,

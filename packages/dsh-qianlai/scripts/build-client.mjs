@@ -6,8 +6,11 @@ import { dirname, join } from 'node:path'
 const root = new URL('..', import.meta.url)
 const source = readFileSync(new URL('client/client.src.js', root), 'utf8')
 const avatar = readFileSync(new URL('assets/zhangjie/avatar.png', root)).toString('base64')
+const regions = JSON.parse(readFileSync(new URL('src/tax-regions.json', root), 'utf8'))
 mkdirSync(new URL('lib/', root), { recursive: true })
-writeFileSync(new URL('lib/client.js', root), source.replace('__AVATAR_DATA_URL__', `data:image/png;base64,${avatar}`))
+writeFileSync(new URL('lib/client.js', root), source
+  .replace('__AVATAR_DATA_URL__', `data:image/png;base64,${avatar}`)
+  .replace('/* tax-region-catalogue */ {}', JSON.stringify(regions)))
 
 // Ship SheetJS CE's official full build and license without rewriting either.
 // A URL dependency is valid for source development but rejected as an archive

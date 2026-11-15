@@ -40,8 +40,11 @@ it('核对完成才向来源会话提交一次税务资料，其他流无法读�
     return (await response.json() as { result: { ok: boolean; value?: unknown } }).result
   }
   try {
-    expect(await call('start', { region: 'ningbo', ...expected })).toMatchObject({ ok: false })
-    expect(await call('start', { region: 'zhejiang', sessionId: 'synthetic-session', ...expected })).toMatchObject({ value: { phase: 'opening' } })
+    expect(await call('start', { province: '浙江省', city: '上海市', ...expected })).toMatchObject({ ok: false })
+    expect(await call('start', { province: '浙江省', city: '宁波市', ...expected })).toMatchObject({ ok: false })
+    expect(await call('start', { province: '上海市', city: '上海市', ...expected })).toMatchObject({ ok: false })
+    expect(openTaxBrowser).not.toHaveBeenCalled()
+    expect(await call('start', { province: '浙江省', city: '杭州市', sessionId: 'synthetic-session', ...expected })).toMatchObject({ value: { phase: 'opening' } })
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'waiting' } }))
     await call('read')
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'ready', profile } }))
