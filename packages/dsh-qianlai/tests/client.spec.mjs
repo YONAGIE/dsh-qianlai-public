@@ -121,6 +121,12 @@ function makeClient() {
     render,
     setStatus(value) { status = value },
     buttonText() { return findButtons(render())[0]?.props.children },
+    buttons() { return findButtons(render()).map(node => node.props.children) },
+    click(text) {
+      const button = findButtons(render()).find(node => node.props.children === text)
+      if (!button || button.props.disabled) throw Error('button unavailable: ' + text)
+      button.props.onClick()
+    },
   }
 }
 
@@ -131,6 +137,33 @@ async function settle() {
 }
 
 describe('WeChat header status', () => {
+  it('opens the connected panel without starting handoff and issues a new start after disconnect', async () => {
+    const client = makeClient()
+    try {
+      client.render()
+      await settle()
+      client.click('微信已连接')
+      client.render()
+      await settle()
+      expect(client.calls).toEqual(['status', 'status'])
+      expect(client.buttons()).toContain('断开连接')
+
+      client.setStatus({ status: 'disconnected' })
+      client.click('断开连接')
+      await settle()
+      expect(client.buttons()).toEqual(['连接微信'])
+      expect(client.calls).toContain('disconnect')
+      expect(client.calls).not.toContain('start')
+
+      client.click('连接微信')
+      client.render()
+      await settle()
+      expect(client.calls.at(-1)).toBe('start')
+    } finally {
+      client.dispose()
+    }
+  })
+
   it('keeps status polling while closed and reflects disconnect and recovery', async () => {
     const client = makeClient()
     try {

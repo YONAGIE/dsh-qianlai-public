@@ -87,6 +87,7 @@ function sendFailure(error: unknown): SendFailure {
 async function sendRequest(operation: SendOperation, url: string | URL, init: RequestInit): Promise<Response> {
   let response: Response
   try {
+    init.signal?.throwIfAborted()
     response = await fetch(url, init)
   } catch (error) {
     throw new IlinkSendError(operation, sendFailure(error))
@@ -166,6 +167,7 @@ export interface ConnectionHooks {
 
 /** 一个已绑定 bot 的长连接。 */
 export class IlinkConnection {
+  private readonly lifetime = new AbortController()
   private polling = false
   private ctl: AbortController | undefined
   private cursor: string | undefined
@@ -179,14 +181,21 @@ export class IlinkConnection {
     this.cursor = hooks.initialCursor
   }
 
+  get signal(): AbortSignal { return this.lifetime.signal }
+
+  private sendSignal(timeout: number): AbortSignal {
+    return AbortSignal.any([this.signal, AbortSignal.timeout(timeout)])
+  }
+
   start(): void {
-    if (this.polling) return
+    if (this.polling || this.signal.aborted) return
     this.polling = true
     void this.loop()
   }
 
   stop(): void {
     this.polling = false
+    this.lifetime.abort()
     this.ctl?.abort()
     this.wake?.()
   }
@@ -225,6 +234,7 @@ export class IlinkConnection {
         if (!r.ok) throw new Error(`getupdates HTTP ${r.status}`)
         const d = (await r.json()) as IlinkResponse & { msgs?: IlinkMessage[]; get_updates_buf?: string }
         clearTimeout(timer)
+        if (!this.polling) break
         if (d.ret === -14 || d.errcode === -14) {
           this.polling = false
           this.hooks.onExpired?.()
@@ -272,7 +282,7 @@ export class IlinkConnection {
     const r = await sendRequest('sendmessage', `${ILINK}/ilink/bot/sendmessage`, {
       method: 'POST',
       headers: headers(this.botToken),
-      signal: AbortSignal.timeout(15_000),
+      signal: this.sendSignal(15_000),
       body: JSON.stringify({
         msg: {
           from_user_id: '',
@@ -296,7 +306,7 @@ export class IlinkConnection {
     const encrypted = Buffer.concat([cipher.update(bytes), cipher.final()])
     const filekey = randomBytes(16).toString('hex')
     const response = await sendRequest('getuploadurl', `${ILINK}/ilink/bot/getuploadurl`, {
-      method: 'POST', headers: headers(this.botToken), signal: AbortSignal.timeout(15_000),
+      method: 'POST', headers: headers(this.botToken), signal: this.sendSignal(15_000),
       body: JSON.stringify({ filekey, media_type: 1, to_user_id: toUserId, rawsize: bytes.length,
         rawfilemd5: createHash('md5').update(bytes).digest('hex'), filesize: encrypted.length,
         no_need_thumb: true, aeskey: key.toString('hex'), base_info: { channel_version: CHANNEL_VERSION } }),
@@ -308,11 +318,11 @@ export class IlinkConnection {
     if (!url) throw new IlinkSendError('getuploadurl', 'invalid-response', response.status)
     if (url.protocol !== 'https:' || !url.hostname.endsWith('.weixin.qq.com') || url.username || url.password)
       throw new IlinkSendError('getuploadurl', 'untrusted-destination', response.status)
-    const uploaded = await sendRequest('cdn-upload', url, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(encrypted), signal: AbortSignal.timeout(30_000) })
+    const uploaded = await sendRequest('cdn-upload', url, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(encrypted), signal: this.sendSignal(30_000) })
     const parameter = uploaded.headers.get('x-encrypted-param')
     if (uploaded.status !== 200 || !parameter) throw new IlinkSendError('cdn-upload', 'invalid-response', uploaded.status)
     const sent = await sendRequest('sendmessage', `${ILINK}/ilink/bot/sendmessage`, {
-      method: 'POST', headers: headers(this.botToken), signal: AbortSignal.timeout(15_000),
+      method: 'POST', headers: headers(this.botToken), signal: this.sendSignal(15_000),
       body: JSON.stringify({ msg: { from_user_id: '', to_user_id: toUserId, client_id: clientId,
         message_type: 2, message_state: 2, ...(contextToken ? { context_token: contextToken } : {}),
         item_list: [{ type: 2, image_item: { media: { encrypt_query_param: parameter,
@@ -324,10 +334,11 @@ export class IlinkConnection {
 
   /** 「对方正在输入」，尽力而为，失败不影响回复。 */
   async sendTyping(toUserId: string, contextToken: string | undefined): Promise<void> {
+    if (this.signal.aborted) return
     await fetch(`${ILINK}/ilink/bot/sendtyping`, {
       method: 'POST',
       headers: headers(this.botToken),
-      signal: AbortSignal.timeout(10_000),
+      signal: this.sendSignal(10_000),
       body: JSON.stringify({ to_user_id: toUserId, context_token: contextToken, base_info: { channel_version: CHANNEL_VERSION } }),
     }).catch(() => undefined)
   }
@@ -337,10 +348,11 @@ export class IlinkConnection {
  * 下载并解密一份媒体。CDN 下发的是 AES-128-ECB 密文：`aes_key` base64 解出 32 个十六进制字符，
  * 再按 hex 解成 16 字节做密钥。下载不需要 bot token。
  */
-export async function downloadMedia(media: IlinkMedia, declaredLength?: number): Promise<Buffer> {
+export async function downloadMedia(media: IlinkMedia, declaredLength?: number, signal?: AbortSignal): Promise<Buffer> {
   if (!media.full_url || !media.aes_key) throw new Error('media has no url or key')
   if (declaredLength !== undefined && declaredLength > MAX_MEDIA_BYTES) throw mediaTooLarge()
-  const r = await fetch(media.full_url, { signal: AbortSignal.timeout(30_000) })
+  const timeout = AbortSignal.timeout(30_000)
+  const r = await fetch(media.full_url, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
   if (!r.ok) {
     await r.body?.cancel().catch(() => undefined)
     throw new Error(`media download HTTP ${r.status}`)
