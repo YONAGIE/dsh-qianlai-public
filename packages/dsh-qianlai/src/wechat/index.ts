@@ -74,7 +74,7 @@ interface SessionEventLike {
   readonly time?: number
   readonly data?: {
     readonly turn?: number
-    readonly source?: { readonly rpcId?: unknown }
+    readonly source?: { readonly kind?: string; readonly rpcId?: unknown }
     readonly message?: { readonly content?: readonly { readonly type: string; readonly text?: string }[] }
     readonly content?: readonly { readonly type: string; readonly text?: string }[]
     readonly agentPreset?: string
@@ -422,7 +422,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (session.id !== state.sessionId) return
       const data = event.data ?? {}
       if (event.type === 'turn/start' && typeof data.turn === 'number') lastTurnStart = data.turn
-      if (event.type === 'user/message' && data.source?.rpcId !== state.desktopHandoff?.requestId) setIntroductionSession(session.id, false)
+      const ordinaryMessage = data.source?.kind === 'user' || typeof data.source?.rpcId === 'string'
+      if (event.type === 'user/message' && ordinaryMessage && data.source?.rpcId !== state.desktopHandoff?.requestId)
+        setIntroductionSession(session.id, false)
       if (event.type === 'user/message' && typeof data.source?.rpcId === 'string' && pendingRequests.delete(data.source.rpcId)) {
         if (!turns.has(lastTurnStart)) {
           const handoff = data.source.rpcId === state.desktopHandoff?.requestId ? state.desktopHandoff.requestId : undefined

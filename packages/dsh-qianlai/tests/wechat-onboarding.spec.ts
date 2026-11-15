@@ -137,7 +137,8 @@ function host(dir: string, options: { events?: Event[]; preset?: string; text?: 
       setTimeout(() => { void (async () => {
         const currentTurn = ++turn
         emit('turn/start', { turn: currentTurn })
-        emit('user/message', { source: { rpcId: request.requestId } })
+        emit('user/message', { source: { kind: 'user', rpcId: request.requestId } })
+        emit('user/message', { source: { kind: 'runtime-context' } })
         await options.during?.()
         emit('assistant/message', { turn: currentTurn, message: { content: [{ type: 'text', text: options.text ?? reply }] } })
         emit('turn/end', { turn: currentTurn, reason: { kind: 'completed' } })
