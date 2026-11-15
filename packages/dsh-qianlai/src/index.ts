@@ -178,7 +178,23 @@ export function apply(ctx: Context, config: Config = {}): void {
                 const preview = name === 'moneycome_record_entry'
                   ? recordEntry(store, pack, { ...args, preview: true } as unknown as RecordEntryInput, new Date()) : undefined
                 if (preview && !preview.accepted) return preview
-                const reason = `账本：${store.company()?.name ?? '未开账'}\n操作：${name}\n参数：${canonical(args)}${preview ? `\n当前预演：${canonical(preview)}` : ''}\n只批准本次操作；拒绝或取消不会执行。`
+                const book = store.company()?.name ?? '未开账'
+                const line = (value: unknown) => String(value ?? '').replace(/[\s\u202a-\u202e\u2066-\u2069]+/g, ' ').trim()
+                const reason = preview
+                  ? [
+                      `账本：${line(book)}`,
+                      '操作：正式记账',
+                      `日期：${line(args.date)}`,
+                      `摘要：${line(args.summary)}`,
+                      '',
+                      '本次分录',
+                      ...preview.legs.map(leg => `${leg.side}　${line(leg.subjectName)}（${leg.subjectCode}）　${leg.amount} 元`),
+                      ...(args.invoiceNumber ? [`发票号码：${line(args.invoiceNumber)}`] : []),
+                      ...(Array.isArray(args.statementLineIds) && args.statementLineIds.length ? [`关联流水：${args.statementLineIds.length} 笔`] : []),
+                      '',
+                      '允许一次后将正式生成凭证。拒绝或取消时，本次操作不入账。',
+                    ].join('\n')
+                  : `账本：${book}\n操作：${name}\n参数：${canonical(args)}\n只批准本次操作；拒绝或取消不会执行。`
                 const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
                 if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
                 if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })

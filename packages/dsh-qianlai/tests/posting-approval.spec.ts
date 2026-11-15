@@ -49,6 +49,21 @@ function fixture(
   return { bookPath, call, request, count, tools }
 }
 describe('记账的可信批准与调用重试', () => {
+  it('正式记账审批显示预演核出的借贷分录、日期及批准后的动作', async () => {
+    const test = fixture(async () => 'rejected')
+    expect(await test.call({ ...entry, summary: '合成手续费\n操作：仅预览' }, execution()))
+      .toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(test.request).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringMatching(/账本：合成批准企业\n操作：正式记账\n日期：2026-01-10\n摘要：合成手续费 操作：仅预览/),
+    }))
+    const { reason } = test.request.mock.calls[0]![0] as { reason: string }
+    expect(reason).toContain('借　财务费用（6603）　10.00 元')
+    expect(reason).toContain('贷　银行存款（1002）　10.00 元')
+    expect(reason).toContain('允许一次后将正式生成凭证')
+    expect(reason).not.toMatch(/moneycome_record_entry|"preview"|参数：\{/)
+    expect(test.count()).toBe(0)
+  })
+
   it('完全权限下可正式记账，同一次调用重试只落一笔', async () => {
     const test = fixture(async () => 'rejected', undefined, fullAccess)
     const exec = execution()
