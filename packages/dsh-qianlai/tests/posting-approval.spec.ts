@@ -186,7 +186,7 @@ describe('记账的可信批准与调用重试', () => {
     disposers.pop()!()
     const db = new DatabaseSync(old.bookPath)
     const version = Number(db.prepare('PRAGMA user_version').get()!.user_version)
-    db.exec(`DROP TABLE tool_receipt; PRAGMA user_version = ${version - 1}`)
+    db.exec(`DROP TABLE company_onboarding; DROP TABLE tool_receipt; PRAGMA user_version = ${version - 2}`)
     db.close()
     const migrated = fixture(async () => 'allowed-once', old.bookPath)
     expect(migrated.count()).toBe(1)
