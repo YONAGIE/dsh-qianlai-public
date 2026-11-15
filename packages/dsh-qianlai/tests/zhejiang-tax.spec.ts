@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseZhejiangTaxProfile, TaxPortalError, type TaxPageData } from '../src/zhejiang-tax.js'
+import { parseTaxProfile, TaxPortalError, type TaxPageData } from '../src/tax-portal.js'
+import { taxPortalFor } from '../src/tax-portals.js'
+
+const zhejiang = taxPortalFor('浙江省', '杭州市')!
+const parseZhejiangTaxProfile = (basic: TaxPageData, tax: TaxPageData, expected: { companyName: string; taxId: string }, now: Date) =>
+  parseTaxProfile(zhejiang, basic, tax, expected, now)
 
 const now = new Date('2026-11-15T08:00:00.000Z')
 const expected = { companyName: '合成税务样本有限公司', taxId: '91330000MA00000000' }
@@ -39,6 +44,14 @@ function expectPortalError(action: () => unknown, code: TaxPortalError['code']) 
 }
 
 describe('浙江电子税务局企业信息识别', () => {
+  it('只为有效且已接入的浙江辖区选择浙江站点', () => {
+    expect(zhejiang).toMatchObject({ homeOrigin: 'https://etax.zhejiang.chinatax.gov.cn:8443' })
+    expect(taxPortalFor('浙江省', '温州市')).toBe(zhejiang)
+    expect(taxPortalFor('浙江省', '宁波市')).toBeUndefined()
+    expect(taxPortalFor('浙江省', '上海市')).toBeUndefined()
+    expect(taxPortalFor('上海市', '上海市')).toBeUndefined()
+  })
+
   it('只读取目标字段，保留来源和当前页覆盖范围', () => {
     expect(parseZhejiangTaxProfile(
       { ...basic, facts: [...basic.facts, ['联系电话', '合成联系方式']] },

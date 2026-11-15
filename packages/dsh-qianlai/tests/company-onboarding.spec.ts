@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus, type OnboardingView } from '../src/company-onboarding.js'
 import { BookStore } from '../src/store.js'
-import type { TaxProfile } from '../src/zhejiang-tax.js'
+import type { TaxProfile } from '../src/tax-portal.js'
 
 const now = () => new Date('2026-11-16T08:00:00Z')
 const enterprise = {
