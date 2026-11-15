@@ -30,7 +30,7 @@ export DEEPSEEK_API_KEY=your-key
 dsh --profile web
 ```
 
-Open the printed URL, pick **钱来张姐** in the mode picker above the input box, and start a session. The first start creates fictional sample books; ask Zhangjie to open your own company's books when you are ready, and she clears the sample after you agree.
+Open the printed URL, pick **钱来张姐** in the mode picker and click **开始建档** (Start setup). Review company details, the bookkeeping month, and payroll and social insurance arrangements before confirming. You can enter data yourself or review fields recognized by the current model. Save and collapse the card to resume later. Confirm before replacing the first-run sample ledger. If you have prior books, continue with the opening balances after setup.
 
 When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Full access posts after you confirm the entry in chat. Workspace-write requests DSH approval before posting. WeChat presents the choices in text.
 

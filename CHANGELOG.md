@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Set up Zhangjie's company in four guided stages. Enter or recognize company documents, review the tax portal result, set the bookkeeping month and payroll arrangements, and confirm handoff to the local ledger. Resume saved drafts when reopening a conversation.
 - Open the official Zhejiang enterprise tax QR login from Zhangjie onboarding, then show reviewed tax information for the selected enterprise. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable.
 - Disconnect WeChat from the connection dialog and scan a new code when reconnecting. Keep the original owner and conversation available after restart.
 - Use the current business date for missing bank statement reminders during an open month. Check complete coverage when closing that month.
