@@ -34,6 +34,7 @@ import { exportReviewPack } from './review-pack.js'
 import { seedSampleBook } from './sample-book.js'
 import { importStatement, readUpload, renameBankAccount, unrecordedStatementLines, type ImportStatementInput } from './statements.js'
 import { BookStore } from './store.js'
+import { registerTaxOnboarding } from './tax-onboarding.js'
 import { saveWorkNote, workProgress, WORK_OPERATIONS } from './work-progress.js'
 import { parseReferencedPdf, type UploadOptions, type UploadResult } from './uploads.js'
 import { isIntroductionSession, isWechatSession, loginControl, type LoginAction } from './wechat/control.js'
@@ -75,6 +76,7 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, item:
 
 interface Context {
   effect(fn: () => () => void): void
+  inject?(dependencies: string[], fn: (scope: Context) => void): void
   on?(event: 'session/event', listener: (session: PdfReferenceSession, event: PdfReferenceEvent) => void): () => void
   tools: {
     register(tool: ToolDefinition): () => void
@@ -106,7 +108,15 @@ const periodKey = { periodKey: str('会计期间，YYYY-MM') }
 const stringMap = (description: string) => ({ type: 'object', additionalProperties: { type: 'string' }, description })
 
 export function apply(ctx: Context, config: Config = {}): void {
-  if (config.mode === 'ui') return
+  if (config.mode === 'ui') {
+    ctx.inject?.(['connection', 'sessionController'], scope => {
+      const connection = scope.get?.('connection') as Parameters<typeof registerTaxOnboarding>[0] | undefined
+      if (connection) scope.effect(() => registerTaxOnboarding(
+        connection, dshHome(), scope.get?.('sessionController') as Parameters<typeof registerTaxOnboarding>[2],
+      ))
+    })
+    return
+  }
   ctx.effect(() => {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())

@@ -1,4 +1,4 @@
-/* global window, AbortController, setTimeout, clearTimeout, setInterval, clearInterval */
+/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -87,6 +87,118 @@ window.__ModuleLoader__.load({
       ] })
     }
 
+
+    async function taxRequest(action, id, extra = {}) {
+      if (!connection) throw Error('建档服务还没就绪，请稍后重试。')
+      const result = await connection.rpc.call('/api', 'qianlai/tax-onboarding', { action, id, ...extra }, AbortSignal.timeout(10000))
+      if (!result.ok) throw Error(result.error.message)
+      return result.value
+    }
+
+    function TaxOnboarding({ sessionId }) {
+      const titleId = useId()
+      const dialog = useRef(null)
+      const flow = useRef(null)
+      const pending = useRef(false)
+      const [open, setOpen] = useState(false)
+      const [companyName, setCompanyName] = useState('')
+      const [taxId, setTaxId] = useState('')
+      const [region, setRegion] = useState('')
+      const [view, setView] = useState({ phase: 'idle' })
+      const [message, setMessage] = useState('')
+      const busy = ['opening', 'reading', 'submitting'].includes(view.phase)
+      const inputStyle = { display: 'block', boxSizing: 'border-box', width: '100%', marginTop: 5, padding: 8, font: 'inherit', color: '#24433a', border: '1px solid #a3cdb6', borderRadius: 6 }
+      const labelStyle = { display: 'block', margin: '12px 0' }
+
+      const request = async (action, extra) => {
+        if (pending.current || !flow.current) return
+        const id = flow.current
+        pending.current = true
+        if (action !== 'status') setMessage('')
+        try {
+          const result = await taxRequest(action, id, extra)
+          if (flow.current === id) setView(result)
+          else if (action === 'start') void taxRequest('cancel', id).catch(() => {})
+        } catch (error) {
+          if (flow.current === id && action !== 'status') setMessage(error.message || '建档操作失败，请重试。')
+        } finally {
+          if (flow.current === id) pending.current = false
+        }
+      }
+
+      useEffect(() => {
+        if (!open) return
+        dialog.current?.showModal()
+        const timer = setInterval(() => { if (flow.current) void request('status') }, 1200)
+        return () => {
+          clearInterval(timer)
+          const id = flow.current
+          flow.current = null
+          pending.current = false
+          if (id) void taxRequest('cancel', id).catch(() => {})
+        }
+      }, [open])
+
+      const start = event => {
+        event.preventDefault()
+        flow.current ??= window.crypto.randomUUID()
+        void request('start', { region, companyName, taxId: taxId.trim().toUpperCase(), ...(sessionId ? { sessionId } : {}) })
+      }
+      const begin = () => {
+        setView({ phase: 'idle' })
+        setMessage('')
+        setOpen(true)
+      }
+      const profile = view.profile
+      const busyText = { opening: '正在打开官方企业登录页，缺少可用浏览器时会先下载 Chromium。', reading: '正在核对企业并读取税务资料。', submitting: '正在把你确认的资料交给当前对话。' }
+      return jsx('span', { children: [
+        jsx('button', { type: 'button', style: buttonStyle, onClick: begin, children: '开始建档' }),
+        open ? jsx('dialog', { ref: dialog, 'aria-labelledby': titleId, onCancel: () => setOpen(false), style: {
+          width: 'min(480px, calc(100vw - 48px))', maxHeight: '85vh', overflow: 'auto', padding: 24, border: '1px solid #c4eacf',
+          borderRadius: 16, background: '#fff', color: '#24433a',
+        }, children: [
+          jsx('h2', { id: titleId, style: { margin: 0, fontSize: 20 }, children: '扫码读取企业税务资料' }),
+          ['idle', 'failed'].includes(view.phase) ? jsx('form', { onSubmit: start, children: [
+            jsx('label', { style: labelStyle, children: ['税务地区', jsx('select', {
+              style: inputStyle, required: true, value: region, onChange: event => setRegion(event.target.value),
+              children: [jsx('option', { value: '', children: '选择税务地区' }), jsx('option', { value: 'zhejiang', children: '浙江省（宁波除外）' })],
+            })] }),
+            jsx('label', { style: labelStyle, children: ['企业全称', jsx('input', {
+              style: inputStyle, required: true, maxLength: 200, value: companyName, onChange: event => setCompanyName(event.target.value),
+            })] }),
+            jsx('label', { style: labelStyle, children: ['统一社会信用代码', jsx('input', {
+              style: inputStyle, required: true, pattern: '[0-9A-Za-z]{18}', value: taxId, onChange: event => setTaxId(event.target.value),
+            })] }),
+            jsx('button', { type: 'submit', style: buttonStyle, children: '打开官方扫码页' }),
+          ] }) : null,
+          busy ? jsx('p', { role: 'status', children: busyText[view.phase] }) : null,
+          view.phase === 'waiting' ? jsx('p', { children: '请在打开的官方窗口使用电子税务局 APP 扫码，确认企业后回来读取。' }) : null,
+          view.phase === 'waiting' ? jsx('button', { type: 'button', style: buttonStyle, onClick: () => void request('read'), children: '已登录，读取税务资料' }) : null,
+          profile ? jsx('section', { 'aria-label': '读取到的企业税务资料', children: [
+            jsx('h3', { children: '核对建档资料' }),
+            jsx('p', { children: profile.companyName + ' · ' + profile.taxId }),
+            jsx('p', { children: '主管税务机关 ' + profile.authority }),
+            profile.registrationStatus ? jsx('p', { children: '登记状态 ' + profile.registrationStatus }) : null,
+            profile.registrationDate ? jsx('p', { children: '登记日期 ' + profile.registrationDate }) : null,
+            profile.taxpayerStatus ? jsx('p', { children: '纳税人状态 ' + profile.taxpayerStatus }) : null,
+            profile.taxpayerQualification ? jsx('p', { children: '纳税人资格 ' + profile.taxpayerQualification }) : null,
+            profile.obligations.length ? jsx('ul', { children: profile.obligations.map((tax, i) => jsx('li', {
+              children: [tax.taxCategory, tax.taxItem, tax.filingCycle, [tax.effectiveFrom, tax.effectiveTo].filter(Boolean).join(' 至 ')].filter(Boolean).join(' · '),
+            }, i)) }) : jsx('p', { children: '当前页面没有税费种认定记录。' }),
+            jsx('p', { children: '来源 ' + profile.sourceUrl + ' · ' + new Date(profile.observedAt).toLocaleString('zh-CN') }),
+            sessionId && view.phase === 'ready' ? jsx('button', { type: 'button', style: buttonStyle, onClick: () => void request('submit'), children: '用这些资料继续建档' }) : null,
+            jsx('button', { type: 'button', style: { ...buttonStyle, marginLeft: sessionId ? 8 : 0 }, onClick: () => {
+              void Promise.resolve().then(() => window.navigator.clipboard.writeText(JSON.stringify(profile, null, 2)))
+                .then(() => setMessage('已复制建档资料。'), () => setMessage('复制失败，请选中资料后手动复制。'))
+            }, children: '复制资料' }),
+          ] }) : null,
+          view.phase === 'submitted' ? jsx('p', { role: 'status', children: '已把核对过的税务资料交给当前对话。' }) : null,
+          message || view.message ? jsx('p', { role: 'status', children: message || view.message }) : null,
+          jsx('button', { type: 'button', style: { ...buttonStyle, marginTop: 16, background: '#fff' }, onClick: () => setOpen(false), children: '关闭' }),
+        ] }) : null,
+      ] })
+    }
+
     // 钱来配色层。DSH 的主色、气泡、选中态、焦点环都引用 deepseek 色阶，整组换成绿色即可跟着变；
     // 色阶本身不分明暗（明暗两套各取不同档），所以 light/dark 同值。
     const SCALE = {
@@ -151,14 +263,14 @@ window.__ModuleLoader__.load({
     function ZhangjieAvatar({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId })] }) : null
+      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId }), jsx(TaxOnboarding, { sessionId })] }) : null
     }
 
     /** 新会话页也提供微信入口。 */
     function ZhangjieTheme({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx(WechatPanel, { sessionId }) : null
+      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10 }, children: [jsx(WechatPanel, { sessionId }), jsx(TaxOnboarding, { sessionId })] }) : null
     }
 
     function parseJson(text) {
