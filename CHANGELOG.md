@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Open the official Zhejiang enterprise tax QR login from Zhangjie onboarding, then show reviewed tax information for the selected enterprise. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable.
+
 - Show the current WeChat connection state in the Zhangjie header, mark sustained long-poll failures as reconnecting, and restore the connected state when polling recovers.
 
 - Record WeChat welcome send attempts, response codes and retry stages in the local channel log. The log records whether a conversation context is present and omits credentials and message contents.
