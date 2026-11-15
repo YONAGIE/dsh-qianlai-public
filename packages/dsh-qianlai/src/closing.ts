@@ -89,6 +89,9 @@ function bankBalanceCheck(store: BookStore, bankSubject: string, periodKey: stri
 
 function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startMonth: string, now: Date) {
   const range = monthRange(periodKey)
+  const businessDate = todayInChina(now)
+  const periodEnded = range.to < businessDate
+  const statementRange = { from: range.from, to: periodEnded ? range.to : businessDate }
   const transferIds = new Set(balanceTransferItems(pack.payload).map((i) => i.itemId))
   const vouchers = store.vouchers({ periodKey }).filter((v) => !transferIds.has(v.eventKind))
   const lines = store.statementLines(range)
@@ -106,7 +109,7 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
       periodKey === startMonth
         ? { kind: 'first_period' }
         : { kind: store.lockedPeriods().includes(prev) ? 'locked' : 'open', periodKey: prev },
-    accounts: [...coverage].map(([accountRef, coveredRanges]) => ({ accountRef, coveredRanges })),
+    accounts: [...coverage].map(([accountRef, coveredRanges]) => ({ accountRef, coveredRanges, requiredRange: statementRange })),
     unexplainedTransactionRefs: lines.filter((l) => !l.voucherNo).map((l) => String(l.id)),
     events: vouchers.map((v) => ({
       eventRef: v.voucherNo,
@@ -172,13 +175,17 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
     }
   }
   const checks: { check: string; passed: boolean; blockers: object[] }[] = report.checks.map((c) => ({
-    check: CHECK_NAMES[c.checkId],
+    check: c.checkId === 'statement_complete' && !periodEnded
+      ? `银行流水覆盖检查截至 ${statementRange.to}`
+      : CHECK_NAMES[c.checkId],
     passed: c.passed,
     blockers: c.blockers.map(describe),
   }))
   if (bankSubject) {
     const complete = report.checks.find((c) => c.checkId === 'statement_complete')?.passed ?? true
-    checks.push(bankBalanceCheck(store, bankSubject, periodKey, complete))
+    checks.push(periodEnded
+      ? bankBalanceCheck(store, bankSubject, periodKey, complete)
+      : { check: BANK_BALANCE_CHECK, passed: false, blockers: [{ kind: 'bank_balance_pending', message: '月末余额待本期结束后核对。' }] })
   }
   const openingConfirmed = store.openingBalancesSetAt() !== undefined
   const corrections = store.pendingCorrections(periodKey)
@@ -186,12 +193,14 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
     check: '已确认在本月补记的更正凭证已入账', passed: false,
     blockers: corrections.map(row => ({ kind: 'correction_pending', ...row, replacementPeriod: periodKey })),
   })
-  const periodEnded = periodKey < todayInChina(now).slice(0, 7)
   checks.push(
     { check: '期初余额已经确认（含全零）', passed: openingConfirmed, blockers: openingConfirmed ? [] : [{ kind: 'opening_balances_unconfirmed' }] },
     { check: '本月业务期间已经结束', passed: periodEnded, blockers: periodEnded ? [] : [{ kind: 'period_not_ended', periodKey }] },
   )
   return {
+    businessDate,
+    periodEnded,
+    statementRange,
     canClose: checks.every((c) => c.passed),
     checks,
     atClose: [...transferIds].map(itemName),
