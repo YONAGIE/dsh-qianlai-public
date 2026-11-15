@@ -32,6 +32,8 @@ dsh --profile web
 
 Open the printed URL, pick **钱来张姐** in the mode picker and click **开始建档** (Start setup). Review company details, the bookkeeping month, and payroll and social insurance arrangements before confirming. You can enter data yourself or review fields recognized by the current model. Save and collapse the card to resume later. Confirm before replacing the first-run sample ledger. If you have prior books, continue with the opening balances after setup.
 
+For Beijing, select **北京市** in both region fields and open the official QR page. For Zhejiang, select a city served by the provincial tax bureau. After signing in with the e-tax app, confirm the company, return to DSH, and read and review the tax information before applying it to the draft.
+
 When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Full access posts after you confirm the entry in chat. Workspace-write requests DSH approval before posting. WeChat presents the choices in text.
 
 Select Zhangjie and click **连接微信** → **获取二维码**. Scan with the owner’s WeChat; status updates live and expired codes can be refreshed. An explicit request to Zhangjie can also start login. `MONEYCOME_WECHAT=1` retains automatic terminal QR login. A different scanner cannot take over the existing book.

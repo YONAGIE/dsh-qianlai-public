@@ -38,3 +38,12 @@ export function taxPortalFor(province: string, city: string): TaxPortal | undefi
   const portal = portals[province]
   return portal?.excludedCities?.includes(city) ? undefined : portal
 }
+
+export function taxScanCities(): Record<string, string[]> {
+  const supported: Record<string, string[]> = {}
+  for (const [province, cities] of Object.entries(taxRegionCities)) {
+    const connected = cities.filter(city => taxPortalFor(province, city))
+    if (connected.length) supported[province] = connected
+  }
+  return supported
+}
