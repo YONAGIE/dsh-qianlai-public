@@ -1,3 +1,4 @@
+import { createCipheriv } from 'node:crypto'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply as applyTools } from '../src/index.js'
 import { BookStore } from '../src/store.js'
 import { isIntroductionSession, loginControl } from '../src/wechat/control.js'
+import type { IlinkItem } from '../src/wechat/ilink.js'
 import { apply } from '../src/wechat/index.js'
 
 const disposers: (() => void)[] = []
@@ -17,6 +19,9 @@ const writeState = (dir: string, state: object) => writeFileSync(join(dir, 'wech
 const source = 'synthetic-desktop'
 const sessionId = 'synthetic-wechat'
 const reply = '刚才提到核对2026年三月利润，还没有查询，要接着查吗？'
+const imageKey = Buffer.alloc(16, 7)
+const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7V0AAAAASUVORK5CYII=', 'base64')
+const imageUrl = 'https://example.invalid/synthetic-image'
 
 function directory(state: object = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'qianlai-onboarding-'))
@@ -33,11 +38,13 @@ function hanging(signal?: AbortSignal | null) {
     else signal?.addEventListener('abort', fail, { once: true })
   })
 }
-function network() {
+function network(imageGate?: Promise<void>) {
   const sent: { id: string; type: number; text?: string }[] = []
   let failSummary = false
+  let failWelcome = false
   let contextRequired = false
   let incoming: ((response: Response) => void) | undefined
+  let messageNumber = 0
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
     const path = String(url)
     if (path.includes('/get_bot_qrcode')) return json({ ret: 0, qrcode: 'synthetic-code', qrcode_img_content: 'https://example.invalid/synthetic-code' })
@@ -48,12 +55,20 @@ function network() {
       if (init?.signal?.aborted) fail()
       else init?.signal?.addEventListener('abort', fail, { once: true })
     })
-    if (path.endsWith('/getuploadurl')) return json({ upload_full_url: 'https://novac2c.cdn.weixin.qq.com/synthetic-upload' })
+    if (path.endsWith('/getuploadurl')) {
+      await imageGate
+      return json({ upload_full_url: 'https://novac2c.cdn.weixin.qq.com/synthetic-upload' })
+    }
     if (path.endsWith('/synthetic-upload')) return new Response('', { headers: { 'x-encrypted-param': 'synthetic-image' } })
+    if (path === imageUrl) {
+      const cipher = createCipheriv('aes-128-ecb', imageKey, null)
+      return new Response(new Uint8Array(Buffer.concat([cipher.update(image), cipher.final()])))
+    }
     if (path.endsWith('/sendtyping')) return json({ ret: 0 })
     if (path.endsWith('/sendmessage')) {
       const body = JSON.parse(String(init?.body)) as { msg: { client_id: string; context_token?: string; item_list: { type: number; text_item?: { text: string } }[] } }
       if (contextRequired && !body.msg.context_token) return json({ ret: -2, errcode: 42, errmsg: 'private-server-detail' })
+      if (failWelcome && body.msg.client_id.startsWith('mc-welcome-')) return new Response('', { status: 503 })
       if (failSummary && body.msg.client_id.startsWith('mc-handoff-')) return new Response('', { status: 503 })
       const item = body.msg.item_list[0]!
       sent.push({ id: body.msg.client_id, type: item.type, ...(item.text_item ? { text: item.text_item.text } : {}) })
@@ -61,10 +76,25 @@ function network() {
     }
     return hanging(init?.signal)
   }))
-  return { sent, failSummary: (value: boolean) => { failSummary = value }, requireContext: () => { contextRequired = true },
-    hello: () => incoming?.(json({ ret: 0, get_updates_buf: 'synthetic-cursor', msgs: [{ msg_id: 'synthetic-message', message_type: 1, from_user_id: 'synthetic-owner', context_token: 'synthetic-context', item_list: [{ type: 1, text_item: { text: '你好' } }] }] })) }
+  return {
+    sent,
+    failSummary: (value: boolean) => { failSummary = value },
+    failWelcome: () => { failWelcome = true },
+    requireContext: () => { contextRequired = true },
+    canReceive: () => incoming !== undefined,
+    hello(items: IlinkItem[] = [{ type: 1, text_item: { text: '你好' } }]) {
+      const receive = incoming
+      incoming = undefined
+      receive?.(json({
+        ret: 0, get_updates_buf: `synthetic-cursor-${++messageNumber}`,
+        msgs: [{ msg_id: `synthetic-message-${messageNumber}`, message_type: 1, from_user_id: 'synthetic-owner', context_token: 'synthetic-context', item_list: items }],
+      }))
+    },
+  }
 }
 type Event = { type: string; seq?: number; time?: number; data?: Record<string, unknown> }
+type Assembly = { agent: { session: { id: string } }; signal: AbortSignal }
+type Decision = { kind: 'enter'; messages: { source: { kind: 'user'; rpcId: string } }[] }
 function desktopEvents(): Event[] {
   return [
     { type: 'agent-preset/selected', seq: 0, data: { agentPreset: 'moneycome-zhangjie' } },
@@ -75,17 +105,33 @@ function desktopEvents(): Event[] {
 function host(dir: string, options: { events?: Event[]; preset?: string; text?: string; histories?: Event[]; during?: () => Promise<void> } = {}) {
   let dispose = () => {}
   let eventListener: ((session: { id: string }, event: Event) => void) | undefined
+  let preStep: ((assembly: Assembly, next: () => Promise<Decision>) => Promise<Decision>) | undefined
+  let context: ((assembly: Assembly) => string) | undefined
   const histories = options.histories ?? []
-  const prompts: { requestId: string; content: { type: string; text?: string }[] }[] = []
+  const prompts: { sessionId: string; requestId: string; content: { type: string; text?: string }[] }[] = []
+  const contexts: string[] = []
+  const modelContext = async (sessionId: string, requestId: string) => {
+    const assembly = { agent: { session: { id: sessionId } }, signal: new AbortController().signal }
+    await preStep?.(assembly, async () => ({ kind: 'enter', messages: [{ source: { kind: 'user', rpcId: requestId } }] }))
+    return context?.(assembly) ?? ''
+  }
   let turn = 0
   const inspect = vi.fn(async (id: string) => ({ meta: { agentPreset: options.preset ?? 'moneycome-zhangjie' }, events: id === source
     ? options.events ?? desktopEvents().map(event => event.type === 'agent-preset/selected' && options.preset ? { ...event, data: { agentPreset: options.preset } } : event)
     : histories }))
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   apply({ effect: (fn: () => () => void) => { dispose = fn() },
-    on: (name: string, listener: unknown) => { if (name === 'session/event') eventListener = listener as typeof eventListener; return () => {} },
-    get: () => undefined, logger: { info() {}, warn() {}, error() {} },
+    on: (name: string, listener: unknown) => {
+      if (name === 'session/event') eventListener = listener as typeof eventListener
+      if (name === 'agent/pre-step') preStep = listener as typeof preStep
+      return () => {}
+    },
+    get: (name: string) => name === 'systemPrompt'
+      ? { context: ({ text }: { text: typeof context }) => { context = text; return () => { context = undefined } } }
+      : undefined,
+    logger: { info() {}, warn() {}, error() {} },
     sessionController: { inspect, create: async () => ({ sessionId }), prompt: async (request: typeof prompts[number]) => {
+      contexts.push(await modelContext(request.sessionId, request.requestId))
       prompts.push(request)
       const emit = (type: string, data: Record<string, unknown>) => { const event = { type, data }; histories.push(event); eventListener?.({ id: sessionId }, event) }
       setTimeout(() => { void (async () => {
@@ -100,7 +146,7 @@ function host(dir: string, options: { events?: Event[]; preset?: string; text?: 
     } },
   } as never, { stateDir: dir, autoStart: false })
   disposers.push(() => dispose())
-  return { control: loginControl(dir)!, prompts, inspect, stop: () => dispose() }
+  return { control: loginControl(dir)!, prompts, contexts, modelContext, inspect, stop: () => dispose() }
 }
 const completedWelcome = { welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-finished' }
 const savedLogin = { botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', contextToken: 'synthetic-context', ...completedWelcome }
@@ -113,6 +159,7 @@ describe('微信欢迎与桌面任务主动续接', () => {
     expect(net.sent.map(item => item.type)).toEqual([1, 2, 2, 2, 1])
     expect(net.sent.at(-1)?.text).toBe(reply)
     expect(active.prompts).toHaveLength(1)
+    expect(active.contexts).toEqual([''])
     expect(active.prompts[0]!.content[0]!.text).toContain('三月利润')
     expect(readState(dir)).toMatchObject({ welcomePending: false, desktopHandoff: { sourceSessionId: source, throughSeq: 2, phase: 'complete' } })
   })
@@ -166,6 +213,46 @@ describe('微信欢迎与桌面任务主动续接', () => {
     expect(log).toContain(`welcome complete welcome=${trace} attempt=2 trigger=owner-message`)
     expect(log).not.toMatch(/synthetic-token|synthetic-owner|synthetic-context|private-server-detail/)
     active.stop()
+  })
+  it('首条业务消息收到准确的欢迎上下文，保留原文和附件，图片续发不阻塞模型', async () => {
+    let resumeImages = () => {}
+    const images = new Promise<void>(resolve => { resumeImages = resolve })
+    const net = network(images); net.requireContext()
+    const dir = directory({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner' }), active = host(dir)
+    try {
+      await vi.waitFor(() => expect(readFileSync(join(dir, 'wechat.log'), 'utf8')).toContain('welcome delivery incomplete'))
+      const text = '帮我核对这张合成票据'
+      net.hello([
+        { type: 1, text_item: { text } },
+        { type: 2, image_item: { media: { full_url: imageUrl, aes_key: Buffer.from(imageKey.toString('hex')).toString('base64') } } },
+      ])
+      await vi.waitFor(() => expect(active.prompts).toHaveLength(1))
+      const welcome = net.sent.find(item => item.id.endsWith('-intro'))
+      expect(welcome?.text).toBeTruthy()
+      expect(active.contexts[0]).toContain(welcome!.text!)
+      expect(active.contexts[0]).toContain('手机端显示尚未核实')
+      expect(active.prompts[0]?.content).toEqual([{ type: 'text', text }, { type: 'image', mediaType: 'image/png', data: image.toString('base64') }])
+      expect(net.sent.filter(item => item.type === 2)).toHaveLength(0)
+      expect(await active.modelContext(source, active.prompts[0]!.requestId)).toBe('')
+      expect(await active.modelContext(sessionId, 'unrelated-desktop-request')).toBe('')
+      resumeImages()
+      await vi.waitFor(() => expect(net.sent.filter(item => item.type === 2)).toHaveLength(3))
+      await vi.waitFor(() => expect(net.canReceive()).toBe(true))
+      net.hello()
+      await vi.waitFor(() => expect(active.contexts).toHaveLength(2))
+      expect(active.contexts[1]).toBe('')
+    } finally { resumeImages() }
+  })
+  it('固定欢迎发送失败时，首条模型请求仍继续处理且只得到未确认状态', async () => {
+    const net = network(); net.failWelcome()
+    const dir = directory({ botToken: 'synthetic-token', ownerUserId: 'synthetic-owner' }), active = host(dir)
+    await vi.waitFor(() => expect(readFileSync(join(dir, 'wechat.log'), 'utf8')).toContain('welcome delivery incomplete'))
+    net.hello()
+    await vi.waitFor(() => expect(active.prompts).toHaveLength(1))
+    expect(active.contexts[0]).toContain('固定欢迎文字的发送尚未确认')
+    expect(active.contexts[0]).not.toContain('欢迎原文')
+    expect(active.prompts[0]?.content).toEqual([{ type: 'text', text: '你好' }])
+    expect(net.sent.some(item => item.id.startsWith('mc-welcome-'))).toBe(false)
   })
   it('摘要发送失败时保留回复，重启续发而不再调用模型', async () => {
     const net = network(); net.failSummary(true)

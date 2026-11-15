@@ -43,6 +43,8 @@ interface State {
   welcomePending?: boolean
   welcomeProgress?: number
   welcomeId?: string
+  /** The first ordinary turn still needs the welcome status. Null means it was submitted. */
+  welcomeTurn?: { acceptedText?: string } | null
   desktopHandoff?: {
     key: string; sourceSessionId: string; throughSeq: number; company: string
     requestId: string; phase: 'pending' | 'submitted' | 'complete' | 'failed'
@@ -107,6 +109,20 @@ interface ApprovalQuestion {
 }
 interface ApprovalEvents {
   on(event: 'approval/request', handler: (question: ApprovalQuestion, next: () => Promise<string>) => Promise<string>, options: { prepend: boolean }): () => void
+}
+
+interface WelcomeAssembly {
+  readonly agent?: { readonly session: { readonly id: string } }
+  readonly signal?: AbortSignal
+}
+interface WelcomePrompt {
+  context(contribution: { name: string; order: number; required: true; interpolate: false; text(assembly: WelcomeAssembly): string }): () => void
+}
+interface AgentStepEvents {
+  on(event: 'agent/pre-step', handler: (
+    step: Required<WelcomeAssembly>,
+    next: () => Promise<{ kind: 'reject' } | { kind: 'enter'; messages: readonly { source: { kind: string; rpcId?: string } }[] }>,
+  ) => ReturnType<typeof next>, options: { prepend: boolean }): () => void
 }
 
 /** 单条微信消息的字数上限取保守值，超了按段落拆成几条发。 */
@@ -209,6 +225,34 @@ export function apply(ctx: Context, config: Config = {}): void {
     let onboardingRunning = false
     let onboardingAgain: OnboardingTrigger | undefined
     let welcomeAttempts = 0
+    let welcomeTextWaiter: { target: IlinkConnection; settle: () => void } | undefined
+    let welcomeRequest: { sessionId: string; requestId: string; text: string } | undefined
+    const welcomeByTurn = new WeakMap<AbortSignal, string>()
+    const systemPrompt = ctx.get('systemPrompt') as WelcomePrompt | undefined
+    const offWelcomePrompt = systemPrompt?.context({
+      name: 'moneycome-wechat:welcome',
+      order: 500,
+      required: true,
+      interpolate: false,
+      text({ agent, signal }) {
+        return signal && agent?.session.id === state.sessionId ? welcomeByTurn.get(signal) ?? '' : ''
+      },
+    })
+    // The Host assembles before it admits the queued user message. Match the
+    // claimed request here and let the Host refresh its runtime context.
+    const offWelcomeStep = offWelcomePrompt && (ctx as unknown as AgentStepEvents).on('agent/pre-step', async ({ agent, signal }, next) => {
+      const decision = await next()
+      if (decision.kind === 'reject' || signal.aborted || agent.session.id !== state.sessionId) return decision
+      const userMessages = decision.messages.filter(message => message.source.kind === 'user')
+      const request = welcomeRequest
+      if (request?.sessionId === agent.session.id && userMessages.some(message => message.source.rpcId === request.requestId)) {
+        welcomeByTurn.set(signal, request.text)
+        welcomeRequest = undefined
+      } else if (userMessages.length) {
+        welcomeByTurn.delete(signal)
+      }
+      return decision
+    }, { prepend: true })
     let creatingSession: Promise<string> | undefined
     let flushing: Promise<void> | undefined
     let sendRetry: NodeJS.Timeout | undefined
@@ -228,6 +272,15 @@ export function apply(ctx: Context, config: Config = {}): void {
     const welcomeTrace = () => typeof state.welcomeId === 'string'
       ? createHash('sha256').update(state.welcomeId).digest('hex').slice(0, 12)
       : 'none'
+    const waitForWelcomeText = (target: IlinkConnection) => new Promise<void>(resolve => {
+      const settle = () => {
+        clearTimeout(timer)
+        if (welcomeTextWaiter?.settle === settle) welcomeTextWaiter = undefined
+        resolve()
+      }
+      const timer = setTimeout(settle, 2000)
+      welcomeTextWaiter = { target, settle }
+    })
     const welcome = async (trigger: OnboardingTrigger) => {
       if (!state.welcomePending || welcomeRunning || !connection || !state.ownerUserId || stopped) return
       welcomeRunning = true
@@ -261,10 +314,12 @@ export function apply(ctx: Context, config: Config = {}): void {
               }
             } finally { store.close() }
           }
-          await sendStep('text', token => target.sendText(owner, token,
-            '您好，我是钱来张姐，AI 财务助手。您可以发票据、Excel/PDF 流水，或询问本机账本；记账前会请您确认。\n可在这个机器人的聊天资料中查看是否有备注和头像设置项；若有，可把机器人备注为“钱来张姐”，长按下面图片保存后选用。不同微信版本支持情况不同，请勿修改您本人的头像或昵称；我不能代改微信资料。' + summary, `mc-welcome-${state.welcomeId}-intro`))
+          const text = '您好，我是钱来张姐，AI 财务助手。您可以发票据、Excel/PDF 流水，或询问本机账本；记账前会请您确认。\n可在这个机器人的聊天资料中查看是否有备注和头像设置项；若有，可把机器人备注为“钱来张姐”，长按下面图片保存后选用。不同微信版本支持情况不同，请勿修改您本人的头像或昵称；我不能代改微信资料。' + summary
+          await sendStep('text', token => target.sendText(owner, token, text, `mc-welcome-${state.welcomeId}-intro`))
           if (stopped || connection !== target) return
+          if (state.welcomeTurn) state.welcomeTurn.acceptedText = text
           state.welcomeProgress = 1
+          if (welcomeTextWaiter?.target === target) welcomeTextWaiter.settle()
           save()
         }
         const assets = ['avatar.png', 'welcome.png', 'reassure.png']
@@ -284,7 +339,12 @@ export function apply(ctx: Context, config: Config = {}): void {
         // Some iLink deployments need an inbound context token. Retry the unsent step after the owner's first message.
         const detail = error instanceof IlinkSendError ? error.message : 'reason=local-error'
         log.warn(`moneycome-wechat: welcome delivery incomplete ${trace} step=${step} hasContext=${hasContext} ${detail}; will resume on the next owner message`)
-      } finally { welcomeRunning = false }
+      } finally {
+        welcomeRunning = false
+        // A new inbound context token can make a queued retry succeed. Keep the
+        // text waiter alive for that retry within its original deadline.
+        if (!onboardingAgain && welcomeTextWaiter?.target === target) welcomeTextWaiter.settle()
+      }
     }
 
     const flushReplies = (): Promise<void> => {
@@ -425,6 +485,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         state.welcomeProgress = 0
       }
       if (state.welcomePending && !state.welcomeId) state.welcomeId = randomUUID()
+      if (state.welcomeTurn === undefined && state.welcomePending && (state.welcomeProgress ?? 0) === 0) state.welcomeTurn = {}
       save()
     }
     const bookContext = async () => {
@@ -658,6 +719,9 @@ export function apply(ctx: Context, config: Config = {}): void {
         }
         return
       }
+      const firstWelcome = state.welcomeTurn
+      const textAttempt = offWelcomePrompt && connection && firstWelcome && !firstWelcome.acceptedText
+        ? waitForWelcomeText(connection) : undefined
       void onboarding('owner-message')
       void connection?.sendTyping(from, state.contextToken)
       const { items, notes } = await collect(message, signal)
@@ -667,13 +731,29 @@ export function apply(ctx: Context, config: Config = {}): void {
       const send = async (sessionId: string) => {
         const content = await toParts(items, sessionId, signal)
         signal.throwIfAborted()
+        if (offWelcomePrompt && firstWelcome) {
+          await textAttempt
+          signal.throwIfAborted()
+          const text = firstWelcome.acceptedText
+          const status = text
+            ? `固定欢迎文字已获微信发送接口受理，手机端显示尚未核实。欢迎原文如下：\n${text}\n`
+            : '固定欢迎文字的发送尚未确认，微信通道会按需补发。'
+          welcomeRequest = {
+            sessionId, requestId,
+            text: `本轮用户来自已连接的微信。${status}\n直接承接用户当前消息。单纯问候可简短回应，业务问题和材料照常处理。除非老板明确询问身份，否则不要再次自我介绍；不要询问是否已扫码，也不要说用户已经收到欢迎或图片。`,
+          }
+        }
         pendingRequests.add(requestId)
         try {
           await ctx.sessionController.prompt(
             { sessionId, requestId, mode: 'queue', content, clientTimeZone: 'Asia/Shanghai' },
             signal,
           )
-        } catch (error) { pendingRequests.delete(requestId); throw error }
+        } catch (error) {
+          pendingRequests.delete(requestId)
+          if (welcomeRequest?.requestId === requestId) welcomeRequest = undefined
+          throw error
+        }
         log.info(`moneycome-wechat: prompt ${content.map((p) => p.type).join('+')}`)
       }
       try {
@@ -684,6 +764,10 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!sessionGone(error)) throw error
           log.warn(`moneycome-wechat: session gone, starting a new one: ${errorMessage(error)}`)
           await send(await ensureSession(signal, true))
+        }
+        if (firstWelcome && state.welcomeTurn === firstWelcome) {
+          state.welcomeTurn = null
+          save()
         }
         admitted()
       } catch (error) {
@@ -714,6 +798,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             ...(state.handledMessages ? { handledMessages: state.handledMessages } : {}),
             ...(state.outbox ? { outbox: state.outbox } : {}),
             ...(state.welcomePending !== undefined ? { welcomePending: state.welcomePending, welcomeProgress: state.welcomeProgress, welcomeId: state.welcomeId } : {}),
+            ...(state.welcomeTurn !== undefined ? { welcomeTurn: state.welcomeTurn } : {}),
             ...(state.desktopHandoff ? { desktopHandoff: state.desktopHandoff } : {}),
           }
           save()
@@ -844,7 +929,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const rpc = ctx.get('connection') as RpcConnection | undefined
     let offRpc: ReturnType<typeof registerLoginRpc> | undefined
     try { offRpc = rpc ? registerLoginRpc(rpc, control) : undefined }
-    catch (error) { offControl(); offEvents(); offApprovals(); offQuestionGuard?.(); throw error }
+    catch (error) { offControl(); offEvents(); offApprovals(); offQuestionGuard?.(); offWelcomeStep?.(); offWelcomePrompt?.(); throw error }
     if (state.botToken) connect(state.botToken, 'saved-binding')
     else if (!state.manuallyDisconnected && config.autoStart !== false) void login()
 
@@ -862,6 +947,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       offEvents()
       offApprovals()
       offQuestionGuard?.()
+      offWelcomeStep?.()
+      offWelcomePrompt?.()
+      welcomeTextWaiter?.settle()
       for (const pending of turns.values()) clearInterval(pending.typing)
     }
   })
