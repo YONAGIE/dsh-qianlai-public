@@ -3,7 +3,9 @@ import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
 function makeClient() {
+  const regions = readFileSync(new URL('../src/tax-regions.json', import.meta.url), 'utf8')
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
+    .replace('/* tax-region-catalogue */ {}', regions)
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
@@ -13,6 +15,8 @@ function makeClient() {
   let hookIndex
   let intervalId = 0
   let status = { status: 'connected' }
+  let onboarding
+  let tax
   const react = {
     useId() {
       const index = hookIndex++
@@ -38,12 +42,16 @@ function makeClient() {
     },
   }
   const jsx = (type, props) => ({ type, props })
-  const window = { __ModuleLoader__: { load(definition) { this.factory = definition.factory } } }
+  const window = {
+    crypto: { randomUUID: () => 'synthetic-flow' },
+    __ModuleLoader__: { load(definition) { this.factory = definition.factory } },
+  }
   const timerSet = globalThis.setTimeout
   const timerClear = globalThis.clearTimeout
   runInNewContext(source, {
     window,
     AbortController,
+    AbortSignal,
     setTimeout: timerSet,
     clearTimeout: timerClear,
     setInterval(callback) { const id = ++intervalId; intervals.set(id, callback); return id },
@@ -55,6 +63,8 @@ function makeClient() {
     throw Error(`unexpected client dependency: ${name}`)
   })
   const connection = { rpc: { call: vi.fn(async (_path, _method, payload) => {
+    if (_method === 'qianlai/company-onboarding') return { ok: true, value: onboarding(payload) }
+    if (_method === 'qianlai/tax-onboarding') return { ok: true, value: tax(payload) }
     calls.push(payload.action)
     return { ok: true, value: { ...status } }
   }) } }
@@ -71,6 +81,7 @@ function makeClient() {
   }
   plugin.apply(ctx)
   const header = registrations.find(({ definition }) => definition.name === 'conversation.session.header.actions').component
+  const onboardingDock = registrations.find(({ definition }) => definition.name === 'conversation.input.dock').component
   const sessionId = 'synthetic-session'
   const useSessions = selector => selector({ byId: { [sessionId]: { projectionValues: { agentPreset: 'moneycome-zhangjie' } } } })
 
@@ -93,7 +104,7 @@ function makeClient() {
     return resolve(tree)
   }
   function render() {
-    const tree = renderComponent(header, { sessionId, useSessions })
+    const tree = [renderComponent(header, { sessionId, useSessions }), renderComponent(onboardingDock, { sessionId, useSessions })]
     for (const effect of pendingEffects.splice(0)) {
       effect.fiber.hooks[effect.index]?.cleanup?.()
       const cleanup = effect.callback()
@@ -101,14 +112,27 @@ function makeClient() {
     }
     return tree
   }
-  function findButtons(node, found = []) {
-    if (Array.isArray(node)) for (const child of node) findButtons(child, found)
+  function findNodes(node, type, found = []) {
+    if (Array.isArray(node)) for (const child of node) findNodes(child, type, found)
     else if (node && typeof node === 'object') {
-      if (node.type === 'button') found.push(node)
-      findButtons(node.props?.children, found)
+      if (node.type === type) found.push(node)
+      findNodes(node.props?.children, type, found)
     }
     return found
   }
+  const findButtons = node => findNodes(node, 'button')
+  function getText(node) {
+    if (Array.isArray(node)) return node.map(getText).join(' ')
+    return node && typeof node === 'object' ? getText(node.props?.children) : String(node ?? '')
+  }
+  function field(label) {
+    const row = findNodes(render(), 'label').find(node => Array.isArray(node.props.children)
+      && node.props.children.some(value => typeof value === 'string' && value.trim() === label))
+    const control = row && (findNodes(row, 'select')[0] ?? findNodes(row, 'input')[0])
+    if (!control) throw Error('field unavailable: ' + label)
+    return control
+  }
+
   function dispose() {
     for (const fiber of fibers.values()) for (const hook of fiber.hooks) hook?.cleanup?.()
     intervals.clear()
@@ -120,6 +144,11 @@ function makeClient() {
     intervals,
     render,
     setStatus(value) { status = value },
+    setOnboarding(respond) { onboarding = respond },
+    setTax(respond) { tax = respond },
+    text() { return getText(render()) },
+    value(label) { return field(label).props.value },
+    change(label, value) { field(label).props.onChange({ target: { value, checked: value === true } }) },
     buttonText() { return findButtons(render())[0]?.props.children },
     buttons() { return findButtons(render()).map(node => node.props.children) },
     click(text) {
@@ -181,6 +210,159 @@ describe('WeChat header status', () => {
       for (const poll of client.intervals.values()) poll()
       await settle()
       expect(client.buttonText()).toBe('微信已连接')
+    } finally {
+      client.dispose()
+    }
+  })
+})
+
+
+describe('Zhangjie onboarding', () => {
+  it('advances four steps through verified responses, reviews masked accounts and asks before replacing the sample book', async () => {
+    const client = makeClient()
+    const draftId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    let draft = { accepted: true, draftId, revision: 0, step: 1, completed: false, replacesSampleBook: true }
+    client.setOnboarding(payload => {
+      expect(payload.sessionId).toBe('synthetic-session')
+      if (payload.action === 'status') return draft
+      expect(payload.draftId).toBe(draftId)
+      expect(payload.revision).toBe(draft.revision)
+      if (payload.action === 'confirm') {
+        expect(payload.replaceSampleBook).toBe(true)
+        return draft = { ...draft, completed: true, nextAction: 'review-book-periods', replacesSampleBook: false }
+      }
+      const stepKey = ['enterprise', 'accounting', 'payroll'][payload.step - 1]
+      const data = { ...payload.input }
+      if (stepKey === 'enterprise') {
+        const [{ number, ...account }] = data.accounts
+        expect(number).toBe('000000654321')
+        data.accounts = [{ ...account, id: 'synthetic-account', maskedNumber: '尾号 4321' }]
+      }
+      return draft = { ...draft, [stepKey]: data, revision: draft.revision + 1, step: payload.advance ? payload.step + 1 : payload.step }
+    })
+    try {
+      client.click('开始建档')
+      client.render()
+      await settle()
+      expect(client.text()).toContain('1/4 企业信息')
+      client.change('企业全称', '合成小店')
+      client.change('统一社会信用代码', '91330000MA00000001')
+      client.change('成立日期', '2025-01-12')
+      client.change('纳税人类型', 'small-scale')
+      client.change('以上都没有', true)
+      client.change('账户情况', 'provided')
+      client.change('银行账号', '000000654321')
+      client.change('开户行', '合成银行')
+      client.click('继续')
+      await settle()
+      expect(client.text()).toContain('2/4 记账准备')
+      client.change('原有账务', 'previous')
+      client.change('旧账做到', '2025-07')
+      client.change('开始记账', '2025-09')
+      client.click('继续')
+      await settle()
+      expect(client.text()).toContain('3/4 工资社保')
+      client.change('发薪安排', 'scheduled')
+      client.change('每月发薪日', '25')
+      client.change('社保情况', 'partial')
+      client.click('继续')
+      await settle()
+      expect(client.text()).toContain('4/4 确认建档')
+      expect(client.text()).toContain('尾号 4321')
+      expect(client.text()).toContain('每月 25 日')
+      expect(client.text()).not.toContain('000000654321')
+      expect(() => client.click('确认建档')).toThrow(/button unavailable/)
+      client.change('我确认清除样本账，建立这家企业的账本。', true)
+      client.click('确认建档')
+      await settle()
+      expect(client.text()).toContain('建档完成')
+      expect(client.text()).toContain('核对旧账截止月份和开始记账月份')
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it('saves an incomplete step and restores its fields in a newly mounted conversation panel', async () => {
+    let draft = { accepted: true, draftId: 'synthetic-draft', revision: 1, step: 2, completed: false, replacesSampleBook: true }
+    const respond = payload => {
+      if (payload.action === 'status') return draft
+      expect(payload).toMatchObject({ action: 'save', advance: false, step: 2, input: { history: 'previous', lastMonth: '2025-07' } })
+      return draft = { ...draft, revision: 2, accounting: payload.input }
+    }
+    const client = makeClient()
+    const reopened = makeClient()
+    try {
+      client.setOnboarding(respond)
+      client.click('开始建档')
+      client.render()
+      await settle()
+      client.change('原有账务', 'previous')
+      client.change('旧账做到', '2025-07')
+      client.click('保存并收起')
+      await settle()
+      expect(client.text()).not.toContain('2/4 记账准备')
+
+      reopened.setOnboarding(respond)
+      reopened.click('开始建档')
+      reopened.render()
+      await settle()
+      expect(reopened.value('旧账做到')).toBe('2025-07')
+      expect(reopened.value('开始记账')).toBe('')
+    } finally {
+      reopened.dispose()
+      client.dispose()
+    }
+  })
+
+  it('saves the first step before opening the official portal and reloads only a confirmed tax profile', async () => {
+    const client = makeClient()
+    const draftId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    let draft = { accepted: true, draftId, revision: 0, step: 1, completed: false, replacesSampleBook: true }
+    const initialEnterprise = { companyName: '合成小店', taxId: '91330000MA00000001', province: '浙江省', city: '杭州市' }
+    const profile = {
+      companyName: '合成小店', taxId: '91330000MA00000001', authority: '合成税务机关',
+      taxpayerQualification: '小规模纳税人', taxpayerStatus: '正常', sourceUrl: 'https://etax.zhejiang.chinatax.gov.cn/',
+    }
+    client.setOnboarding(payload => {
+      if (payload.action === 'status') return draft
+      expect(payload).toMatchObject({ draftId, action: 'save', advance: false, input: initialEnterprise })
+      return draft = { ...draft, revision: 1, enterprise: payload.input }
+    })
+    client.setTax(payload => {
+      expect(payload).toMatchObject({ draftId, sessionId: 'synthetic-session', id: 'synthetic-flow' })
+      if (payload.action === 'start') {
+        expect(draft.revision).toBe(1)
+        expect(payload).toMatchObject(initialEnterprise)
+        return { phase: 'waiting' }
+      }
+      if (payload.action === 'read') return { phase: 'ready', profile }
+      if (payload.action === 'submit') {
+        draft = { ...draft, revision: 2, enterprise: { ...draft.enterprise,
+          taxAuthority: profile.authority, taxpayerIdentity: 'small-scale', taxStatus: '正常',
+          officialTax: { taxAuthority: profile.authority, taxpayerIdentity: 'small-scale', taxStatus: '正常', sourceUrl: profile.sourceUrl },
+        } }
+        return { phase: 'submitted' }
+      }
+      return { phase: 'idle' }
+    })
+    try {
+      client.click('开始建档')
+      client.render()
+      await settle()
+      client.change('企业全称', initialEnterprise.companyName)
+      client.change('统一社会信用代码', initialEnterprise.taxId)
+      client.change('省份', initialEnterprise.province)
+      client.change('城市或地区', initialEnterprise.city)
+      client.click('打开官方扫码页')
+      await settle()
+      client.click('已登录，读取税务资料')
+      await settle()
+      expect(client.value('纳税人类型')).toBe('')
+      client.click('核对无误，回填税务资料')
+      await settle()
+      expect(client.value('纳税人类型')).toBe('small-scale')
+      expect(client.text()).toContain('已回填税务资料')
+      expect(client.text()).toContain('1/4 企业信息')
     } finally {
       client.dispose()
     }
