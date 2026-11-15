@@ -188,7 +188,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                       `摘要：${line(args.summary)}`,
                       '',
                       '本次分录',
-                      ...preview.legs.map(leg => `${leg.side}　${line(leg.subjectName)}（${leg.subjectCode}）　${leg.amount} 元`),
+                      ...preview.legs.map(leg => `${leg.side}\u3000${line(leg.subjectName)}（${leg.subjectCode}）\u3000${leg.amount} 元`),
                       ...(args.invoiceNumber ? [`发票号码：${line(args.invoiceNumber)}`] : []),
                       ...(Array.isArray(args.statementLineIds) && args.statementLineIds.length ? [`关联流水：${args.statementLineIds.length} 笔`] : []),
                       '',
