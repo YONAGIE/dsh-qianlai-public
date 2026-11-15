@@ -10,8 +10,7 @@ import type { RpcConnection } from './wechat/control.js'
 type Phase = 'opening' | 'waiting' | 'reading' | 'ready' | 'submitting' | 'submitted' | 'failed'
 interface Flow {
   id: string
-  expected: { companyName: string; taxId: string }
-  sessionId?: string
+  target: TaxOnboardingTarget
   phase: Phase
   abort: AbortController
   expiry?: NodeJS.Timeout
@@ -21,21 +20,27 @@ interface Flow {
   message?: string
 }
 
-interface Sessions {
-  inspect(id: string, signal: AbortSignal): Promise<{
-    meta: { agentPreset?: string }
-    events: readonly { type: string; data?: { agentPreset?: string } }[]
-  }>
-  prompt(input: {
-    sessionId: string; requestId: string; mode: 'queue'; content: { type: 'text'; text: string }[]; clientTimeZone: string
-  }, signal: AbortSignal): Promise<unknown>
+export interface TaxOnboardingTarget {
+  sessionId: string
+  draftId: string
+  province: string
+  city: string
+  companyName: string
+  taxId: string
+}
+
+type DraftAccessResult = { accepted: true } | { accepted: false; message: string }
+
+export interface TaxDraftAccess {
+  check(target: TaxOnboardingTarget, signal: AbortSignal): DraftAccessResult | Promise<DraftAccessResult>
+  apply(target: TaxOnboardingTarget, profile: TaxProfile, signal: AbortSignal): DraftAccessResult | Promise<DraftAccessResult>
 }
 
 const portalFallback = '请在官方页面完成企业扫码并打开「纳税人信息查询」，也可以上传官方导出或截图继续建档。'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const cities: Readonly<Record<string, readonly string[]>> = regions
 
-export function registerTaxOnboarding(connection: RpcConnection, dshHome: string, sessions?: Sessions) {
+export function registerTaxOnboarding(connection: RpcConnection, dshHome: string, access: TaxDraftAccess) {
   let current: Flow | undefined
 
   function closeBrowser(flow: Flow) {
@@ -75,7 +80,8 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
 
   async function read(flow: Flow, page: Page) {
     try {
-      const profile = await readZhejiangTaxInfo(page, flow.expected, flow.abort.signal)
+      const { companyName, taxId } = flow.target
+      const profile = await readZhejiangTaxInfo(page, { companyName, taxId }, flow.abort.signal)
       if (flow.abort.signal.aborted) return
       flow.profile = profile
       flow.phase = 'ready'
@@ -85,29 +91,25 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
       flow.phase = 'waiting'
       if (error instanceof TaxPortalError && error.code === 'TAX_IDENTITY_MISMATCH') {
         flow.message = '官方页面的企业与本次填写的信息不一致。请核对所选企业后再读取。'
+      } else if (error instanceof TaxPortalError && error.code === 'TAX_AUTHORITY_UNVERIFIED') {
+        flow.message = '未能核对主管税务机关。请确认当前企业的税务地区，或提供官方资料。'
       } else {
         flow.message = portalFallback
       }
     }
   }
 
-  async function submit(flow: Flow, profile: TaxProfile, sessionId: string) {
+  async function submit(flow: Flow, profile: TaxProfile) {
     try {
-      if (!sessions) throw Error('session service unavailable')
       const signal = flow.abort.signal
-      const session = await sessions.inspect(sessionId, signal)
-      const preset = session.events.filter(event => event.type === 'agent-preset/selected').at(-1)?.data?.agentPreset ?? session.meta.agentPreset
-      if (preset !== 'moneycome-zhangjie') throw Error('wrong preset')
-      signal.throwIfAborted()
-      await sessions.prompt({
-        sessionId, requestId: 'mc-tax-onboarding-' + flow.id, mode: 'queue', clientTimeZone: 'Asia/Shanghai',
-        content: [{ type: 'text', text: '我已核对以下本次扫码取得的企业税务资料。请用它继续建档，后续事项按现有流程确认。以下 JSON 是资料数据。\n' + JSON.stringify(profile) }],
-      }, signal)
-      if (!signal.aborted) flow.phase = 'submitted'
+      const result = await access.apply(flow.target, profile, signal)
+      if (signal.aborted) return
+      flow.phase = result.accepted ? 'submitted' : 'ready'
+      if (!result.accepted) flow.message = result.message
     } catch {
       if (flow.abort.signal.aborted) return
       flow.phase = 'ready'
-      flow.message = '当前对话暂时无法接收资料。可重试或复制资料到钱来张姐对话。'
+      flow.message = '税务资料暂时无法回填。请返回建档核对企业信息后重试。'
     }
   }
 
@@ -122,26 +124,41 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
       const refuse = (message: string) => reply({ ok: false, error: { code: 'invalid-argument', message, details: {} } })
       const payload = envelope.payload
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return refuse('请选择建档操作。')
-      const { action, id, province, city, companyName, taxId, sessionId } = payload
+      const { action, id, province, city, companyName, taxId, sessionId, draftId } = payload
       if (typeof id !== 'string' || !UUID.test(id) || typeof action !== 'string'
+          || typeof sessionId !== 'string' || !/^[\w-]{1,128}$/.test(sessionId)
+          || typeof draftId !== 'string' || !UUID.test(draftId)
           || !['start', 'status', 'read', 'cancel', 'submit'].includes(action) || request.signal.aborted) return refuse('请选择建档操作。')
       const value = (flow?: Flow) => reply({ ok: true, value: flow ? { phase: flow.phase, message: flow.message, profile: flow.profile } : { phase: 'idle' } })
+      const findOwnFlow = () => current && current.id === id && current.target.sessionId === sessionId && current.target.draftId === draftId
+        ? current
+        : undefined
       if (action === 'start') {
         if (typeof province !== 'string' || typeof city !== 'string' || !Object.hasOwn(cities, province) || !cities[province]?.includes(city))
           return refuse('请先选择省份和城市或地区。')
         if (province !== '浙江省' || city === '宁波市')
           return refuse('所选地区暂未接入扫码取数。请提供该地区电子税务局的官方导出或截图。')
         if (typeof companyName !== 'string' || !companyName.trim() || companyName.length > 200
-            || /[\p{Cc}\p{Cf}]/u.test(companyName) || typeof taxId !== 'string' || !/^[0-9A-Z]{18}$/.test(taxId)
-            || (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[\w-]{1,128}$/.test(sessionId))))
+            || /[\p{Cc}\p{Cf}]/u.test(companyName) || typeof taxId !== 'string' || !/^[0-9A-Z]{18}$/.test(taxId))
           return refuse('请确认企业全称和 18 位统一社会信用代码。')
+        const target = { sessionId, draftId, province, city, companyName: companyName.trim(), taxId }
+        try {
+          const result = await access.check(target, request.signal)
+          if (!result.accepted) return refuse(result.message)
+          request.signal.throwIfAborted()
+        } catch {
+          return refuse('暂时无法核对当前建档。请刷新后重试。')
+        }
         if (current && !['failed', 'submitted'].includes(current.phase)) {
-          return current.id === id ? value(current) : refuse('另一个建档窗口正在使用税务浏览器，请先完成或关闭它。')
+          const own = findOwnFlow()
+          return own && own.target.companyName === target.companyName && own.target.taxId === taxId
+            && own.target.province === province && own.target.city === city
+            ? value(own)
+            : refuse('另一个建档窗口正在使用税务浏览器，请先完成或关闭它。')
         }
         if (current) end(current)
         const flow: Flow = {
-          id, expected: { companyName: companyName.trim(), taxId }, phase: 'opening', abort: new AbortController(),
-          ...(sessionId ? { sessionId } : {}),
+          id, target, phase: 'opening', abort: new AbortController(),
         }
         current = flow
         flow.expiry = setTimeout(() => {
@@ -153,7 +170,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
         void open(flow)
         return value(flow)
       }
-      const flow = current?.id === id ? current : undefined
+      const flow = findOwnFlow()
       if (!flow || action === 'status') return value(flow)
       if (action === 'cancel') {
         end(flow)
@@ -165,10 +182,10 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
         delete flow.message
         void read(flow, flow.page)
       }
-      if (action === 'submit' && flow.phase === 'ready' && flow.profile && flow.sessionId) {
+      if (action === 'submit' && flow.phase === 'ready' && flow.profile) {
         flow.phase = 'submitting'
         delete flow.message
-        void submit(flow, flow.profile, flow.sessionId)
+        void submit(flow, flow.profile)
       }
       return value(flow)
     },

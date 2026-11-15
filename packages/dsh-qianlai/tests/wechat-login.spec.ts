@@ -260,7 +260,7 @@ describe('微信登录与首次欢迎', () => {
   })
 
   it('注册宿主 owner 专用精确路由，校验 RPC 信封与有限动作', async () => {
-    let route!: { path: string; methods: string[]; requestBody: 'buffered'; fetch(request: Request): Promise<Response> }
+    let route!: Parameters<RpcConnection['fetch']['register']>[0]
     const run = vi.fn(async () => ({ status: 'disconnected' as const }))
     const disconnect = vi.fn(() => ({ status: 'disconnected' as const }))
     registerLoginRpc({ fetch: { register: value => { route = value; return async () => {} } } }, { run, disconnect })

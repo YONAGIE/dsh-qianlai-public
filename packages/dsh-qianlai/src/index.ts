@@ -6,6 +6,7 @@ import { checkArgs } from './args.js'
 import { readBalances } from './balances.js'
 import { bookStatus, openBook, setCompanyFacts, setOpeningBalances, type OpeningBalanceInput } from './book.js'
 import { closePeriod, closingCheck } from './closing.js'
+import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus } from './company-onboarding.js'
 import { quarterFilingPrep, upcomingDeadlines } from './deadlines.js'
 import {
   addEvidence,
@@ -18,6 +19,7 @@ import {
   type RecordEntryInput,
 } from './entries.js'
 import { checkInvoice, type InvoiceReading } from './invoices.js'
+import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessions } from './onboarding-rpc.js'
 import { loadPack } from './pack.js'
 import { hasFullAccess, type PermissionPresets } from './permissions.js'
 import { refuse } from './period.js'
@@ -51,7 +53,7 @@ export interface Config {
   /** 账本文件。省略时放在 `$DSH_HOME/moneycome/book.sqlite`。 */
   readonly bookPath?: string
   /**
-   * `ui`：宿主层的那一行，只用来让 DSH 加载本包的浏览器半边（张姐头像），不注册工具、不开账本。
+   * `ui`：宿主层入口，提供张姐界面与建档服务。
    * 省略时是张姐会话里的工具。
    */
   readonly mode?: 'tools' | 'ui'
@@ -111,9 +113,19 @@ export function apply(ctx: Context, config: Config = {}): void {
   if (config.mode === 'ui') {
     ctx.inject?.(['connection', 'sessionController'], scope => {
       const connection = scope.get?.('connection') as Parameters<typeof registerTaxOnboarding>[0] | undefined
-      if (connection) scope.effect(() => registerTaxOnboarding(
-        connection, dshHome(), scope.get?.('sessionController') as Parameters<typeof registerTaxOnboarding>[2],
-      ))
+      if (connection) scope.effect(() => {
+        const store = new BookStore(config.bookPath ?? defaultBookPath())
+        const onboarding = new CompanyOnboarding(store)
+        const sessions = scope.get?.('sessionController') as OnboardingSessions | undefined
+        const services = (): OnboardingHostServices => ({
+          llm: scope.get?.('llm') as OnboardingHostServices['llm'],
+          attachments: scope.get?.('attachments') as OnboardingHostServices['attachments'],
+          agentDefaultModel: scope.get?.('agentDefaultModel') as OnboardingHostServices['agentDefaultModel'],
+        })
+        const stopCompany = registerCompanyOnboarding(connection, onboarding, sessions, services)
+        const stopTax = registerTaxOnboarding(connection, dshHome(), companyTaxDraftAccess(onboarding, sessions))
+        return () => { stopTax(); stopCompany(); store.close() }
+      })
     })
     return
   }
@@ -160,6 +172,9 @@ export function apply(ctx: Context, config: Config = {}): void {
               return refuse('INTRODUCTION_READ_ONLY', '本轮只整理微信接入后的业务摘要，不执行或批准账务操作。请等老板明确提出后再办理。')
             if (asynchronous) return await run(args, exec?.signal, exec)
             const critical = CRITICAL_WRITES.has(name) && !(name === 'moneycome_record_entry' && args.preview === true)
+            const openingConflict = () => name === 'moneycome_open_book'
+              ? checkOnboardingBookOpen(store, String(args.companyName ?? ''), typeof args.taxId === 'string' ? args.taxId : undefined)
+              : undefined
             let receiptKey: string | undefined
             let argsHash = ''
             let approvedRevision: string | undefined
@@ -179,6 +194,8 @@ export function apply(ctx: Context, config: Config = {}): void {
               argsHash = createHash('sha256').update(canonical(args)).digest('hex')
               const cached = previous()
               if (cached !== undefined) return cached
+              const conflict = openingConflict()
+              if (conflict) return conflict
               const presets = ctx.get?.('permissionPresets') as PermissionPresets | undefined
               if (isWechatSession(session.id) || !hasFullAccess(session, presets)) {
                 const approval = ctx.get?.('approval') as Approval | undefined
@@ -218,6 +235,8 @@ export function apply(ctx: Context, config: Config = {}): void {
                 if (approvedRevision !== undefined && approvedRevision !== store.approvalRevision())
                   return refuse('BOOK_CHANGED', '等待确认期间账本已变化，请重新核对并确认。没有执行这项操作。')
               }
+              const conflict = openingConflict()
+              if (conflict) return conflict
               const result = run(args)
               if (WORK_OPERATIONS.has(name) && (result as { accepted?: boolean })?.accepted === true)
                 store.recordWork(name, args, result)
@@ -269,7 +288,11 @@ export function apply(ctx: Context, config: Config = {}): void {
         '看账本现状：北京时间的当前业务日期（businessDate）、哪家公司、是不是样本账、从哪个月开始记、期初余额录了没有、导过流水的银行账户、记到哪个月、哪些月已结账、核过还没记账的发票、还没记账的流水笔数，以及 10 天内到期还没办的事（dueSoon，有就顺带提醒老板一句）。每次会话开头先调一次；老板问“账记到哪了”“还有什么没弄”也用它。它不给金额：问余额用 moneycome_read_balances，问利润用 moneycome_read_profit。',
         {},
         [],
-        () => bookStatus(store, { pack, now: new Date() }),
+        () => {
+          const status = bookStatus(store, { pack, now: new Date() })
+          const onboarding = onboardingBookStatus(store)
+          return status.accepted && onboarding ? { ...status, onboarding } : status
+        },
       ),
       tool(
         'moneycome_open_book',

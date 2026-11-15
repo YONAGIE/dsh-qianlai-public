@@ -12,7 +12,7 @@ vi.mock('../src/zhejiang-tax.js', async importOriginal => ({
   readZhejiangTaxInfo: vi.fn(),
 }))
 
-it('核对完成才向来源会话提交一次税务资料，其他流无法读取', async () => {
+it('只让来源会话确认税务资料，并以服务端读取结果回填同一档案', async () => {
   const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
   vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
   vi.mocked(openZhejiangLogin).mockResolvedValue({} as never)
@@ -24,18 +24,22 @@ it('核对完成才向来源会话提交一次税务资料，其他流无法读�
   }
   vi.mocked(readZhejiangTaxInfo).mockResolvedValue(profile)
   let route: ((request: Request) => Promise<Response>) | undefined
-  const sessions = {
-    inspect: vi.fn(async () => ({ meta: { agentPreset: 'moneycome-zhangjie' }, events: [] })),
-    prompt: vi.fn(async () => ({})),
+  const draftId = randomUUID()
+  const sessionId = 'synthetic-session'
+  const access = {
+    check: vi.fn((target: { draftId: string; sessionId: string }) => target.draftId === draftId && target.sessionId === sessionId
+      ? { accepted: true as const }
+      : { accepted: false as const, message: '这份建档已变更。' }),
+    apply: vi.fn(async () => ({ accepted: true as const })),
   }
   const unregister = registerTaxOnboarding({ fetch: { register(definition) {
     route = definition.fetch
     return async () => {}
-  } } }, process.cwd(), sessions)
+  } } }, process.cwd(), access)
   const id = randomUUID()
   const call = async (action: string, payload = {}) => {
     const response = await route!(new Request('http://localhost/api/qianlai/tax-onboarding', {
-      method: 'POST', body: JSON.stringify({ type: 'client-request', method: 'qianlai/tax-onboarding', rpcId: randomUUID(), payload: { id, action, ...payload } }),
+      method: 'POST', body: JSON.stringify({ type: 'client-request', method: 'qianlai/tax-onboarding', rpcId: randomUUID(), payload: { id, action, draftId, sessionId, ...payload } }),
     }))
     return (await response.json() as { result: { ok: boolean; value?: unknown } }).result
   }
@@ -43,19 +47,24 @@ it('核对完成才向来源会话提交一次税务资料，其他流无法读�
     expect(await call('start', { province: '浙江省', city: '上海市', ...expected })).toMatchObject({ ok: false })
     expect(await call('start', { province: '浙江省', city: '宁波市', ...expected })).toMatchObject({ ok: false })
     expect(await call('start', { province: '上海市', city: '上海市', ...expected })).toMatchObject({ ok: false })
+    expect(await call('start', { province: '浙江省', city: '杭州市', ...expected, sessionId: 'other-session' })).toMatchObject({ ok: false })
+    expect(await call('start', { province: '浙江省', city: '杭州市', ...expected, draftId: randomUUID() })).toMatchObject({ ok: false })
     expect(openTaxBrowser).not.toHaveBeenCalled()
-    expect(await call('start', { province: '浙江省', city: '杭州市', sessionId: 'synthetic-session', ...expected })).toMatchObject({ value: { phase: 'opening' } })
+    expect(await call('start', { province: '浙江省', city: '杭州市', ...expected })).toMatchObject({ value: { phase: 'opening' } })
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'waiting' } }))
     await call('read')
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'ready', profile } }))
     expect(await call('status', { id: randomUUID() })).toMatchObject({ value: { phase: 'idle' } })
+    expect(await call('status', { draftId: randomUUID() })).toMatchObject({ value: { phase: 'idle' } })
+    expect(await call('submit', { sessionId: 'other-session' })).toMatchObject({ value: { phase: 'idle' } })
+    expect(await call('cancel', { draftId: randomUUID() })).toMatchObject({ value: { phase: 'idle' } })
     expect(browser.close).toHaveBeenCalledTimes(1)
-    expect(sessions.prompt).not.toHaveBeenCalled()
-    await call('submit')
+    expect(access.apply).not.toHaveBeenCalled()
+    await call('submit', { profile: { ...profile, taxpayerQualification: '伪造资格' } })
     await call('submit')
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'submitted' } }))
-    expect(sessions.prompt).toHaveBeenCalledTimes(1)
-    expect(sessions.prompt).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'synthetic-session' }), expect.any(AbortSignal))
+    expect(access.apply).toHaveBeenCalledTimes(1)
+    expect(access.apply).toHaveBeenCalledWith({ sessionId, draftId, province: '浙江省', city: '杭州市', ...expected }, profile, expect.any(AbortSignal))
     expect(await call('cancel')).toMatchObject({ value: { phase: 'idle' } })
   } finally {
     unregister()

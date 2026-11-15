@@ -46,7 +46,7 @@ export function isWechatSession(sessionId: string): boolean {
 
 export interface RpcConnection {
   fetch: {
-    register(route: { path: string; methods: string[]; requestBody: 'buffered'; fetch(request: Request): Promise<Response> }): () => Promise<void>
+    register(route: { path: string; methods: string[]; requestBody: 'buffered' | 'streaming'; fetch(request: Request): Promise<Response> }): () => Promise<void>
   }
 }
 
