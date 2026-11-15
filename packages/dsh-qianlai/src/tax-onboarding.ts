@@ -3,14 +3,15 @@ import { join } from 'node:path'
 import type { Browser, Page } from 'playwright-core'
 
 import { openTaxBrowser } from './tax-browser.js'
-import regions from './tax-regions.json' with { type: 'json' }
-import { openZhejiangLogin, readZhejiangTaxInfo, TaxPortalError, type TaxProfile } from './zhejiang-tax.js'
+import { openTaxPortalLogin, readTaxProfile, TaxPortalError, type TaxProfile } from './tax-portal.js'
+import { isTaxRegion, taxPortalFor, type TaxPortal } from './tax-portals.js'
 import type { RpcConnection } from './wechat/control.js'
 
 type Phase = 'opening' | 'waiting' | 'reading' | 'ready' | 'submitting' | 'submitted' | 'failed'
 interface Flow {
   id: string
   target: TaxOnboardingTarget
+  site: TaxPortal
   phase: Phase
   abort: AbortController
   expiry?: NodeJS.Timeout
@@ -38,7 +39,6 @@ export interface TaxDraftAccess {
 
 const portalFallback = '请在官方页面完成企业扫码并打开「纳税人信息查询」，也可以上传官方导出或截图继续建档。'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const cities: Readonly<Record<string, readonly string[]>> = regions
 
 export function registerTaxOnboarding(connection: RpcConnection, dshHome: string, access: TaxDraftAccess) {
   let current: Flow | undefined
@@ -68,7 +68,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
         flow.message = '官方登录窗口已关闭。可重新打开，或上传官方导出或截图。'
       })
       const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1360, height: 900 }, acceptDownloads: false })
-      flow.page = await openZhejiangLogin(context, flow.abort.signal)
+      flow.page = await openTaxPortalLogin(flow.site, context, flow.abort.signal)
       if (!flow.abort.signal.aborted) flow.phase = 'waiting'
     } catch {
       if (flow.abort.signal.aborted) return
@@ -81,7 +81,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
   async function read(flow: Flow, page: Page) {
     try {
       const { companyName, taxId } = flow.target
-      const profile = await readZhejiangTaxInfo(page, { companyName, taxId }, flow.abort.signal)
+      const profile = await readTaxProfile(flow.site, page, { companyName, taxId }, flow.abort.signal)
       if (flow.abort.signal.aborted) return
       flow.profile = profile
       flow.phase = 'ready'
@@ -134,9 +134,10 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
         ? current
         : undefined
       if (action === 'start') {
-        if (typeof province !== 'string' || typeof city !== 'string' || !Object.hasOwn(cities, province) || !cities[province]?.includes(city))
+        if (typeof province !== 'string' || typeof city !== 'string' || !isTaxRegion(province, city))
           return refuse('请先选择省份和城市或地区。')
-        if (province !== '浙江省' || city === '宁波市')
+        const site = taxPortalFor(province, city)
+        if (!site)
           return refuse('所选地区暂未接入扫码取数。请提供该地区电子税务局的官方导出或截图。')
         if (typeof companyName !== 'string' || !companyName.trim() || companyName.length > 200
             || /[\p{Cc}\p{Cf}]/u.test(companyName) || typeof taxId !== 'string' || !/^[0-9A-Z]{18}$/.test(taxId))
@@ -158,7 +159,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
         }
         if (current) end(current)
         const flow: Flow = {
-          id, target, phase: 'opening', abort: new AbortController(),
+          id, target, site, phase: 'opening', abort: new AbortController(),
         }
         current = flow
         flow.expiry = setTimeout(() => {

@@ -4,7 +4,7 @@ import { openBook } from './book.js'
 import { isCalendarDate, PERIOD_KEY, previousPeriod, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore } from './store.js'
 import regions from './tax-regions.json' with { type: 'json' }
-import type { TaxProfile } from './zhejiang-tax.js'
+import type { TaxProfile } from './tax-portal.js'
 
 type Step = 1 | 2 | 3 | 4
 type EditableStep = Exclude<Step, 4>

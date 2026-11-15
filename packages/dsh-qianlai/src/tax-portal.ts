@@ -1,8 +1,7 @@
 import type { BrowserContext, Frame, Page } from 'playwright-core'
 
-const PORTAL = 'https://etax.zhejiang.chinatax.gov.cn:8443'
-const LOGIN = 'https://tpass.zhejiang.chinatax.gov.cn:8443'
-const PORTALS = new Set([PORTAL, 'https://etax.zhejiang.chinatax.gov.cn'])
+import type { TaxPortal } from './tax-portals.js'
+
 const QUERY_TITLES = ['纳税人信息查询', '纳税人信息']
 const TAX_TABS = ['税费种认定信息', '税（费）种认定信息', '税(费)种认定信息']
 const LABELS = {
@@ -54,9 +53,10 @@ export class TaxPortalError extends Error {
   ) { super(message) }
 }
 
-function officialUrl(text: string, includeLogin: boolean) {
+function officialUrl(site: TaxPortal, text: string, includeLogin: boolean) {
   const url = URL.parse(text)
-  if (!url || url.username || url.password || !(PORTALS.has(url.origin) || (includeLogin && url.origin === LOGIN))) return undefined
+  if (!url || url.username || url.password ||
+      !(site.portalOrigins.includes(url.origin) || (includeLogin && url.origin === site.loginOrigin))) return undefined
   return url
 }
 
@@ -71,47 +71,47 @@ async function waitFor<T>(read: () => Promise<T | undefined>, signal: AbortSigna
   signal.throwIfAborted()
 }
 
-export async function openZhejiangLogin(context: BrowserContext, signal: AbortSignal): Promise<Page> {
+export async function openTaxPortalLogin(site: TaxPortal, context: BrowserContext, signal: AbortSignal): Promise<Page> {
   signal.throwIfAborted()
   // Context-level routing also covers the first request of a login popup.
   await context.route('**/*', async route => {
     const request = route.request()
-    if (request.isNavigationRequest() && !officialUrl(request.url(), true)) return route.abort('blockedbyclient')
+    if (request.isNavigationRequest() && !officialUrl(site, request.url(), true)) return route.abort('blockedbyclient')
     await route.fallback()
   })
   context.on('page', page => {
     // A navigation that completes outside the verified origins (such as a server redirect)
     // must never be used for credentials or data. Blank popup documents are transitional.
     page.on('framenavigated', frame => {
-      if (frame === page.mainFrame() && frame.url() !== 'about:blank' && !officialUrl(frame.url(), true))
+      if (frame === page.mainFrame() && frame.url() !== 'about:blank' && !officialUrl(site, frame.url(), true))
         void page.close().catch(() => {})
     })
   })
   try {
     const page = await context.newPage()
-    await page.goto(PORTAL + '/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+    await page.goto(site.homeOrigin + '/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
     signal.throwIfAborted()
-    if (officialUrl(page.url(), true)?.origin !== LOGIN) {
-      if (!officialUrl(page.url(), false)) throw Error('origin')
+    if (officialUrl(site, page.url(), true)?.origin !== site.loginOrigin) {
+      if (!officialUrl(site, page.url(), false)) throw Error('origin')
       await page.locator('span.loginBtn').filter({ visible: true }).click({ timeout: 6000 })
     }
     const ready = await waitFor(async () => {
       for (const candidate of context.pages()) {
-        if (officialUrl(candidate.url(), true)?.origin !== LOGIN) continue
+        if (officialUrl(site, candidate.url(), true)?.origin !== site.loginOrigin) continue
         const ready = await candidate.evaluate(() => {
           const qr = document.querySelector<HTMLImageElement>('img[alt="Scan me!"]')
           return !!(qr?.complete && qr.naturalWidth > 0 && qr.getClientRects().length &&
             document.querySelector('span.activeCls')?.textContent?.trim() === '企业业务' &&
             /电子税务局APP扫一扫/.test(document.body.innerText))
         }).catch(() => false)
-        if (ready && officialUrl(candidate.url(), true)?.origin === LOGIN) return candidate
+        if (ready && officialUrl(site, candidate.url(), true)?.origin === site.loginOrigin) return candidate
       }
     }, signal, 12_000)
     if (ready) return ready
   } catch {
     signal.throwIfAborted()
   }
-  throw new TaxPortalError('TAX_LOGIN_UNAVAILABLE', '未打开可识别的浙江电子税务局企业扫码页，请重试或上传官方资料。')
+  throw new TaxPortalError('TAX_LOGIN_UNAVAILABLE', `未打开${site.name}电子税务局的企业扫码页，请重试或上传官方资料。`)
 }
 
 export interface TaxPageData {
@@ -127,7 +127,7 @@ const identityId = (value: string) => normal(value).toUpperCase()
 const visibleValue = (value?: string) => value?.trim() && !/^(?:[-—]+|暂无|请选择|未显示)$/.test(value.trim()) ? value.trim() : undefined
 
 function unrecognized() {
-  return new TaxPortalError('TAX_QUERY_UNRECOGNIZED', '请在浙江电子税务局打开「纳税人信息查询」，核对基本信息和税费种认定信息后重试。也可上传官方导出或截图。')
+  return new TaxPortalError('TAX_QUERY_UNRECOGNIZED', '请在对应的电子税务局打开「纳税人信息查询」，核对基本信息和税费种认定信息后重试。也可上传官方导出或截图。')
 }
 
 function readFact(data: TaxPageData, candidates: readonly string[]) {
@@ -138,17 +138,16 @@ function readFact(data: TaxPageData, candidates: readonly string[]) {
   return values[0]
 }
 
-function requireSubject(data: TaxPageData, expected: TaxSubject) {
-  if (!officialUrl(data.url, false) || !data.headings.some(label => QUERY_TITLES.some(title => normal(title) === normal(label)))) throw unrecognized()
+function requireSubject(site: TaxPortal, data: TaxPageData, expected: TaxSubject) {
+  if (!officialUrl(site, data.url, false) || !data.headings.some(label => QUERY_TITLES.some(title => normal(title) === normal(label)))) throw unrecognized()
   const companyName = readFact(data, LABELS.companyName)
   const taxId = readFact(data, LABELS.taxId)
   if (!companyName || !taxId) throw unrecognized()
   if (normal(companyName) !== normal(expected.companyName) || identityId(taxId) !== identityId(expected.taxId))
     throw new TaxPortalError('TAX_IDENTITY_MISMATCH', '税务局当前企业与建档企业不一致。请切换到对应企业后重试。')
   const authority = readFact(data, LABELS.authority)
-  if (!authority || !/(?:浙江省|杭州|温州|嘉兴|湖州|绍兴|金华|衢州|舟山|台州|丽水)/.test(authority) ||
-    /宁波/.test(authority) || !/(?:税务局|税务分局|税务所|税务机关)/.test(authority))
-    throw new TaxPortalError('TAX_AUTHORITY_UNVERIFIED', '无法核对浙江主管税务机关，请核对当前企业的税务地区或上传官方资料。')
+  if (!authority || !site.acceptsAuthority(authority) || !/(?:税务局|税务分局|税务所|税务机关)/.test(authority))
+    throw new TaxPortalError('TAX_AUTHORITY_UNVERIFIED', `无法核对${site.name}主管税务机关，请核对当前企业的税务地区或上传官方资料。`)
   return { companyName, taxId: identityId(taxId), authority }
 }
 
@@ -159,12 +158,12 @@ function recognizedTable(data: TaxPageData) {
   return matches[0]
 }
 
-export function parseZhejiangTaxProfile(
-  basic: TaxPageData, tax: TaxPageData, expected: TaxSubject, now: Date,
+export function parseTaxProfile(
+  site: TaxPortal, basic: TaxPageData, tax: TaxPageData, expected: TaxSubject, now: Date,
 ): TaxProfile {
-  const subject = requireSubject(basic, expected)
-  const url = officialUrl(tax.url, false)
-  if (!url || url.origin !== officialUrl(basic.url, false)?.origin ||
+  const subject = requireSubject(site, basic, expected)
+  const url = officialUrl(site, tax.url, false)
+  if (!url || url.origin !== officialUrl(site, basic.url, false)?.origin ||
     !tax.headings.some(label => [...QUERY_TITLES, ...TAX_TABS].some(title => normal(title) === normal(label))))
     throw unrecognized()
 
@@ -204,8 +203,8 @@ export function parseZhejiangTaxProfile(
   return profile
 }
 
-async function capture(frame: Frame): Promise<TaxPageData | undefined> {
-  if (!officialUrl(frame.url(), false)) return undefined
+async function capture(site: TaxPortal, frame: Frame): Promise<TaxPageData | undefined> {
+  if (!officialUrl(site, frame.url(), false)) return undefined
   const snapshot = await frame.evaluate(({ titles, taxTabs, labels, taxHeaders }) => {
     const isVisible = (element: HTMLElement) =>
       element.getClientRects().length > 0 && getComputedStyle(element).visibility === 'visible'
@@ -246,21 +245,21 @@ async function capture(frame: Frame): Promise<TaxPageData | undefined> {
   }, {
     titles: QUERY_TITLES, taxTabs: TAX_TABS, labels: Object.values(LABELS).flat(), taxHeaders: TAX_COLUMNS.taxItem,
   }).catch(() => undefined)
-  return snapshot && officialUrl(snapshot.url, false) ? snapshot : undefined
+  return snapshot && officialUrl(site, snapshot.url, false) ? snapshot : undefined
 }
 
-async function querySurface(page: Page, signal: AbortSignal) {
+async function querySurface(site: TaxPortal, page: Page, signal: AbortSignal) {
   for (const frame of page.frames()) {
     signal.throwIfAborted()
-    const data = await capture(frame)
+    const data = await capture(site, frame)
     if (data?.headings.some(title => QUERY_TITLES.some(known => normal(known) === normal(title))) && data.facts.length) return { frame, data }
   }
 }
 
-async function clickQueryLabel(page: Page, label: string, signal: AbortSignal) {
+async function clickQueryLabel(site: TaxPortal, page: Page, label: string, signal: AbortSignal) {
   signal.throwIfAborted()
   for (const frame of page.frames()) {
-    if (!officialUrl(frame.url(), false)) continue
+    if (!officialUrl(site, frame.url(), false)) continue
     const locator = frame.getByText(label, { exact: true }).filter({ visible: true })
     if (await locator.count() !== 1) continue
     await locator.click({ timeout: 1800 }).catch(() => {})
@@ -268,32 +267,32 @@ async function clickQueryLabel(page: Page, label: string, signal: AbortSignal) {
   }
 }
 
-export async function readZhejiangTaxInfo(page: Page, expected: TaxSubject, signal: AbortSignal): Promise<TaxProfile> {
+export async function readTaxProfile(site: TaxPortal, page: Page, expected: TaxSubject, signal: AbortSignal): Promise<TaxProfile> {
   signal.throwIfAborted()
   const context = page.context()
   const pages = [...new Set([page, ...context.pages().reverse()])]
-    .filter(candidate => !candidate.isClosed() && officialUrl(candidate.url(), false))
+    .filter(candidate => !candidate.isClosed() && officialUrl(site, candidate.url(), false))
   let portal = pages[0]
   if (!portal) throw new TaxPortalError('TAX_LOGIN_PENDING', '请先在浏览器里扫码并完成企业身份确认。')
   let surface: Awaited<ReturnType<typeof querySurface>>
   for (const candidate of pages) {
-    surface = await querySurface(candidate, signal)
+    surface = await querySurface(site, candidate, signal)
     if (surface) { portal = candidate; break }
   }
   if (!surface) {
-    for (const label of ['我要查询', '一户式查询', '纳税人信息查询']) await clickQueryLabel(portal, label, signal)
-    surface = await waitFor(() => querySurface(portal, signal), signal, 4000)
+    for (const label of ['我要查询', '一户式查询', '纳税人信息查询']) await clickQueryLabel(site, portal, label, signal)
+    surface = await waitFor(() => querySurface(site, portal, signal), signal, 4000)
   }
   if (!surface) {
-    if (context.pages().some(item => officialUrl(item.url(), true)?.origin === LOGIN))
+    if (context.pages().some(item => officialUrl(site, item.url(), true)?.origin === site.loginOrigin))
       throw new TaxPortalError('TAX_LOGIN_PENDING', '请先在浏览器里扫码并完成企业身份确认，再打开纳税人信息查询。')
     throw unrecognized()
   }
   const { data: basic, frame } = surface
-  requireSubject(basic, expected)
-  if (recognizedTable(basic) || basic.emptyRecognitions) return parseZhejiangTaxProfile(basic, basic, expected, new Date())
+  requireSubject(site, basic, expected)
+  if (recognizedTable(basic) || basic.emptyRecognitions) return parseTaxProfile(site, basic, basic, expected, new Date())
   for (const label of TAX_TABS) {
-    if (!officialUrl(frame.url(), false)) throw unrecognized()
+    if (!officialUrl(site, frame.url(), false)) throw unrecognized()
     signal.throwIfAborted()
     const tab = frame.getByText(label, { exact: true }).filter({ visible: true })
     if (await tab.count() !== 1) continue
@@ -301,9 +300,9 @@ export async function readZhejiangTaxInfo(page: Page, expected: TaxSubject, sign
     break
   }
   const tax = await waitFor(async () => {
-    const observed = await capture(frame)
+    const observed = await capture(site, frame)
     if (observed && (recognizedTable(observed) || observed.emptyRecognitions)) return observed
   }, signal, 4000)
-  if (!tax || !officialUrl(portal.url(), false)) throw unrecognized()
-  return parseZhejiangTaxProfile(basic, tax, expected, new Date())
+  if (!tax || !officialUrl(site, portal.url(), false)) throw unrecognized()
+  return parseTaxProfile(site, basic, tax, expected, new Date())
 }
