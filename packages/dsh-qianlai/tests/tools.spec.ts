@@ -85,6 +85,7 @@ describe('工具入口', () => {
     expect(nested.message).toContain('balances[0]')
     expect(await call('moneycome_check_invoice', { invoiceNumber: true })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
     expect(await call('moneycome_read_referenced_pdf', { path: 'other.pdf' })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
+    expect(await call('moneycome_read_referenced_pdf', { fileIndex: '2' })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
     expect(await call('moneycome_read_referenced_pdf', { page: 0 })).toMatchObject({ accepted: false, code: 'POSITION_INVALID' })
     expect(await call('moneycome_record_entry', { ...ENTRY, facts: undefined })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
   })
