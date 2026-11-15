@@ -677,6 +677,8 @@ export function apply(ctx: Context, config: Config = {}): void {
 
     const connect = (botToken: string, trigger: 'scan-confirmed' | 'saved-binding') => {
       connection?.stop()
+      let pollInterrupted = false
+      const pollErrorMessage = '微信连接中断，正在自动重连。'
       view = { status: 'connected', message: '微信已连接。若微信还没有欢迎消息，请先发一句“你好”，取得消息上下文后会补发。' }
       connection = new IlinkConnection(botToken, onMessage, {
         ...(state.cursor ? { initialCursor: state.cursor } : {}),
@@ -698,6 +700,18 @@ export function apply(ctx: Context, config: Config = {}): void {
           save()
           view = { status: 'expired', message: '微信登录已过期，请重新获取二维码。' }
           if (config.autoStart !== false) void login()
+        },
+        onPollError(_message, consecutive) {
+          if (consecutive >= 3 && state.botToken === botToken && (view.status === 'connected' || pollInterrupted)) {
+            pollInterrupted = true
+            view = { status: 'error', message: pollErrorMessage }
+          }
+        },
+        onPollRecovered() {
+          if (pollInterrupted && view.status === 'error' && view.message === pollErrorMessage && state.botToken === botToken) {
+            pollInterrupted = false
+            view = { status: 'connected', message: '微信连接已恢复。' }
+          }
         },
         onError(message, consecutive) {
           log.warn(`moneycome-wechat: ${message} (consecutive ${consecutive})`)
@@ -768,7 +782,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           await captureDesktop(sourceSessionId)
           if (view.status === 'connected') void onboarding('desktop-request')
         }
-        if (action !== 'status' && view.status !== 'connected') {
+        if (action !== 'status' && view.status !== 'connected' && (!state.botToken || action === 'refresh')) {
           if (action === 'refresh' || !['loading', 'waiting', 'scanned'].includes(view.status)) void login()
         }
         return { ...view }

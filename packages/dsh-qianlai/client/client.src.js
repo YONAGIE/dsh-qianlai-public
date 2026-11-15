@@ -30,10 +30,14 @@ window.__ModuleLoader__.load({
       const titleId = useId()
       const [open, setOpen] = useState(false)
       const [state, setState] = useState({ status: 'disconnected' })
+      const latestState = useRef(state)
+      latestState.current = state
+      const statusFailures = useRef(0)
       const dialog = useRef(null)
       const control = useRef(null)
       const sequence = useRef(0)
       const labels = { disconnected: '微信尚未连接', loading: '正在获取二维码…', waiting: '等待微信扫码', scanned: '已扫码，请在微信确认', connected: '微信已连接', expired: '二维码已过期', error: '连接未完成' }
+      const buttonLabels = { disconnected: '连接微信', loading: '正在连接微信…', waiting: '等待微信扫码', scanned: '已扫码，待确认', connected: '微信已连接', expired: '重新连接微信', error: '微信连接异常，点击查看' }
       const request = async action => {
         if (action === 'status' && control.current) return
         const version = ++sequence.current
@@ -46,22 +50,29 @@ window.__ModuleLoader__.load({
           const result = await connection.rpc.call('/api', 'qianlai/wechat', { action, ...(sessionId ? { sessionId } : {}) }, abort.signal)
           if (version !== sequence.current || abort.signal.aborted) return
           if (!result.ok) throw Error(result.error.message)
+          if (action === 'status') statusFailures.current = 0
           setState(result.value)
         } catch (error) {
-          if (version === sequence.current) setState({ status: 'error', message: error.message || '请求失败，请重试。' })
+          if (version === sequence.current) {
+            if (action === 'status' && latestState.current.status === 'connected' && ++statusFailures.current < 3) return
+            setState({ status: 'error', message: error.message || '请求失败，请重试。' })
+          }
         } finally { clearTimeout(timer); if (version === sequence.current) control.current = null }
       }
       useEffect(() => {
-        if (!open) return undefined
-        dialog.current?.showModal()
-        // Opening "connect" is explicit intent. If already connected, start
-        // only attaches this conversation for handoff; it does not reset login.
-        void request('start')
+        if (open) {
+          dialog.current?.showModal()
+          // Opening "connect" is explicit intent. If already connected, start
+          // only attaches this conversation for handoff; it does not reset login.
+          void request('start')
+        } else {
+          void request('status')
+        }
         const timer = setInterval(() => void request('status'), 2000)
         return () => { clearInterval(timer); sequence.current++; control.current?.abort(); control.current = null }
-      }, [open])
+      }, [open, sessionId])
       return jsx('span', { children: [
-        jsx('button', { type: 'button', onClick: () => setOpen(true), style: { border: '1px solid #c4eacf', borderRadius: 8, padding: '5px 10px', color: '#1b6f4a', background: '#edf8f1', cursor: 'pointer' }, children: '连接微信' }),
+        jsx('button', { type: 'button', onClick: () => setOpen(true), style: { border: '1px solid #c4eacf', borderRadius: 8, padding: '5px 10px', color: '#1b6f4a', background: '#edf8f1', cursor: 'pointer' }, children: buttonLabels[state.status] || '连接微信' }),
         open ? jsx('dialog', { ref: dialog, 'aria-labelledby': titleId, onCancel: () => setOpen(false), style: { border: '1px solid #c4eacf', borderRadius: 16, padding: 24, width: 'min(420px, calc(100vw - 48px))', color: '#24433a', background: '#fff' }, children: [
           jsx('h2', { id: titleId, style: { margin: '0 0 12px', fontSize: 20 }, children: '把张姐接到微信' }),
           jsx('p', { children: '用本人微信扫码后，可以发票据、查账，并继续这台电脑上的财务事项。' }),
