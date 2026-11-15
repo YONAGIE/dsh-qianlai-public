@@ -12,6 +12,13 @@ export interface TaxPortal {
 }
 
 const portals: Readonly<Record<string, TaxPortal>> = {
+  北京市: {
+    name: '北京',
+    homeOrigin: 'https://etax.beijing.chinatax.gov.cn:8443',
+    portalOrigins: ['https://etax.beijing.chinatax.gov.cn:8443', 'https://etax.beijing.chinatax.gov.cn'],
+    loginOrigin: 'https://tpass.beijing.chinatax.gov.cn:8443',
+    acceptsAuthority: name => /(?:北京市|北京经济技术开发区)/.test(name),
+  },
   浙江省: {
     name: '浙江',
     homeOrigin: 'https://etax.zhejiang.chinatax.gov.cn:8443',

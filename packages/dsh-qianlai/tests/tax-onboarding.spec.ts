@@ -13,15 +13,20 @@ vi.mock('../src/tax-portal.js', async importOriginal => ({
   readTaxProfile: vi.fn(),
 }))
 
-it('只让来源会话确认税务资料，并以服务端读取结果回填同一档案', async () => {
+it.each([
+  { province: '浙江省', city: '杭州市', taxId: '91330000MA00000000', authority: '国家税务总局杭州市某区税务局', region: 'zhejiang' },
+  { province: '北京市', city: '北京市', taxId: '91110000MA00000000', authority: '国家税务总局北京市某区税务局', region: 'beijing' },
+])('$province 只让来源会话确认服务端核对的税务资料', async ({ province, city, taxId, authority, region }) => {
+  vi.clearAllMocks()
   const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
   vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
   vi.mocked(openTaxPortalLogin).mockResolvedValue({} as never)
-  const expected = { companyName: '合成服务企业', taxId: '91330000MA00000000' }
+  const expected = { companyName: '合成服务企业', taxId }
+  const target = { province, city, ...expected }
   const profile: TaxProfile = {
-    ...expected, authority: '合成税务机关', obligations: [{ taxItem: '增值税', filingCycle: '按季' }],
+    ...expected, authority, obligations: [{ taxItem: '增值税', filingCycle: '按季' }],
     obligationCoverage: 'visible_page', observedAt: '2026-11-15T08:00:00.000Z',
-    sourceUrl: 'https://etax.zhejiang.chinatax.gov.cn:8443/',
+    sourceUrl: `https://etax.${region}.chinatax.gov.cn:8443/`,
   }
   vi.mocked(readTaxProfile).mockResolvedValue(profile)
   let route: ((request: Request) => Promise<Response>) | undefined
@@ -48,13 +53,15 @@ it('只让来源会话确认税务资料，并以服务端读取结果回填同�
     expect(await call('start', { province: '浙江省', city: '上海市', ...expected })).toMatchObject({ ok: false })
     expect(await call('start', { province: '浙江省', city: '宁波市', ...expected })).toMatchObject({ ok: false })
     expect(await call('start', { province: '上海市', city: '上海市', ...expected })).toMatchObject({ ok: false })
-    expect(await call('start', { province: '浙江省', city: '杭州市', ...expected, sessionId: 'other-session' })).toMatchObject({ ok: false })
-    expect(await call('start', { province: '浙江省', city: '杭州市', ...expected, draftId: randomUUID() })).toMatchObject({ ok: false })
+    expect(await call('start', { ...target, sessionId: 'other-session' })).toMatchObject({ ok: false })
+    expect(await call('start', { ...target, draftId: randomUUID() })).toMatchObject({ ok: false })
     expect(openTaxBrowser).not.toHaveBeenCalled()
-    expect(await call('start', { province: '浙江省', city: '杭州市', ...expected })).toMatchObject({ value: { phase: 'opening' } })
+    expect(await call('start', target)).toMatchObject({ value: { phase: 'opening' } })
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'waiting' } }))
-    const site = taxPortalFor('浙江省', '杭州市')
-    expect(openTaxPortalLogin).toHaveBeenCalledWith(site, expect.anything(), expect.any(AbortSignal))
+    const site = taxPortalFor(province, city)
+    expect(openTaxPortalLogin).toHaveBeenCalledWith(expect.objectContaining({
+      loginOrigin: `https://tpass.${region}.chinatax.gov.cn:8443`,
+    }), expect.anything(), expect.any(AbortSignal))
     await call('read')
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'ready', profile } }))
     expect(readTaxProfile).toHaveBeenCalledWith(site, expect.anything(), expected, expect.any(AbortSignal))
@@ -68,7 +75,7 @@ it('只让来源会话确认税务资料，并以服务端读取结果回填同�
     await call('submit')
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'submitted' } }))
     expect(access.apply).toHaveBeenCalledTimes(1)
-    expect(access.apply).toHaveBeenCalledWith({ sessionId, draftId, province: '浙江省', city: '杭州市', ...expected }, profile, expect.any(AbortSignal))
+    expect(access.apply).toHaveBeenCalledWith({ sessionId, draftId, ...target }, profile, expect.any(AbortSignal))
     expect(await call('cancel')).toMatchObject({ value: { phase: 'idle' } })
   } finally {
     unregister()
