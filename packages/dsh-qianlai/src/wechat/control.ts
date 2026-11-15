@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 export type LoginAction = 'status' | 'start' | 'refresh'
 export interface LoginView {
   status: 'disconnected' | 'loading' | 'waiting' | 'scanned' | 'connected' | 'expired' | 'error'
+  canDisconnect?: true
   qrDataUrl?: string
   requestedAt?: string
   message?: string
@@ -10,6 +11,10 @@ export interface LoginView {
 export interface LoginControl {
   run(action: LoginAction, sourceSessionId?: string): Promise<LoginView>
   ownsSession?(sessionId: string): boolean
+}
+
+export interface LoginRpcControl extends LoginControl {
+  disconnect(): LoginView
 }
 
 // Only plugin-originated introduction turns are read-only, not owner messages.
@@ -46,7 +51,7 @@ export interface RpcConnection {
 }
 
 /** Uses Connection's exact route: web and Electron share Host authentication and its owner-only fence. */
-export function registerLoginRpc(connection: RpcConnection, control: LoginControl) {
+export function registerLoginRpc(connection: RpcConnection, control: LoginRpcControl) {
   return connection.fetch.register({
     path: '/api/qianlai/wechat', methods: ['POST'], requestBody: 'buffered',
     async fetch(request) {
@@ -60,11 +65,15 @@ export function registerLoginRpc(connection: RpcConnection, control: LoginContro
       const payload = envelope.payload
       const action = (payload as { action?: unknown } | null)?.action
       const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId
-      if (!['status', 'start', 'refresh'].includes(String(action)) || !payload || Object.keys(payload).some(key => !['action', 'sessionId'].includes(key))
+      if (typeof action !== 'string' || !['status', 'start', 'refresh', 'disconnect'].includes(action)
+          || !payload || Object.keys(payload).some(key => !['action', 'sessionId'].includes(key))
           || (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[\w-]{1,128}$/.test(sessionId))))
         return reply({ ok: false, error: { code: 'invalid-argument', message: '无效的微信操作。', details: {} } })
       if (request.signal.aborted) return reply({ ok: false, error: { code: 'cancelled', message: '请求已取消。', details: {} } })
-      return reply({ ok: true, value: await control.run(action as LoginAction, sessionId as string | undefined) })
+      const value = action === 'disconnect'
+        ? control.disconnect()
+        : await control.run(action as LoginAction, sessionId as string | undefined)
+      return reply({ ok: true, value })
     },
   })
 }

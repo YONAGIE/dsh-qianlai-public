@@ -30,6 +30,7 @@ window.__ModuleLoader__.load({
     function WechatPanel({ sessionId }) {
       const titleId = useId()
       const [open, setOpen] = useState(false)
+      const [disconnecting, setDisconnecting] = useState(false)
       const [state, setState] = useState({ status: 'disconnected' })
       const latestState = useRef(state)
       latestState.current = state
@@ -53,25 +54,33 @@ window.__ModuleLoader__.load({
           if (!result.ok) throw Error(result.error.message)
           if (action === 'status') statusFailures.current = 0
           setState(result.value)
+          return result.value
         } catch (error) {
           if (version === sequence.current) {
             if (action === 'status' && latestState.current.status === 'connected' && ++statusFailures.current < 3) return
-            setState({ status: 'error', message: error.message || '请求失败，请重试。' })
+            const previous = action === 'disconnect' ? latestState.current : { status: 'error' }
+            setState({ ...previous, message: error.message || '请求失败，请重试。' })
           }
         } finally { clearTimeout(timer); if (version === sequence.current) control.current = null }
       }
+      const disconnect = async () => {
+        setDisconnecting(true)
+        try {
+          const result = await request('disconnect')
+          if (result?.status === 'disconnected') setOpen(false)
+        } finally { setDisconnecting(false) }
+      }
       useEffect(() => {
-        if (open) {
-          dialog.current?.showModal()
-          // Opening "connect" is explicit intent. If already connected, start
-          // only attaches this conversation for handoff; it does not reset login.
-          void request('start')
-        } else {
-          void request('status')
-        }
+        if (open) dialog.current?.showModal()
+        // Viewing the existing binding must not start a desktop handoff.
+        void request('status').then(result => {
+          if (open && result && !result.canDisconnect && ['disconnected', 'expired', 'error'].includes(result.status))
+            void request('start')
+        })
         const timer = setInterval(() => void request('status'), 2000)
         return () => { clearInterval(timer); sequence.current++; control.current?.abort(); control.current = null }
       }, [open, sessionId])
+      const canDisconnect = state.status === 'connected' || state.canDisconnect
       return jsx('span', { children: [
         jsx('button', { type: 'button', onClick: () => setOpen(true), style: { border: '1px solid #c4eacf', borderRadius: 8, padding: '5px 10px', color: '#1b6f4a', background: '#edf8f1', cursor: 'pointer' }, children: buttonLabels[state.status] || '连接微信' }),
         open ? jsx('dialog', { ref: dialog, 'aria-labelledby': titleId, onCancel: () => setOpen(false), style: { border: '1px solid #c4eacf', borderRadius: 16, padding: 24, width: 'min(420px, calc(100vw - 48px))', color: '#24433a', background: '#fff' }, children: [
@@ -81,7 +90,9 @@ window.__ModuleLoader__.load({
           state.qrDataUrl ? jsx('img', { src: state.qrDataUrl, alt: '当前微信登录二维码', style: { display: 'block', width: '100%', maxWidth: 300, margin: '0 auto' } }) : null,
           state.message ? jsx('p', { style: { fontSize: 14, lineHeight: 1.6 }, children: state.message }) : null,
           jsx('div', { style: { display: 'flex', gap: 12, marginTop: 16 }, children: [
-            state.status !== 'connected' ? jsx('button', { type: 'button', style: buttonStyle, disabled: state.status === 'loading', onClick: () => void request(state.status === 'disconnected' ? 'start' : 'refresh'), children: state.status === 'disconnected' ? '获取二维码' : '刷新二维码' }) : null,
+            canDisconnect
+              ? jsx('button', { type: 'button', style: buttonStyle, disabled: disconnecting, onClick: () => void disconnect(), children: disconnecting ? '正在断开…' : '断开连接' })
+              : jsx('button', { type: 'button', style: buttonStyle, disabled: state.status === 'loading', onClick: () => void request(state.status === 'disconnected' ? 'start' : 'refresh'), children: state.status === 'disconnected' ? '获取二维码' : '刷新二维码' }),
             jsx('button', { type: 'button', style: { ...buttonStyle, background: '#fff', color: '#24433a' }, onClick: () => setOpen(false), children: '关闭' }),
           ] }),
         ] }) : null,

@@ -1,10 +1,10 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { loginControl, registerLoginRpc } from '../src/wechat/control.js'
+import { loginControl, registerLoginRpc, type RpcConnection } from '../src/wechat/control.js'
 import { apply } from '../src/wechat/index.js'
 import { BookStore } from '../src/store.js'
 
@@ -15,16 +15,27 @@ async function until(fn: () => boolean | Promise<boolean>) {
   for (let i = 0; i < 400; i++) { if (await fn()) return; await new Promise(resolve => setTimeout(resolve, 10)) }
   throw Error('condition timed out')
 }
-function host(dir = mkdtempSync(join(tmpdir(), 'qianlai-login-'))) {
+function host(dir = mkdtempSync(join(tmpdir(), 'qianlai-login-')), autoStart = false) {
   let dispose = () => {}
+  let route!: Parameters<RpcConnection['fetch']['register']>[0]
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   apply({
-    effect: fn => { dispose = fn() }, on: () => () => {}, get: () => undefined,
+    effect: fn => { dispose = fn() }, on: () => () => {},
+    get: name => name === 'connection' ? {
+      fetch: { register: (value: typeof route) => { route = value; return async () => {} } },
+    } : undefined,
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     sessionController: { create: async () => ({ sessionId: 'synthetic-session' }), prompt: async () => ({}) },
-  }, { stateDir: dir, autoStart: false })
+  }, { stateDir: dir, autoStart })
   cleanups.push(() => dispose())
-  return { dir, stop: () => dispose(), control: loginControl(dir)! }
+  const disconnect = async () => {
+    const response = await route.fetch(new Request('http://localhost/api/qianlai/wechat', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'client-request', rpcId: 'synthetic-disconnect', method: 'qianlai/wechat', payload: { action: 'disconnect' } }),
+    }))
+    return (await response.json()).result.value
+  }
+  return { dir, stop: () => dispose(), control: loginControl(dir)!, disconnect }
 }
 function hanging(signal?: AbortSignal | null) {
   return new Promise<Response>((_resolve, reject) => {
@@ -111,6 +122,64 @@ describe('微信登录与首次欢迎', () => {
     expect(await control.run('status')).toMatchObject({ status: 'connected', message: '微信连接已恢复。' })
   })
 
+  it('手动断开停止旧轮询，重启保持断开，原微信可扫码接回旧会话', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qianlai-disconnect-'))
+    const statePath = join(dir, 'wechat.json')
+    const qrPath = join(dir, 'wechat-login.png')
+    writeFileSync(statePath, JSON.stringify({
+      botToken: 'old-synthetic-token', contextToken: 'synthetic-context', cursor: 'synthetic-cursor',
+      ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session', welcomePending: false,
+    }))
+    writeFileSync(qrPath, 'synthetic-old-qr')
+    let oldPollSignal: AbortSignal | null | undefined
+    let resolveOldPoll!: (response: Response) => void
+    let scanner = 'another-synthetic-owner'
+    let qrRequests = 0
+    const network = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const path = String(url)
+      if (path.endsWith('/getupdates')) {
+        if (!qrRequests) {
+          oldPollSignal = init?.signal
+          return new Promise<Response>(resolve => { resolveOldPoll = resolve })
+        }
+        return hanging(init?.signal)
+      }
+      if (path.includes('/get_bot_qrcode')) {
+        qrRequests++
+        return json({ ret: 0, qrcode: 'synthetic-qr-' + qrRequests, qrcode_img_content: 'https://example.invalid/qr-' + qrRequests })
+      }
+      if (path.includes('/get_qrcode_status')) return json({ status: 'confirmed', bot_token: 'new-synthetic-token', ilink_user_id: scanner })
+      throw Error('unexpected request')
+    })
+    vi.stubGlobal('fetch', network)
+    const first = host(dir, true)
+    expect(await first.control.run('status')).toMatchObject({ status: 'connected', canDisconnect: true })
+    expect(await first.disconnect()).toEqual({ status: 'disconnected' })
+    expect(oldPollSignal?.aborted).toBe(true)
+    expect(existsSync(qrPath)).toBe(false)
+    resolveOldPoll(json({ ret: -14 }))
+    await new Promise(resolve => setImmediate(resolve))
+    expect(await first.control.run('status')).toEqual({ status: 'disconnected' })
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual({
+      manuallyDisconnected: true, ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session', welcomePending: false,
+    })
+    first.stop()
+
+    const restarted = host(dir, true)
+    expect(await restarted.control.run('status')).toEqual({ status: 'disconnected' })
+    expect(network).toHaveBeenCalledTimes(1)
+    await restarted.control.run('start')
+    await until(async () => (await restarted.control.run('status')).status === 'error')
+    expect((await restarted.control.run('status')).message).toContain('请使用原微信')
+    scanner = 'synthetic-owner'
+    await restarted.control.run('start')
+    await until(async () => (await restarted.control.run('status')).status === 'connected')
+    expect(qrRequests).toBe(2)
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual({
+      botToken: 'new-synthetic-token', ownerUserId: 'synthetic-owner', sessionId: 'synthetic-session', welcomePending: false,
+    })
+  })
+
   it('停止后迟到的出码响应不能重新连接或保留控制器', async () => {
     let resolve!: (value: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(r => { resolve = r })))
@@ -193,7 +262,8 @@ describe('微信登录与首次欢迎', () => {
   it('注册宿主 owner 专用精确路由，校验 RPC 信封与有限动作', async () => {
     let route!: { path: string; methods: string[]; requestBody: 'buffered'; fetch(request: Request): Promise<Response> }
     const run = vi.fn(async () => ({ status: 'disconnected' as const }))
-    registerLoginRpc({ fetch: { register: value => { route = value; return async () => {} } } }, { run })
+    const disconnect = vi.fn(() => ({ status: 'disconnected' as const }))
+    registerLoginRpc({ fetch: { register: value => { route = value; return async () => {} } } }, { run, disconnect })
     expect(route).toMatchObject({ path: '/api/qianlai/wechat', methods: ['POST'], requestBody: 'buffered' })
     const request = (body: unknown) => new Request('http://localhost/api/qianlai/wechat', { method: 'POST', body: JSON.stringify(body) })
     expect((await route.fetch(request({ action: 'start' }))).status).toBe(400)
@@ -203,6 +273,9 @@ describe('微信登录与首次欢迎', () => {
     expect(await (await route.fetch(request({ ...envelope, payload: { action: 'status' } }))).json()).toMatchObject({ result: { ok: true } })
     expect(await (await route.fetch(request({ ...envelope, payload: { action: 'start', sessionId: 'synthetic-desktop' } }))).json()).toMatchObject({ result: { ok: true } })
     expect(run).toHaveBeenLastCalledWith('start', 'synthetic-desktop')
+    expect(await (await route.fetch(request({ ...envelope, payload: { action: 'disconnect' } }))).json()).toMatchObject({ result: { ok: true, value: { status: 'disconnected' } } })
+    expect(disconnect).toHaveBeenCalledOnce()
+    expect(run).toHaveBeenCalledTimes(2)
     expect(await (await route.fetch(request({ ...envelope, payload: { action: 'start', sessionId: '../other' } }))).json()).toMatchObject({ result: { ok: false } })
   })
 })

@@ -3,6 +3,10 @@
 ## Unreleased
 
 - Open the official Zhejiang enterprise tax QR login from Zhangjie onboarding, then show reviewed tax information for the selected enterprise. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable.
+- Disconnect WeChat from the connection dialog and scan a new code when reconnecting. Keep the original owner and conversation available after restart.
+- Use the current business date for missing bank statement reminders during an open month. Check complete coverage when closing that month.
+- Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post.
+- Provide the first WeChat reply with the fixed welcome's send status and text when available so it can continue the conversation.
 
 - Show the current WeChat connection state in the Zhangjie header, mark sustained long-poll failures as reconnecting, and restore the connected state when polling recovers.
 

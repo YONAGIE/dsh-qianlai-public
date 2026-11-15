@@ -87,7 +87,11 @@ export function importStatement(store: BookStore, input: ImportStatementInput, n
     return refuse('SAMPLE_BOOK', '现在是样本账。老板要导自己公司的流水，先用 moneycome_open_book 开账。')
   if (!isCalendarDate(input.periodStart) || !isCalendarDate(input.periodEnd) || input.periodStart > input.periodEnd)
     return refuse('PERIOD_INVALID', '流水的起止日期要写成 YYYY-MM-DD，且起不晚于止。')
-  if (input.periodEnd > todayInChina(now)) return refuse('PERIOD_FUTURE', `流水截止日期 ${input.periodEnd} 还没到。`)
+  const businessDate = todayInChina(now)
+  if (input.periodEnd > businessDate)
+    return refuse('PERIOD_FUTURE', `流水截止日期 ${input.periodEnd} 还没到（北京时间 ${businessDate}）。`, {
+      businessDate, periodEnd: input.periodEnd,
+    })
   if (input.periodStart.slice(0, 7) < company.accountingStartMonth)
     return refuse('PERIOD_BEFORE_BOOK', `这本账从 ${company.accountingStartMonth} 开始记，流水起始日期在建账之前。`)
   const locked = store.lockedPeriods().filter((p) => p >= input.periodStart.slice(0, 7) && p <= input.periodEnd.slice(0, 7))
@@ -150,6 +154,8 @@ export function importStatement(store: BookStore, input: ImportStatementInput, n
   return {
     accepted: true as const,
     accountRef,
+    businessDate,
+    coveredRange: { from: input.periodStart, to: input.periodEnd },
     checks: summary,
     lines: store.statementLines({ importId }).map(lineView),
   }
