@@ -157,6 +157,10 @@ export interface ConnectionHooks {
   /** 整批消息处理完才回调，崩溃重启从未确认的 cursor 重收，不丢消息。 */
   onCursor?(cursor: string): void
   onExpired?(): void
+  /** Long-poll failures that are not the normal client-side timeout. */
+  onPollError?(message: string, consecutive: number): void
+  /** Called when a valid long-poll response recovers after poll failures. */
+  onPollRecovered?(): void
   onError?(message: string, consecutive: number): void
 }
 
@@ -201,11 +205,13 @@ export class IlinkConnection {
 
   private async loop(): Promise<void> {
     let errors = 0
+    let pollErrors = 0
     while (this.polling) {
       const ctl = new AbortController()
       this.ctl = ctl
       const timer = setTimeout(() => ctl.abort(), POLL_TIMEOUT_MS)
       const start = Date.now()
+      let pollSucceeded = false
       try {
         const r = await fetch(`${ILINK}/ilink/bot/getupdates`, {
           method: 'POST',
@@ -225,6 +231,9 @@ export class IlinkConnection {
           break
         }
         if (failed(d)) throw new Error(`getupdates ret=${d.ret} errcode=${d.errcode} ${d.errmsg ?? ''}`)
+        pollSucceeded = true
+        if (pollErrors > 0) this.hooks.onPollRecovered?.()
+        pollErrors = 0
         const msgs = d.msgs ?? []
         for (const m of msgs) {
           if (!this.polling) break
@@ -247,7 +256,12 @@ export class IlinkConnection {
         // 超时中断是长轮询的正常现象，立即重发。
         if (error instanceof Error && error.name === 'AbortError') continue
         errors += 1
-        this.hooks.onError?.(error instanceof Error ? error.message : String(error), errors)
+        const message = error instanceof Error ? error.message : String(error)
+        this.hooks.onError?.(message, errors)
+        if (!pollSucceeded) {
+          pollErrors += 1
+          this.hooks.onPollError?.(message, pollErrors)
+        }
         if (!this.polling) break
         await this.sleep(Math.min(3000 * 2 ** (errors - 1), 60_000))
       }

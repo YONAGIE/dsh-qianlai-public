@@ -9,7 +9,7 @@ import { apply } from '../src/wechat/index.js'
 import { BookStore } from '../src/store.js'
 
 const cleanups: (() => void)[] = []
-afterEach(() => { cleanups.splice(0).forEach(fn => fn()); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanups.splice(0).forEach(fn => fn()); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 const json = (value: object) => new Response(JSON.stringify(value))
 async function until(fn: () => boolean | Promise<boolean>) {
   for (let i = 0; i < 400; i++) { if (await fn()) return; await new Promise(resolve => setTimeout(resolve, 10)) }
@@ -85,6 +85,30 @@ describe('微信登录与首次欢迎', () => {
     await until(async () => (await control.run('status')).status === 'waiting')
     expect((await control.run('status')).qrDataUrl).not.toBe(first)
     expect(count).toBe(3)
+  })
+
+  it('持续的长轮询故障会撤下已连接状态，轮询恢复后重新标记已连接', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'qianlai-poll-health-'))
+    writeFileSync(join(dir, 'wechat.json'), JSON.stringify({ botToken: 'synthetic-token', welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-complete' }))
+    let failing = true
+    let qrRequests = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+      if (String(url).endsWith('/get_bot_qrcode')) qrRequests++
+      return json(failing ? { ret: -1, errmsg: 'synthetic unavailable' } : { ret: 0, msgs: [] })
+    }))
+    vi.useFakeTimers()
+    const { control } = host(dir)
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await control.run('status')).toMatchObject({ status: 'connected' })
+    await vi.advanceTimersByTimeAsync(9001)
+    expect(await control.run('status')).toMatchObject({ status: 'error', message: '微信连接中断，正在自动重连。' })
+    expect(await control.run('start')).toMatchObject({ status: 'error', message: '微信连接中断，正在自动重连。' })
+    expect(qrRequests).toBe(0)
+
+    failing = false
+    await vi.advanceTimersByTimeAsync(12001)
+    expect(await control.run('status')).toMatchObject({ status: 'connected', message: '微信连接已恢复。' })
   })
 
   it('停止后迟到的出码响应不能重新连接或保留控制器', async () => {
