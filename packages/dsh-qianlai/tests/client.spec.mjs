@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
+import { taxRegionCities, taxScanCities } from '../src/tax-portals.js'
+
 function makeClient() {
-  const regions = readFileSync(new URL('../src/tax-regions.json', import.meta.url), 'utf8')
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
-    .replace('/* tax-region-catalogue */ {}', regions)
+    .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
+    .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
@@ -314,14 +316,17 @@ describe('Zhangjie onboarding', () => {
     }
   })
 
-  it('saves the first step before opening the official portal and reloads only a confirmed tax profile', async () => {
+  it.each([
+    { province: '浙江省', city: '杭州市', taxId: '91330000MA00000001', region: 'zhejiang' },
+    { province: '北京市', city: '北京市', taxId: '91110000MA00000001', region: 'beijing' },
+  ])('$province saves before opening the official portal and reloads only confirmed tax fields', async ({ province, city, taxId, region }) => {
     const client = makeClient()
     const draftId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     let draft = { accepted: true, draftId, revision: 0, step: 1, completed: false, replacesSampleBook: true }
-    const initialEnterprise = { companyName: '合成小店', taxId: '91330000MA00000001', province: '浙江省', city: '杭州市' }
+    const initialEnterprise = { companyName: '合成小店', taxId, province, city }
     const profile = {
-      companyName: '合成小店', taxId: '91330000MA00000001', authority: '合成税务机关',
-      taxpayerQualification: '小规模纳税人', taxpayerStatus: '正常', sourceUrl: 'https://etax.zhejiang.chinatax.gov.cn/',
+      companyName: '合成小店', taxId, authority: '合成税务机关',
+      taxpayerQualification: '小规模纳税人', taxpayerStatus: '正常', sourceUrl: `https://etax.${region}.chinatax.gov.cn/`,
     }
     client.setOnboarding(payload => {
       if (payload.action === 'status') return draft
@@ -351,6 +356,9 @@ describe('Zhangjie onboarding', () => {
       await settle()
       client.change('企业全称', initialEnterprise.companyName)
       client.change('统一社会信用代码', initialEnterprise.taxId)
+      client.change('省份', '浙江省')
+      client.change('城市或地区', '宁波市')
+      expect(client.text()).toContain('该地区暂未接入扫码')
       client.change('省份', initialEnterprise.province)
       client.change('城市或地区', initialEnterprise.city)
       client.click('打开官方扫码页')

@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
     const PRESET = 'moneycome-zhangjie'
     const QUESTION_HISTORY = 'moneycome-question-history'
     const TAX_REGION_CITIES = /* tax-region-catalogue */ {}
+    const TAX_SCAN_CITIES = /* tax-scan-cities */ {}
     const AVATAR = '__AVATAR_DATA_URL__'
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
     let connection
@@ -189,7 +190,8 @@ window.__ModuleLoader__.load({
       const [active, setActive] = useState(false)
       const [view, setView] = useState({ phase: 'idle' })
       const [message, setMessage] = useState('')
-      const supported = enterprise.province === '浙江省' && enterprise.city && enterprise.city !== '宁波市'
+      const supported = Object.hasOwn(TAX_SCAN_CITIES, enterprise.province)
+        && TAX_SCAN_CITIES[enterprise.province].includes(enterprise.city)
 
       const request = async action => {
         if (pending.current || !flow.current) return
