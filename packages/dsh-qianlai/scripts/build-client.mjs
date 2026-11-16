@@ -7,10 +7,12 @@ import { taxRegionCities, taxScanCities } from '../lib/tax-portals.js'
 
 const root = new URL('..', import.meta.url)
 const source = readFileSync(new URL('client/client.src.js', root), 'utf8')
+const onboardingChat = readFileSync(new URL('client/onboarding-chat.src.js', root), 'utf8').replace(/^export /m, '')
 const avatar = readFileSync(new URL('assets/zhangjie/avatar.png', root)).toString('base64')
 mkdirSync(new URL('lib/', root), { recursive: true })
 writeFileSync(new URL('lib/client.js', root), source
   .replace('__AVATAR_DATA_URL__', `data:image/png;base64,${avatar}`)
+  .replace('/* onboarding-chat-client */', () => onboardingChat)
   .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
   .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities())))
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use DSH’s right-hand tool panel for the onboarding draft, updating it after chat-form submissions and showing tax scan results for review.
+
 - Save onboarding choices and small field forms directly to the current draft with a reviewable chat receipt.
 
 - Cancel obsolete onboarding tax scans and only apply verified results to the current draft.

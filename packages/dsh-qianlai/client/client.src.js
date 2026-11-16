@@ -1,4 +1,4 @@
-/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval */
+/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -101,8 +101,11 @@ window.__ModuleLoader__.load({
     }
 
 
-    let onboardingSession
+    const ONBOARDING_TAB = 'moneycome-onboarding'
+    let sidebarRight
     const onboardingListeners = new Set()
+    const onboardingCloseHandlers = new Map()
+    const closingDrafts = new Map()
     const steps = ['企业信息', '记账准备', '工资社保', '确认建档']
     const taxpayerTypes = { 'small-scale': '小规模纳税人', general: '一般纳税人', unknown: '待核实' }
     const businessTypes = { goods: '买卖商品或有库存', production: '生产或加工', 'cross-border': '有境外往来或外币收付款', 'multiple-entities': '有多个经营主体', none: '以上都没有' }
@@ -113,11 +116,19 @@ window.__ModuleLoader__.load({
     const currencies = { CNY: '人民币 (CNY)', USD: '美元 (USD)', HKD: '港元 (HKD)', EUR: '欧元 (EUR)', JPY: '日元 (JPY)', GBP: '英镑 (GBP)', SGD: '新加坡元 (SGD)', AUD: '澳元 (AUD)', CAD: '加拿大元 (CAD)' }
     const layout = { display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(min(12rem, 100%), 1fr))' }
     const actions = { display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }
-    const fieldStyle = { display: 'block', width: '100%', minWidth: 0, boxSizing: 'border-box', marginTop: 4, padding: '6px 8px', font: 'inherit', background: 'transparent', color: 'inherit', border: '1px solid #a3cdb6', borderRadius: 6 }
+    const fieldBorder = '1px solid color-mix(in srgb, currentColor 20%, transparent)'
+    const fieldStyle = { display: 'block', width: '100%', minWidth: 0, boxSizing: 'border-box', marginTop: 4, padding: '7px 9px', font: 'inherit', background: 'transparent', color: 'inherit', border: fieldBorder, borderRadius: 6 }
 
-    function selectOnboarding(sessionId) {
-      onboardingSession = sessionId
-      for (const update of onboardingListeners) update(sessionId)
+    function refreshOnboarding(sessionId, view) {
+      if (view) for (const update of onboardingListeners) update(sessionId, view)
+    }
+
+    function openOnboarding(sessionId, { view } = {}) {
+      refreshOnboarding(sessionId, view)
+      const target = sidebarRight?.commandTarget(null)
+      if (!target || target.sessionId !== sessionId) return false
+      sidebarRight.openTabFromTarget(ONBOARDING_TAB, target)
+      return true
     }
 
     function onboardingButton(label, onClick, disabled = false) {
@@ -136,7 +147,7 @@ window.__ModuleLoader__.load({
     }
 
     function onboardingGroup(label, children) {
-      return jsx('fieldset', { style: { minWidth: 0, border: '1px solid #c4eacf', borderRadius: 8, margin: '9px 0', padding: 10 }, children: [
+      return jsx('fieldset', { style: { minWidth: 0, border: fieldBorder, borderRadius: 8, margin: '12px 0', padding: 12 }, children: [
         jsx('legend', { style: { fontWeight: 600 }, children: label }),
         ...children,
       ] })
@@ -146,7 +157,7 @@ window.__ModuleLoader__.load({
       if (!connection) throw Error('建档服务还没就绪，请稍后重试。')
       const result = await connection.rpc.call('/api', 'qianlai/company-onboarding', { action, sessionId, ...extra }, signal)
       if (!result.ok) throw Error(result.error.message)
-      if (result.value?.accepted !== true) throw Error(result.value?.message || '建档操作未完成，请重试。')
+      if (result.value?.accepted !== true) throw Object.assign(Error(result.value?.message || '建档操作未完成，请重试。'), { code: result.value?.code })
       return result.value
     }
 
@@ -176,95 +187,125 @@ window.__ModuleLoader__.load({
       ] })
     }
 
-    async function taxRequest(action, id, sessionId, draftId, extra = {}) {
+    async function taxRequest(action, id, sessionId, draftId, extra = {}, signal = AbortSignal.timeout(10000)) {
       if (!connection) throw Error('建档服务还没就绪，请稍后重试。')
-      const result = await connection.rpc.call('/api', 'qianlai/tax-onboarding', { action, id, sessionId, draftId, ...extra }, AbortSignal.timeout(10000))
+      const result = await connection.rpc.call('/api', 'qianlai/tax-onboarding', { action, id, sessionId, draftId, ...extra }, signal)
       if (!result.ok) throw Error(result.error.message)
       return result.value
     }
 
-    function TaxOnboarding({ sessionId, draftId, enterprise, onSave, onConfirmed, onActive, disabled }) {
+    function TaxOnboarding({ sessionId, draftId, enterprise, mode, onSave, onConfirmed, onActive, onPreview, scanControl, disabled }) {
       const flow = useRef(null)
-      const pending = useRef(false)
-      const refreshed = useRef(false)
       const [active, setActive] = useState(false)
       const [view, setView] = useState({ phase: 'idle' })
       const [message, setMessage] = useState('')
       const supported = Object.hasOwn(TAX_SCAN_CITIES, enterprise.province)
         && TAX_SCAN_CITIES[enterprise.province].includes(enterprise.city)
 
+      const release = () => {
+        const attempt = flow.current
+        if (!attempt) return
+        flow.current = null
+        attempt.control.abort()
+        if (attempt.started) void taxRequest('cancel', attempt.id, attempt.sessionId, attempt.draftId).catch(() => {})
+      }
+      const stop = () => {
+        release()
+        setActive(false)
+        onActive(false)
+        onPreview(undefined)
+      }
+      const close = () => {
+        stop()
+        setView({ phase: 'idle' })
+        setMessage('')
+      }
+      const scanRequest = (attempt, action, extra) => taxRequest(
+        action, attempt.id, attempt.sessionId, attempt.draftId, extra,
+        AbortSignal.any([attempt.control.signal, AbortSignal.timeout(10000)]),
+      )
       const request = async action => {
-        if (pending.current || !flow.current) return
-        const id = flow.current
-        pending.current = true
+        const attempt = flow.current
+        if (!attempt?.started || attempt.pending) return
+        attempt.pending = true
         if (action !== 'status') setMessage('')
         try {
-          const result = await taxRequest(action, id, sessionId, draftId)
-          if (flow.current !== id) return
+          const result = await scanRequest(attempt, action)
+          if (flow.current !== attempt) return
           setView(result)
-          if (result.phase === 'submitted' && !refreshed.current) {
-            refreshed.current = true
+          if (result.phase === 'ready' && !attempt.previewed) {
+            attempt.previewed = true
+            onPreview(result.profile)
+          }
+          if (result.phase === 'submitted') {
             await onConfirmed()
-            setActive(false)
-            onActive(false)
+            if (flow.current === attempt) stop()
+          } else if (result.phase === 'failed' || result.phase === 'idle') {
+            stop()
+            if (result.phase === 'idle') setMessage('扫码已结束，可以重新打开官方扫码页。')
           }
         } catch (error) {
-          if (flow.current === id) {
-            refreshed.current = false
-            setMessage(error.message || '扫码操作失败，请重试。')
-          }
+          if (flow.current === attempt) setMessage(error.message || '扫码操作失败，请重试。')
         } finally {
-          if (flow.current === id) pending.current = false
+          attempt.pending = false
         }
       }
 
       useEffect(() => {
+        if (!scanControl) return
+        const handle = { cancel: close }
+        scanControl.current = handle
+        return () => { if (scanControl.current === handle) scanControl.current = null }
+      })
+      useEffect(() => {
+        close()
+        return () => {
+          release()
+          onActive(false)
+        }
+      }, [sessionId, draftId])
+      useEffect(() => {
+        if (mode !== 'scan') close()
+      }, [mode])
+      useEffect(() => {
         if (!active) return
         const timer = setInterval(() => { void request('status') }, 1200)
-        return () => {
-          clearInterval(timer)
-          const id = flow.current
-          flow.current = null
-          pending.current = false
-          if (id) void taxRequest('cancel', id, sessionId, draftId).catch(() => {})
-        }
+        return () => clearInterval(timer)
       }, [active, draftId, sessionId])
 
       const start = async () => {
-        if (pending.current) return
-        pending.current = true
+        if (flow.current || mode !== 'scan') return
+        const attempt = { id: window.crypto.randomUUID(), sessionId, draftId, control: new AbortController(), started: false, pending: true }
+        flow.current = attempt
         setMessage('')
         setView({ phase: 'opening' })
+        setActive(true)
         onActive(true)
+        onPreview(undefined)
         try {
           const current = await onSave()
-          if (!current) throw Error('请先保存企业信息再扫码。')
-          const id = flow.current ?? window.crypto.randomUUID()
-          flow.current = id
-          refreshed.current = false
-          setActive(true)
-          const result = await taxRequest('start', id, sessionId, draftId, {
-            province: enterprise.province, city: enterprise.city, companyName: enterprise.companyName?.trim(),
-            taxId: enterprise.taxId?.trim().toUpperCase(),
+          if (flow.current !== attempt) return
+          if (!current?.enterprise || current.draftId !== draftId) throw Error('请先保存企业信息再扫码。')
+          const { province, city, companyName, taxId } = current.enterprise
+          attempt.started = true
+          const result = await scanRequest(attempt, 'start', {
+            province, city, companyName, taxId,
           })
-          if (flow.current === id) setView(result)
-          else await taxRequest('cancel', id, sessionId, draftId)
+          if (flow.current === attempt) {
+            setView(result)
+            if (result.phase === 'failed' || result.phase === 'idle') stop()
+          }
         } catch (error) {
+          if (flow.current !== attempt) return
+          stop()
           setView({ phase: 'failed' })
           setMessage(error.message || '未能打开扫码页。')
-          onActive(false)
         } finally {
-          pending.current = false
+          attempt.pending = false
         }
       }
-      const close = () => {
-        setActive(false)
-        setView({ phase: 'idle' })
-        setMessage('')
-        onActive(false)
-      }
+      if (mode !== 'scan') return null
       const ready = Boolean(supported && enterprise.companyName?.trim() && /^[A-Za-z0-9]{18}$/.test(enterprise.taxId?.trim() ?? ''))
-      const profile = view.profile
       const busyText = { opening: '正在打开官方税务网页…', reading: '正在读取税务资料…', submitting: '正在回填建档资料…' }
       return jsx('div', { children: [
         ['idle', 'failed'].includes(view.phase) ? onboardingButton('打开官方扫码页', () => void start(), disabled || !ready) : null,
@@ -273,31 +314,39 @@ window.__ModuleLoader__.load({
         busyText[view.phase] ? jsx('p', { role: 'status', children: busyText[view.phase] }) : null,
         view.phase === 'waiting' ? jsx('p', { children: '用电子税务局 App 扫码，确认企业后回来读取。' }) : null,
         view.phase === 'waiting' ? onboardingButton('已登录，读取税务资料', () => void request('read')) : null,
-        profile && view.phase !== 'submitted' ? jsx('section', { 'aria-label': '读取到的企业税务资料', children: [
-          jsx('p', { children: profile.companyName + ' · ' + profile.taxId }),
-          jsx('p', { children: [profile.authority, profile.taxpayerQualification, profile.taxpayerStatus].filter(Boolean).join(' · ') }),
-          profile.registrationDate ? jsx('p', { children: '登记日期 ' + profile.registrationDate }) : null,
-          profile.obligations?.length ? jsx('ul', { children: profile.obligations.map((tax, index) => jsx('li', {
-            children: [tax.taxCategory, tax.taxItem, tax.filingCycle].filter(Boolean).join(' · '),
-          }, index)) }) : null,
-          jsx('p', { children: '来源 ' + profile.sourceUrl }),
-          onboardingButton('核对无误，回填税务资料', () => void request('submit'), view.phase !== 'ready'),
-        ] }) : null,
+        ['ready', 'submitting'].includes(view.phase)
+          ? onboardingButton('核对无误，回填税务资料', () => void request('submit'), view.phase !== 'ready')
+          : null,
         message || view.message ? jsx('p', { role: 'status', children: message || view.message }) : null,
-        active ? onboardingButton('关闭扫码', close, view.phase === 'submitting') : null,
+        active ? onboardingButton('关闭扫码', close) : null,
       ] })
     }
 
-    function EnterpriseFields({ input, change, sessionId, view, busy, scanActive, setScanActive, save, refresh, recognize }) {
+    function EnterpriseFields({ input, change, sessionId, view, busy, scanActive, setScanActive, scanControl, save, refresh, recognize, switchMode }) {
+      const [preview, setPreview] = useState(undefined)
+      const mode = view.mode ?? 'manual'
       const bind = key => value => change({ [key]: value })
-      const field = (label, key, props) => onboardingField(label, input[key], bind(key), props)
+      const qualification = preview?.taxpayerQualification
+      const identity = qualification?.includes('一般纳税人') ? 'general' : qualification?.includes('小规模纳税人') ? 'small-scale' : undefined
+      const statuses = [preview?.taxpayerStatus, preview?.registrationStatus]
+        .filter(value => value && !['待核实', '尚未读取', '未知'].includes(value))
+      const observedStatus = statuses.find(value => ['非正常', '注销', '非正常注销', '停业', '清算'].includes(value.trim())) ?? statuses[0]
+      const displayed = {
+        ...input,
+        companyName: preview?.companyName || input.companyName,
+        taxId: preview?.taxId || input.taxId,
+        taxAuthority: preview?.authority || input.taxAuthority,
+        taxpayerIdentity: identity ?? input.taxpayerIdentity,
+        taxStatus: observedStatus || input.taxStatus,
+      }
+      const field = (label, key, props) => onboardingField(label, displayed[key], bind(key), props)
       const options = values => Object.fromEntries(values.map(value => [value, value]))
       const accounts = input.accounts ?? []
       const business = input.business ?? []
       const official = input.officialTax
       const types = { ...taxpayerTypes }
       const taxStates = options(['正常', '待核实', '非正常', '注销', '非正常注销', '停业', '清算'])
-      if (input.taxStatus && !Object.hasOwn(taxStates, input.taxStatus)) taxStates[input.taxStatus] = input.taxStatus
+      if (displayed.taxStatus && !Object.hasOwn(taxStates, displayed.taxStatus)) taxStates[displayed.taxStatus] = displayed.taxStatus
       const editing = Boolean(busy || scanActive)
       const blankAccount = () => ({ holder: input.companyName ?? '', bank: '', number: '', currency: 'CNY', openedOn: '' })
       const accountField = (account, index, label, key, props) => onboardingField(label, account[key], value => bind('accounts')(
@@ -305,6 +354,14 @@ window.__ModuleLoader__.load({
       ), { ...props, disabled: editing })
 
       return [
+        jsx('div', { role: 'group', 'aria-label': '建档资料填写方式', style: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+          children: [['scan', '扫码建档'], ['manual', '手动填写']].map(([key, label]) => jsx('button', {
+            type: 'button', 'aria-pressed': mode === key, disabled: Boolean(busy || mode === key),
+            onClick: () => void switchMode(key),
+            style: { ...buttonStyle, ...(mode === key ? {} : { color: 'inherit', background: 'transparent', border: fieldBorder }) },
+            children: label,
+          }, key)),
+        }),
         onboardingGroup('公司资料', [
           jsx('div', { style: layout, children: [
             field('企业全称', 'companyName', { maxLength: 200, disabled: editing }),
@@ -323,13 +380,20 @@ window.__ModuleLoader__.load({
             field('纳税人类型', 'taxpayerIdentity', { options: types, disabled: editing || ['small-scale', 'general'].includes(official?.taxpayerIdentity) }),
             field('税务状态', 'taxStatus', { options: taxStates, disabled: editing || Boolean(official?.taxStatus && official.taxStatus !== '待核实') }),
           ] }),
-          official ? jsx('p', { children: '已从税务网页回填。来源 ' + official.sourceUrl }) : null,
+          preview ? jsx('p', { role: 'status', children: '已读取官方税务资料，请核对表单里的信息。' }) : null,
+          official ? jsx('p', { children: '已从税务网页回填。' }) : null,
+          (preview?.obligations ?? official?.obligations)?.length ? jsx('div', { children: [
+            jsx('strong', { children: '当前页税费种' }),
+            jsx('ul', { children: (preview?.obligations ?? official.obligations).map((item, index) => jsx('li', {
+              children: [item.taxItem, item.taxCategory, item.filingCycle].filter(Boolean).join(' · '),
+            }, index)) }),
+          ] }) : null,
           jsx('div', { style: actions, children: jsx(OnboardingUpload, {
             onFile: file => void recognize('tax', file), disabled: editing, children: '上传并识别税务资料',
           }) }),
           jsx(TaxOnboarding, {
             sessionId, draftId: view.draftId, enterprise: input, onSave: () => save(false), onConfirmed: refresh,
-            onActive: setScanActive, disabled: Boolean(busy),
+            mode, onActive: setScanActive, onPreview: setPreview, scanControl, disabled: Boolean(busy),
           }),
         ]),
         onboardingGroup('实际经营', [
@@ -391,54 +455,118 @@ window.__ModuleLoader__.load({
       ]
     }
 
-    function CompanyOnboarding({ sessionId }) {
-      const [view, setView] = useState(null)
-      const [step, setStep] = useState(1)
-      const [input, setInput] = useState({})
+    const editableStages = ['enterprise', 'accounting', 'payroll']
+
+    function CompanyOnboarding({ sessionId, onClose }) {
+      const current = useRef({ view: null, step: 1, edits: {} })
+      const [{ view, step, edits }, setDraft] = useState(current.current)
       const [busy, setBusy] = useState('')
       const [message, setMessage] = useState('')
       const [scanActive, setScanActive] = useState(false)
       const [replaceSampleBook, setReplaceSampleBook] = useState(false)
-      const pending = useRef(false)
-      const applyView = (state, next = state.step) => {
-        setView(state)
-        setStep(next)
-        setInput(state[['enterprise', 'accounting', 'payroll'][next - 1]] ?? {})
+      const pending = useRef(null)
+      const mounted = useRef(false)
+      const scanControl = useRef(null)
+      const updateDraft = state => {
+        current.current = state
+        if (mounted.current) setDraft(state)
+      }
+      const inputAt = state => ({ ...state.view?.[editableStages[state.step - 1]], ...state.edits })
+      const input = inputAt({ view, step, edits })
+      const applyView = (state, next = state.step, keepEdits = false) => {
+        const previous = current.current
+        const sameDraft = state.draftId === previous.view?.draftId
+        if (sameDraft && state.revision < previous.view.revision) return
+        const hasEdits = keepEdits && !state.completed && sameDraft && Object.keys(previous.edits).length > 0
+        updateDraft({ view: state, step: hasEdits ? previous.step : next, edits: hasEdits ? previous.edits : {} })
         setReplaceSampleBook(false)
       }
       useEffect(() => {
         const abort = new AbortController()
-        void onboardingRequest(sessionId, 'status', {}, AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]))
-          .then(state => { if (!abort.signal.aborted) applyView(state) })
-          .catch(error => { if (!abort.signal.aborted) setMessage(error.message) })
-        return () => abort.abort()
+        mounted.current = true
+        const sync = (source, state) => { if (source === sessionId) applyView(state, state.step, true) }
+        onboardingListeners.add(sync)
+        onboardingCloseHandlers.set(sessionId, saveOnClose)
+        void (async () => {
+          const closing = closingDrafts.get(sessionId)
+          await closing?.save
+          abort.signal.throwIfAborted()
+          const state = await onboardingRequest(sessionId, 'status', {}, AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]))
+          if (abort.signal.aborted) return
+          if (closingDrafts.get(sessionId) === closing && closing) {
+            closingDrafts.delete(sessionId)
+            if (closing.draft.view.draftId === state.draftId && !state.completed) {
+              current.current = closing.draft
+              setMessage('刚才的草稿尚未保存，已恢复待保存资料。')
+            }
+          }
+          sync(sessionId, state)
+        })().catch(error => { if (!abort.signal.aborted) setMessage(error.message) })
+        return () => {
+          mounted.current = false
+          abort.abort()
+          onboardingListeners.delete(sync)
+          if (onboardingCloseHandlers.get(sessionId) === saveOnClose) onboardingCloseHandlers.delete(sessionId)
+        }
       }, [sessionId])
 
-      const run = async (notice, task) => {
+      const run = (notice, task) => {
         if (pending.current) return
-        pending.current = true
         setBusy(notice)
         setMessage('')
-        try { return await task() }
-        catch (error) { setMessage(error.message || '建档操作未完成，请重试。') }
-        finally { setBusy(''); pending.current = false }
+        const operation = Promise.resolve().then(task).catch(async error => {
+          if (['DRAFT_STALE', 'ONBOARDING_CHANGED'].includes(error.code)) {
+            const latest = await onboardingRequest(sessionId, 'status').catch(() => undefined)
+            if (latest) applyView(latest, latest.step, true)
+          }
+          setMessage(error.message || '建档操作未完成，请重试。')
+        }).finally(() => { setBusy(''); pending.current = null })
+        pending.current = operation
+        return operation
+      }
+      const persist = async advance => {
+        const state = current.current
+        const patch = inputAt(state)
+        if (state.step === 1) patch.accounts = (patch.accounts ?? []).map(({ maskedNumber: _maskedNumber, ...account }) => account)
+        delete patch.officialTax
+        const result = await onboardingRequest(sessionId, 'save', {
+          draftId: state.view.draftId, step: state.step, revision: state.view.revision, input: patch, advance,
+        })
+        applyView(result, advance ? result.step : state.step)
+        return result
+      }
+      const saveOnClose = () => {
+        const draft = current.current
+        if (!draft.view || draft.view.completed || !Object.keys(draft.edits).length) return
+        const closing = { draft }
+        closingDrafts.set(sessionId, closing)
+        // The native X closes synchronously. Reopening waits for this save;
+        // a failed save leaves the typed changes available for another attempt.
+        closing.save = Promise.resolve(pending.current).then(async () => {
+          if (Object.keys(current.current.edits).length) await persist(false)
+          if (closingDrafts.get(sessionId) === closing) closingDrafts.delete(sessionId)
+        }).catch(() => { closing.draft = current.current })
       }
       const save = (advance, hide = false) => run('正在保存…', async () => {
-        const patch = step === 1 ? {
-          ...input,
-          accounts: (input.accounts ?? []).map(({ maskedNumber: _maskedNumber, ...account }) => account),
-        } : input
-        delete patch.officialTax
-        const result = await onboardingRequest(sessionId, 'save', { draftId: view.draftId, step, revision: view.revision, input: patch, advance })
-        applyView(result, advance ? result.step : step)
-        if (hide) selectOnboarding(undefined)
+        if (hide) scanControl.current?.cancel()
+        const result = await persist(advance)
+        if (hide) onClose()
         return result
       })
+      const switchMode = mode => run('正在保存草稿…', async () => {
+        const state = current.current
+        if (mode === 'manual') scanControl.current?.cancel()
+        const saved = Object.keys(state.edits).length ? await persist(false) : state.view
+        const result = await onboardingRequest(sessionId, 'set-mode', {
+          draftId: saved.draftId, revision: saved.revision, mode,
+        })
+        applyView(result, state.step)
+      })
       const refresh = async () => {
-        applyView(await onboardingRequest(sessionId, 'status'), 1)
+        applyView(await onboardingRequest(sessionId, 'status'), 1, true)
         setMessage('已回填税务资料，请核对并补齐其余信息。')
       }
-      const change = patch => setInput(previous => ({ ...previous, ...patch }))
+      const change = patch => updateDraft({ ...current.current, edits: { ...current.current.edits, ...patch } })
       const recognize = (kind, file) => run('正在识别资料…', async () => {
         if (!file.size || file.size > 8 * 1024 * 1024) throw Error('请选择不超过 8 MB 的 PDF 或图片。')
         const base64 = await readOnboardingFile(file)
@@ -458,7 +586,10 @@ window.__ModuleLoader__.load({
         ))
         if (fields.province && fields.province !== input.province && input.city) delete fields.province
         if (fields.city && !TAX_REGION_CITIES[fields.province || input.province]?.includes(fields.city)) delete fields.city
-        if (Object.keys(fields).length) change(fields)
+        if (Object.keys(fields).length) {
+          change(fields)
+          await persist(false)
+        }
         const coverage = result.totalPages > result.pagesRead ? '本次识别了 PDF 的第一页。其他页面可截取后上传。' : ''
         setMessage((Object.keys(fields).length ? '已识别并填入空白项，请核对。' : '没有可补填的资料。请核对已有内容，缺项可手填。') + coverage)
       })
@@ -477,17 +608,16 @@ window.__ModuleLoader__.load({
         '请核对信息，确认后我会按这些资料建档。',
       ]
       return jsx('section', { 'aria-label': '张姐建档', 'data-qianlai-onboarding': true, style: {
-        maxHeight: 'min(54vh, 36rem)', overflowY: 'auto', padding: 12, marginBottom: 8,
-        boxSizing: 'border-box', border: '1px solid #c4eacf', borderRadius: 12,
-        background: 'var(--dsw-specific-bubble, #edf8f1)', color: 'var(--dsw-alias-label-primary, #24433a)', fontSize: 14,
+        height: '100%', minHeight: 0, overflowY: 'auto', padding: '18px 18px 20px',
+        boxSizing: 'border-box', color: 'var(--dsw-alias-label-primary, #26372f)', fontSize: 14,
       }, children: [
-        jsx('div', { style: { display: 'flex', alignItems: 'center', gap: 8 }, children: [
-          jsx(Avatar, {}), jsx('strong', { children: view?.completed ? '建档完成' : view ? step + '/4 ' + steps[step - 1] : '张姐建档' }),
-        ] }),
+        jsx('h2', { style: { margin: '0 0 6px', fontSize: 18, fontWeight: 650 },
+          children: view?.completed ? '建档完成' : view ? step + '/4 ' + steps[step - 1] : '张姐建档',
+        }),
         !view ? jsx('p', { role: 'status', children: message || '正在读取建档进度…' }) : null,
         view && !view.completed ? jsx('p', { children: help[step - 1] }) : null,
         view && !view.completed && step === 1 ? jsx(EnterpriseFields, {
-          input, change, sessionId, view, busy, scanActive, setScanActive, save, refresh, recognize,
+          input, change, sessionId, view, busy, scanActive, setScanActive, scanControl, save, refresh, recognize, switchMode,
         }) : null,
         view && step === 2 ? jsx('div', { style: layout, children: [
           field('原有账务', 'history', { options: histories }),
@@ -519,20 +649,16 @@ window.__ModuleLoader__.load({
         jsx('div', { style: actions, children: [
           view && !view.completed && step < 4 ? onboardingButton('继续', () => void save(true), Boolean(busy || scanActive)) : null,
           view && !view.completed && step === 4 ? onboardingButton('确认建档', () => void confirm(), Boolean(busy || view.replacesSampleBook && !replaceSampleBook)) : null,
-          view && !view.completed && step < 4 ? onboardingButton('保存并收起', () => void save(false, true), Boolean(busy || scanActive)) : null,
-          !view || step === 4 || view.completed ? onboardingButton('收起', () => selectOnboarding(undefined), Boolean(busy)) : null,
+          view && !view.completed && step < 4 ? onboardingButton('保存并收起', () => void save(false, true), Boolean(busy)) : null,
+          !view || step === 4 || view.completed ? onboardingButton('收起', onClose, Boolean(busy)) : null,
         ] }),
       ] })
     }
 
-    function ZhangjieOnboardingDock({ sessionId, useSessions }) {
+    function ZhangjieOnboardingTab({ sessionId, useSessions, useTabInfo }) {
       const active = usePreset(sessionId, useSessions) === PRESET
-      const [selected, setSelected] = useState(onboardingSession)
-      useEffect(() => {
-        onboardingListeners.add(setSelected)
-        return () => { onboardingListeners.delete(setSelected) }
-      }, [])
-      return active && sessionId && sessionId === selected ? jsx(CompanyOnboarding, { sessionId }, sessionId) : null
+      const { tab } = useTabInfo()
+      return active && sessionId ? jsx(CompanyOnboarding, { sessionId, onClose: () => tab.actions.close() }, sessionId) : null
     }
 
     // 钱来配色层。DSH 的主色、气泡、选中态、焦点环都引用 deepseek 色阶，整组换成绿色即可跟着变；
@@ -599,14 +725,14 @@ window.__ModuleLoader__.load({
     function ZhangjieAvatar({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId }), onboardingButton('开始建档', () => selectOnboarding(sessionId), !sessionId)] }) : null
+      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId })] }) : null
     }
 
     /** 新会话页也提供微信入口。 */
     function ZhangjieTheme({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      return active ? jsx('span', { style: { display: 'inline-flex', gap: 10 }, children: [jsx(WechatPanel, { sessionId }), onboardingButton('开始建档', () => selectOnboarding(sessionId), !sessionId)] }) : null
+      return active ? jsx(WechatPanel, { sessionId }) : null
     }
 
     function parseJson(text) {
@@ -706,6 +832,8 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /* onboarding-chat-client */
+
     const inject = ['slots']
 
     function apply(ctx) {
@@ -733,12 +861,20 @@ window.__ModuleLoader__.load({
           ZhangjieTheme,
         ),
       )
-      ctx.slots.inject('conversation.input.dock', () =>
-        ctx.slots.register(
-          { name: 'conversation.input.dock', id: 'moneycome-onboarding', order: 0 },
-          ZhangjieOnboardingDock,
-        ),
-      )
+      ctx.inject(['sidebarRight', 'sidebarRightTabs'], scope => {
+        sidebarRight = scope.sidebarRight
+        scope.effect(() => () => { sidebarRight = undefined; closingDrafts.clear() }, 'dsh-qianlai: onboarding sidebar')
+        scope.effect(() => scope.sidebarRightTabs.register({
+          id: ONBOARDING_TAB, kind: ONBOARDING_TAB, title: () => '企业建档', keepMounted: true,
+        }), 'dsh-qianlai: onboarding tab type')
+        scope.effect(() => sidebarRight.registerCloseHandler?.(ONBOARDING_TAB, sessionId => {
+          onboardingCloseHandlers.get(sessionId)?.()
+        }), 'dsh-qianlai: save closed onboarding drafts')
+        scope.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () =>
+          ctx.slots.register({ name: 'sidebar.right.pane.tab', key: ONBOARDING_TAB }, ZhangjieOnboardingTab),
+        ), 'dsh-qianlai: onboarding tab body')
+      })
+      registerOnboardingChat(ctx, { jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest })
       ctx.inject(['uiConversation'], scope => {
         const { events } = scope.uiConversation
         events.register(questionHistoryDefinition(events))
