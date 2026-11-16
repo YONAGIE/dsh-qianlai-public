@@ -66,6 +66,9 @@ function modelOf(session: SessionSnapshot, services: OnboardingHostServices): Mo
 }
 
 export function companyTaxDraftAccess(onboarding: CompanyOnboarding, sessions?: OnboardingSessions): TaxDraftAccess {
+  const isCurrent = (target: TaxOnboardingTarget, flowId: string) =>
+    onboarding.isTaxScanCurrent(target.sessionId, target.draftId, flowId)
+
   function currentTarget(target: TaxOnboardingTarget) {
     const view = onboarding.status()
     const enterprise = view.enterprise
@@ -77,16 +80,18 @@ export function companyTaxDraftAccess(onboarding: CompanyOnboarding, sessions?: 
   }
 
   return {
-    async check(target, signal) {
+    isCurrent,
+    async check(target, signal, flowId) {
       if (!await inspectZhangjie(sessions, target.sessionId, signal)) return refuse('ONBOARDING_SESSION', '请在钱来张姐对话中打开建档。')
       signal.throwIfAborted()
+      if (!isCurrent(target, flowId)) return refuse('ONBOARDING_CHANGED', '建档已切换步骤，请在当前对话继续。')
       return currentTarget(target)
     },
     async apply(target, profile, flowId, signal) {
       if (!await inspectZhangjie(sessions, target.sessionId, signal)) return refuse('ONBOARDING_SESSION', '请在钱来张姐对话中继续建档。')
       signal.throwIfAborted()
       const current = currentTarget(target)
-      return current.accepted ? onboarding.applyTaxProfile(target.draftId, target.province, target.city, profile, flowId) : current
+      return current.accepted ? onboarding.applyTaxProfile(target.draftId, target.province, target.city, profile, flowId, target.sessionId) : current
     },
   }
 }
@@ -117,6 +122,8 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
           return reply(onboarding.cardStatus(sessionId, payload.cardId))
         if (draftId !== view.draftId || typeof revision !== 'number' || !Number.isSafeInteger(revision))
           return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请重新打开建档。'))
+        if (action === 'claim-tax-auto-start' && typeof sessionId === 'string' && typeof payload.cardId === 'string')
+          return reply(onboarding.claimTaxAutoStart(sessionId, payload.cardId, revision))
         if (action === 'save' && (step === 1 || step === 2 || step === 3) && (payload.advance === undefined || typeof payload.advance === 'boolean'))
           return reply(onboarding.save(step, revision, payload.input, payload.advance !== false))
         if (action === 'set-mode' && (payload.mode === 'scan' || payload.mode === 'manual'))

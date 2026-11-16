@@ -2,7 +2,7 @@
 
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset,
-  openOnboarding, refreshOnboarding, onboardingRequest,
+  openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply,
   readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
 }) {
   const kind = 'moneycome-onboarding-card'
@@ -45,6 +45,7 @@ export function registerOnboardingChat(ctx, {
   }
   const secondary = { color: 'var(--dsw-alias-label-secondary)' }
   const actions = { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }
+  const startingTaxFlows = new Map()
 
   function validField(field) {
     return typeof field?.key === 'string' && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(field.key)
@@ -116,6 +117,42 @@ export function registerOnboardingChat(ctx, {
     return typeof error?.message === 'string' && error.message.length <= 160 ? error.message : fallback
   }
 
+  function sourceText(documentKind) {
+    return documentKind === 'tax' ? '税务资料' : '营业执照'
+  }
+
+  function replyFor(card, input, result) {
+    switch (card.kind) {
+      case 'mode':
+        return '我选择' + modes[input.mode] + '。'
+      case 'region': {
+        const { province = input.values.province, city = input.values.city } = result.view?.enterprise ?? {}
+        return '我的税务地区是' + (province === city ? city : province + ' ' + city) + '，请继续。'
+      }
+      case 'source':
+        return input.choice === 'license' ? '我想上传' + sourceText(card.documentKind) + '。'
+          : '我想自己填写' + (card.documentKind === 'tax' ? '税务资料' : '公司资料') + '。'
+      case 'upload':
+        return '我已上传' + sourceText(card.documentKind) + '，请继续。'
+      case 'tax-scan':
+        return '我已核对并回填税务资料，请继续建档。'
+      case 'bank':
+        return input.choice === 'skip' ? '银行账户资料我稍后补，请继续。' : '我已填好这个银行账户，请继续。'
+      case 'bank-next':
+        return input.choice === 'add' ? '我还要添加一个银行账户。' : '银行账户已核对，请继续建档。'
+      case 'confirm':
+        if (input.choice === 'confirm') return '我已确认建档，请告诉我下一步。'
+        return '我要更正' + (corrections.find(item => item.value === input.choice)?.label ?? '建档资料') + '。'
+      case 'blocked':
+        return '我想重新核对企业情况。'
+      default: {
+        const labels = card.fields.filter(field => Object.hasOwn(input.values ?? {}, field.key) &&
+          input.values[field.key]?.length).map(field => field.label)
+        return labels.length ? '我已填写' + labels.join('、') + '，请继续建档。' : '资料已填写，请继续建档。'
+      }
+    }
+  }
+
   function form({ fields, values, change, saving, onSubmit, label = '保存到草稿' }) {
     const inputStyle = {
       ...controlStyle,
@@ -173,7 +210,26 @@ export function registerOnboardingChat(ctx, {
     })
   }
 
-  function TaxStep({ sessionId, card, enterprise, autoStart, consumeStart, onConfirm, onManual, saving }) {
+  function startTaxIfNeeded(sessionId, card, enterprise) {
+    const { id, draftId, revision, province, city } = card
+    const status = () => taxRequest('status', id, sessionId, draftId, {})
+    if (!card.autoStart) return status()
+    // Share the claim/start operation across remounts while the RPC is pending.
+    const running = startingTaxFlows.get(id)
+    if (running) return running
+    const attempt = (async () => {
+      const { start } = await onboardingRequest(sessionId, 'claim-tax-auto-start', { cardId: id, draftId, revision })
+      if (!start) return status()
+      const { companyName = '', taxId = '' } = enterprise ?? {}
+      return taxRequest('start', id, sessionId, draftId, { province, city, companyName, taxId })
+    })()
+    startingTaxFlows.set(id, attempt)
+    const clear = () => startingTaxFlows.delete(id)
+    void attempt.then(clear, clear)
+    return attempt
+  }
+
+  function TaxStep({ sessionId, card, enterprise, onConfirm }) {
     const [flow, setFlow] = useState(null)
     const [error, setError] = useState('')
     const attempt = useRef(null)
@@ -187,18 +243,24 @@ export function registerOnboardingChat(ctx, {
       try {
         const { id, draftId, province, city } = card
         const { companyName = '', taxId = '' } = enterprise ?? {}
-        const result = await taxRequest(action, id, sessionId, draftId, action === 'start'
-          ? { province, city, companyName, taxId } : {})
+        const result = await (action === 'initial' ? startTaxIfNeeded(sessionId, card, enterprise)
+          : taxRequest(action, id, sessionId, draftId, action === 'start'
+            ? { province, city, companyName, taxId } : {}))
         if (current.stopped || current.serial !== serial) return false
         setError('')
         setFlow(result)
         if (result.phase === 'ready') previewOnboardingTax?.(sessionId, result.profile, draftId)
         else if (['idle', 'failed', 'submitted'].includes(result.phase)) previewOnboardingTax?.(sessionId)
-        if (result.phase === 'submitted') await onConfirm()
+        if (action === 'submit') current.wantsReceipt = ['submitting', 'submitted'].includes(result.phase)
+        if (result.phase === 'ready') current.wantsReceipt = false
+        if (result.phase === 'submitted' && current.wantsReceipt) {
+          await onConfirm()
+          current.wantsReceipt = false
+        }
         return true
       } catch (error) {
         if (!current.stopped && current.serial === serial) {
-          if (action === 'start') setFlow({ phase: 'failed' })
+          if (action === 'start' || action === 'initial') setFlow({ phase: 'failed' })
           setError(shownError(error, '暂时无法连接电子税务局，请重试。'))
         }
         return false
@@ -210,8 +272,7 @@ export function registerOnboardingChat(ctx, {
     useEffect(() => {
       const current = { stopped: false, pending: false, serial: 0 }
       attempt.current = current
-      if (autoStart) consumeStart()
-      void request(autoStart ? 'start' : 'status', current)
+      void request('initial', current)
       return () => { current.stopped = true }
     }, [sessionId, card.id])
     const phase = flow?.phase
@@ -235,28 +296,25 @@ export function registerOnboardingChat(ctx, {
       message ? jsx('p', { role: 'status', style: secondary, children: message }) : null,
       error ? jsx('p', { role: 'alert', children: error }) : null,
       jsx('div', { style: actions, children: [
-        !flow || phase === 'idle' || phase === 'failed'
-          ? button('打开官方扫码页', () => void request('start'), !flow && !error) : null,
+        phase === 'idle' || phase === 'failed'
+          ? button('重新打开扫码页', () => void request('start')) : null,
         phase === 'ready' ? button('核对无误，回填税务资料', () => void request('submit')) : null,
         active || phase === 'ready' ? button('取消扫码', () => void request('cancel')) : null,
         phase === 'waiting' && flow.retryRead ? button('重试读取', () => void request('read')) : null,
         phase === 'submitted' && error ? button('继续建档', () => void request('status')) : null,
-        phase !== 'submitting' && phase !== 'submitted' ? button('改为手动填写', async () => {
-          if ((active || phase === 'ready') && !await request('cancel')) return
-          await onManual()
-        }, saving || (!flow && !error)) : null,
       ] }),
     ]
   }
 
-  function Card({ sessionId, card, autoStart = false, consumeStart }) {
+  function Card({ sessionId, card }) {
     const [values, setValues] = useState({})
     const [status, setStatus] = useState(null)
     const [statusAttempt, setStatusAttempt] = useState(0)
     const [error, setError] = useState('')
     const [saving, setSaving] = useState(false)
-    const [startScanId, setStartScanId] = useState('')
+    const [pendingReply, setPendingReply] = useState('')
     const submitting = useRef(false)
+    const sending = useRef(false)
     const { id: cardId, draftId, revision } = card
     const viewOnly = card.kind === 'fields' && card.fields.length === 0
     function applyStatus(result) {
@@ -283,6 +341,31 @@ export function registerOnboardingChat(ctx, {
       }
     }
 
+    async function sendReply(message) {
+      if (sending.current) return
+      sending.current = true
+      setSaving(true)
+      setError('')
+      try {
+        await sendOnboardingReply(sessionId, message)
+        setPendingReply('')
+      } catch {
+        setPendingReply(message)
+        setError('资料已保存，但没有发到对话。您可重试发送。')
+      } finally {
+        setSaving(false)
+        sending.current = false
+      }
+    }
+
+    async function finishCard(result, input = {}) {
+      applyStatus(result)
+      if (!result.receipt) throw Error('未能确认资料已保存，请重试。')
+      setValues({})
+      if (card.kind === 'mode') void openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
+      await sendReply(replyFor(card, input, result))
+    }
+
     async function submit(input, readDocument = false) {
       if (submitting.current || !status || status.receipt || status.stale) return
       submitting.current = true
@@ -293,15 +376,7 @@ export function registerOnboardingChat(ctx, {
         const result = await (readDocument
           ? onboardingRequest(sessionId, 'submit-card', payload, AbortSignal.timeout(120000))
           : onboardingRequest(sessionId, 'submit-card', payload))
-        const next = validCard(result.nextCard)
-        if (next?.kind === 'tax-scan' && (card.kind === 'region' || card.kind === 'mode' || input.choice === 'scan')) {
-          setStartScanId(next.id)
-        }
-        setStatus(result)
-        if (!result.receipt) return
-        setValues({})
-        if (card.kind === 'mode') await openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
-        else if (result.view) refreshOnboarding(sessionId, result.view)
+        await finishCard(result, input)
       } catch (error) {
         setError(shownError(error, '建档资料暂时无法保存，请重试。'))
       } finally {
@@ -325,7 +400,6 @@ export function registerOnboardingChat(ctx, {
     const sourceTitle = wantsTax ? '选择税务资料填写方式' : '选择公司资料填写方式'
     const title = viewOnly ? '继续建档' : card.title || (card.kind === 'source' ? sourceTitle : titles[card.kind])
     const receipt = status?.receipt
-    const next = validCard(status?.nextCard)
     const choices = {
       mode: Object.entries(modes).map(([mode, label]) => button(label, () => void submit({ mode }), saving)),
       source: [
@@ -350,10 +424,8 @@ export function registerOnboardingChat(ctx, {
       body = [
         jsx('p', { role: 'status', style: { ...secondary, margin: '7px 0 0' },
           children: receipt.notice ?? (mode ? '已选择' + mode : choice ?? (labels.length ? '已保存 ' + labels.join('、') : '资料已保存。')) }),
-        next ? null : jsx('div', { style: actions, children: button('查看建档表单', () => void openDraft()) }),
+        pendingReply ? jsx('div', { style: actions, children: button('重试发送到对话', () => void sendReply(pendingReply), saving) }) : null,
       ]
-    } else if (next) {
-      body = null
     } else if (status?.stale) {
       body = [
         jsx('p', { style: { ...secondary, margin: '7px 0 0' }, children: '建档进度已更新，请在右侧查看当前资料。' }),
@@ -380,7 +452,6 @@ export function registerOnboardingChat(ctx, {
             }, true)
           },
         })] }),
-        button('改为手动填写', () => void submit({ choice: 'manual' }), saving),
         saving ? jsx('p', { role: 'status', style: secondary, children: '正在处理资料…' }) : null,
       ] })
     } else if (card.kind === 'region') {
@@ -389,15 +460,11 @@ export function registerOnboardingChat(ctx, {
         { key: 'province', label: '省份', type: 'select', options: options(Object.keys(taxRegionCities)) },
         { key: 'city', label: '城市或地区', type: 'select', options: options(taxRegionCities[values.province] ?? []) },
       ]
-      body = [
-        form({ fields, values, change, saving, label: '确认地区并继续', onSubmit: input => saveFields(fields, input) }),
-        jsx('div', { style: actions, children: button('改为手动填写', () => void submit({ choice: 'manual' }), saving) }),
-      ]
+      body = form({ fields, values, change, saving, label: '确认地区并继续', onSubmit: input => saveFields(fields, input) })
     } else if (card.kind === 'tax-scan') {
       body = jsx(TaxStep, {
-        sessionId, card, autoStart, consumeStart, saving, enterprise: status.view?.enterprise,
-        onConfirm: async () => applyStatus(await onboardingRequest(sessionId, 'card-status', { cardId })),
-        onManual: () => submit({ choice: 'manual' }),
+        sessionId, card, enterprise: status.view?.enterprise,
+        onConfirm: async () => finishCard(await onboardingRequest(sessionId, 'card-status', { cardId })),
       })
     } else if (card.kind === 'blocked') {
       body = jsx('div', { style: actions, children: button('重新核对资料', () => void submit({ choice: 'edit' }), saving) })
@@ -436,23 +503,14 @@ export function registerOnboardingChat(ctx, {
       ]
     }
 
-    const section = jsx('section', {
+    return jsx('section', {
       'aria-label': title, 'data-qianlai-onboarding-card': cardId, style: cardStyle,
       children: [
         jsx('strong', { children: title }),
         card.message ? jsx('p', { style: secondary, children: card.message }) : null, body,
-        card.canSwitchToScan && status && !status.stale && !receipt && !next
-          ? jsx('div', { style: actions, children: button('改为扫码建档', () => {
-            const entered = Object.fromEntries(Object.entries({ ...prefilled, ...values }).filter(([, value]) => value?.length))
-            void submit({ choice: 'scan', values: entered })
-          }, saving) }) : null,
         error ? jsx('p', { role: 'alert', style: { margin: '8px 0 0' }, children: error }) : null,
       ],
     }, cardId)
-    return next ? [
-      section,
-      jsx(Card, { sessionId, card: next, autoStart: startScanId === next.id, consumeStart: () => setStartScanId('') }, next.id),
-    ] : section
   }
 
   function ZhangjieOnboardingCard({ node, sessionId, useSessions }) {

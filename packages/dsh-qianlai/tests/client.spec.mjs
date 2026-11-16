@@ -29,6 +29,10 @@ function makeClient() {
     openTabFromTarget: vi.fn(() => { tabOpen = true }),
   }
   const sidebarRightTabs = { register: definition => tabTypes.push(definition) }
+  const send = vi.fn(async () => {})
+  const sessions = { scope: vi.fn(id => id === sessionId ? {
+    get: service => service === 'conversation' ? { send } : undefined,
+  } : undefined) }
   const react = {
     useId() {
       const index = hookIndex++
@@ -82,6 +86,7 @@ function makeClient() {
   const ctx = {
     inject(dependencies, callback) {
       if (dependencies[0] === 'connection') callback({ connection, effect() {} })
+      else if (dependencies.includes('sessions') && dependencies.includes('conversation')) callback({ sessions, effect() {} })
       else if (dependencies[0] === 'theme') callback({ theme: { overrideTokens: () => () => {} }, effect() {} })
       else if (dependencies[0] === 'uiConversation') callback({ uiConversation: { events: { register() {}, entries: () => [] } } })
       else if (dependencies[0] === 'sidebarRight') callback({ sidebarRight, sidebarRightTabs, effect: install => install() })
@@ -153,6 +158,9 @@ function makeClient() {
     registrations,
     sidebarRight,
     tabTypes,
+    send,
+    sessions,
+    sendOnboardingReply: (id, text) => window.onboardingClient.sendOnboardingReply(id, text),
     openOnboarding() { window.onboardingClient.openOnboarding(sessionId) },
     closeOnboarding() { tabOpen = false; render() },
     refreshOnboarding(view) { window.onboardingClient.refreshOnboarding(sessionId, view) },
@@ -235,6 +243,16 @@ describe('WeChat header status', () => {
 const sampleDraft = { accepted: true, draftId: 'synthetic-draft', revision: 0, step: 1, completed: false, replacesSampleBook: true }
 
 describe('Zhangjie onboarding sidebar', () => {
+  it('uses the native scoped conversation to send the card answer to its originating session', async () => {
+    const client = makeClient()
+    const message = '我选择扫码建档。'
+    await client.sendOnboardingReply('synthetic-session', message)
+    expect(client.sessions.scope).toHaveBeenCalledExactlyOnceWith('synthetic-session')
+    expect(client.send).toHaveBeenCalledExactlyOnceWith(message)
+    expect(() => client.sendOnboardingReply('another-session', message)).toThrow('当前对话暂时无法发送消息')
+    expect(client.send).toHaveBeenCalledTimes(1)
+  })
+
   it('shows saved chat changes, preserves masked account numbers and keeps actions in the conversation', async () => {
     const client = makeClient()
     let draft = sampleDraft
