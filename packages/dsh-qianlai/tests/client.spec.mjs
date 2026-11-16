@@ -8,6 +8,7 @@ function makeClient() {
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
     .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
+    .replace('/* onboarding-chat-client */', 'function registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
@@ -19,6 +20,20 @@ function makeClient() {
   let status = { status: 'connected' }
   let onboarding
   let tax
+  let tabOpen = false
+  let beforeClose
+  let rendered
+  const sessionId = 'synthetic-session'
+  const target = { sessionId, paneId: 'synthetic-pane' }
+  const tabTypes = []
+  const closeTab = () => { beforeClose?.(sessionId); tabOpen = false }
+  const sidebarRight = {
+    commandTarget: vi.fn(() => target),
+    openTabFromTarget: vi.fn(() => { tabOpen = true }),
+    registerCloseHandler(_kind, handler) { beforeClose = handler },
+  }
+  const sidebarRightTabs = { register: definition => tabTypes.push(definition) }
+  const useTabInfo = () => ({ tab: { actions: { close: closeTab } } })
   const react = {
     useId() {
       const index = hookIndex++
@@ -38,7 +53,7 @@ function makeClient() {
       const fiber = activeFiber
       const index = hookIndex++
       const previous = fiber.hooks[index]
-      const unchanged = previous && dependencies?.length === previous.dependencies?.length
+      const unchanged = previous && dependencies && dependencies.length === previous.dependencies?.length
         && dependencies.every((value, item) => Object.is(value, previous.dependencies[item]))
       if (!unchanged) pendingEffects.push({ fiber, index, callback, dependencies })
     },
@@ -65,8 +80,8 @@ function makeClient() {
     throw Error(`unexpected client dependency: ${name}`)
   })
   const connection = { rpc: { call: vi.fn(async (_path, _method, payload) => {
-    if (_method === 'qianlai/company-onboarding') return { ok: true, value: onboarding(payload) }
-    if (_method === 'qianlai/tax-onboarding') return { ok: true, value: tax(payload) }
+    if (_method === 'qianlai/company-onboarding') return { ok: true, value: await onboarding(payload) }
+    if (_method === 'qianlai/tax-onboarding') return { ok: true, value: await tax(payload) }
     calls.push(payload.action)
     return { ok: true, value: { ...status } }
   }) } }
@@ -75,6 +90,7 @@ function makeClient() {
       if (dependencies[0] === 'connection') callback({ connection, effect() {} })
       else if (dependencies[0] === 'theme') callback({ theme: { overrideTokens: () => () => {} }, effect() {} })
       else if (dependencies[0] === 'uiConversation') callback({ uiConversation: { events: { register() {}, entries: () => [] } } })
+      else if (dependencies[0] === 'sidebarRight') callback({ sidebarRight, sidebarRightTabs, effect: install => install() })
     },
     slots: {
       inject(_name, callback) { callback() },
@@ -83,8 +99,7 @@ function makeClient() {
   }
   plugin.apply(ctx)
   const header = registrations.find(({ definition }) => definition.name === 'conversation.session.header.actions').component
-  const onboardingDock = registrations.find(({ definition }) => definition.name === 'conversation.input.dock').component
-  const sessionId = 'synthetic-session'
+  const onboardingTab = registrations.find(({ definition }) => definition.name === 'sidebar.right.pane.tab').component
   const useSessions = selector => selector({ byId: { [sessionId]: { projectionValues: { agentPreset: 'moneycome-zhangjie' } } } })
 
   function resolve(node) {
@@ -96,6 +111,7 @@ function makeClient() {
   function renderComponent(component, props) {
     const fiber = fibers.get(component) ?? { hooks: [] }
     fibers.set(component, fiber)
+    rendered.add(component)
     const previousFiber = activeFiber
     const previousIndex = hookIndex
     activeFiber = fiber
@@ -106,7 +122,13 @@ function makeClient() {
     return resolve(tree)
   }
   function render() {
-    const tree = [renderComponent(header, { sessionId, useSessions }), renderComponent(onboardingDock, { sessionId, useSessions })]
+    rendered = new Set()
+    const tree = [renderComponent(header, { sessionId, useSessions }), tabOpen ? renderComponent(onboardingTab, { sessionId, useSessions, useTabInfo }) : null]
+    for (const [component, fiber] of fibers) {
+      if (rendered.has(component)) continue
+      for (const hook of fiber.hooks) hook?.cleanup?.()
+      fibers.delete(component)
+    }
     for (const effect of pendingEffects.splice(0)) {
       effect.fiber.hooks[effect.index]?.cleanup?.()
       const cleanup = effect.callback()
@@ -142,6 +164,12 @@ function makeClient() {
   return {
     calls,
     connection,
+    registrations,
+    sidebarRight,
+    tabTypes,
+    openOnboarding() { window.onboardingClient.openOnboarding(sessionId) },
+    closeOnboarding() { closeTab(); render() },
+    refreshOnboarding(view) { window.onboardingClient.refreshOnboarding(sessionId, view) },
     dispose,
     intervals,
     render,
@@ -182,7 +210,7 @@ describe('WeChat header status', () => {
       client.setStatus({ status: 'disconnected' })
       client.click('断开连接')
       await settle()
-      expect(client.buttons()).toEqual(['连接微信', '开始建档'])
+      expect(client.buttons()).toEqual(['连接微信'])
       expect(client.calls).toContain('disconnect')
       expect(client.calls).not.toContain('start')
 
@@ -243,7 +271,11 @@ describe('Zhangjie onboarding', () => {
       return draft = { ...draft, [stepKey]: data, revision: draft.revision + 1, step: payload.advance ? payload.step + 1 : payload.step }
     })
     try {
-      client.click('开始建档')
+      expect(client.buttons()).not.toContain('开始建档')
+      expect(client.registrations.some(({ definition }) => definition.name === 'conversation.input.dock')).toBe(false)
+      expect(client.tabTypes).toEqual([expect.objectContaining({ id: 'moneycome-onboarding', keepMounted: true })])
+      client.openOnboarding()
+      expect(client.sidebarRight.openTabFromTarget).toHaveBeenCalledExactlyOnceWith('moneycome-onboarding', { sessionId: 'synthetic-session', paneId: 'synthetic-pane' })
       client.render()
       await settle()
       expect(client.text()).toContain('1/4 企业信息')
@@ -295,7 +327,7 @@ describe('Zhangjie onboarding', () => {
     const reopened = makeClient()
     try {
       client.setOnboarding(respond)
-      client.click('开始建档')
+      client.openOnboarding()
       client.render()
       await settle()
       client.change('原有账务', 'previous')
@@ -305,7 +337,7 @@ describe('Zhangjie onboarding', () => {
       expect(client.text()).not.toContain('2/4 记账准备')
 
       reopened.setOnboarding(respond)
-      reopened.click('开始建档')
+      reopened.openOnboarding()
       reopened.render()
       await settle()
       expect(reopened.value('旧账做到')).toBe('2025-07')
@@ -316,17 +348,115 @@ describe('Zhangjie onboarding', () => {
     }
   })
 
+  it('applies a saved chat card in the open tab while preserving the user’s pending edits', async () => {
+    const client = makeClient()
+    const draft = { accepted: true, draftId: 'synthetic-draft', revision: 1, step: 1, completed: false }
+    client.setOnboarding(() => draft)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      client.change('成立日期', '2025-01-12')
+      client.refreshOnboarding({ ...draft, revision: 2, enterprise: { companyName: '从聊天保存的合成公司' } })
+      expect(client.value('企业全称')).toBe('从聊天保存的合成公司')
+      expect(client.value('成立日期')).toBe('2025-01-12')
+      client.refreshOnboarding(draft)
+      expect(client.value('企业全称')).toBe('从聊天保存的合成公司')
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it.each([false, true])('retains draft edits across native close and reopen (first save fails: %s)', async firstSaveFails => {
+    const client = makeClient()
+    let draft = { accepted: true, draftId: 'synthetic-draft', revision: 1, step: 1, completed: false }
+    let attempts = 0
+    client.setOnboarding(payload => {
+      if (payload.action === 'status') return draft
+      expect(payload).toMatchObject({ action: 'save', advance: false, input: { companyName: '合成小店' } })
+      attempts++
+      if (firstSaveFails && attempts === 1) throw Error('synthetic save failure')
+      return draft = { ...draft, revision: draft.revision + 1, enterprise: payload.input }
+    })
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      client.change('企业全称', '合成小店')
+      client.closeOnboarding()
+      client.openOnboarding()
+      client.render()
+      await settle()
+      expect(attempts).toBe(1)
+      expect(client.value('企业全称')).toBe('合成小店')
+      if (firstSaveFails) {
+        expect(client.text()).toContain('已恢复待保存资料')
+        client.click('保存并收起')
+        await settle()
+      }
+      expect(draft.enterprise.companyName).toBe('合成小店')
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it('saves partial manual entries before switching, and keeps them when a pending scan is cancelled', async () => {
+    const client = makeClient()
+    const draftId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    let draft = { accepted: true, draftId, revision: 0, step: 1, completed: false, mode: 'manual' }
+    let finishOpening
+    client.setOnboarding(payload => {
+      if (payload.action === 'status') return draft
+      expect(payload.revision).toBe(draft.revision)
+      if (payload.action === 'save') return draft = { ...draft, revision: draft.revision + 1, enterprise: payload.input }
+      expect(payload.action).toBe('set-mode')
+      expect(draft.enterprise?.companyName).toBe('未完成的合成公司')
+      return draft = { ...draft, revision: draft.revision + 1, mode: payload.mode }
+    })
+    const tax = vi.fn(payload => payload.action === 'start' ? new Promise(resolve => { finishOpening = resolve }) : { phase: 'idle' })
+    client.setTax(tax)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      client.change('企业全称', '未完成的合成公司')
+      client.change('统一社会信用代码', '91110000MA00000001')
+      client.change('省份', '北京市')
+      client.change('城市或地区', '北京市')
+      client.click('扫码建档')
+      await settle()
+      expect(draft.mode).toBe('scan')
+      expect(client.value('企业全称')).toBe('未完成的合成公司')
+      client.click('打开官方扫码页')
+      await settle()
+      expect(tax).toHaveBeenCalledWith(expect.objectContaining({ action: 'start', city: '北京市' }))
+      client.click('手动填写')
+      await settle()
+      finishOpening({ phase: 'waiting' })
+      await settle()
+      expect(tax).toHaveBeenCalledWith(expect.objectContaining({ action: 'cancel' }))
+      expect(draft.mode).toBe('manual')
+      expect(client.value('企业全称')).toBe('未完成的合成公司')
+      expect(client.value('统一社会信用代码')).toBe('91110000MA00000001')
+      expect(client.buttons()).not.toContain('已登录，读取税务资料')
+    } finally {
+      client.dispose()
+    }
+  })
+
   it.each([
     { province: '浙江省', city: '杭州市', taxId: '91330000MA00000001', region: 'zhejiang' },
     { province: '北京市', city: '北京市', taxId: '91110000MA00000001', region: 'beijing' },
   ])('$province saves before opening the official portal and reloads only confirmed tax fields', async ({ province, city, taxId, region }) => {
     const client = makeClient()
     const draftId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
-    let draft = { accepted: true, draftId, revision: 0, step: 1, completed: false, replacesSampleBook: true }
+    let draft = { accepted: true, draftId, revision: 0, step: 1, completed: false, replacesSampleBook: true, mode: 'scan' }
     const initialEnterprise = { companyName: '合成小店', taxId, province, city }
     const profile = {
       companyName: '合成小店', taxId, authority: '合成税务机关',
-      taxpayerQualification: '小规模纳税人', taxpayerStatus: '正常', sourceUrl: `https://etax.${region}.chinatax.gov.cn/`,
+      taxpayerQualification: '小规模纳税人', taxpayerStatus: '正常', registrationStatus: '停业',
+      obligations: [{ taxItem: '增值税', filingCycle: '按季' }],
+      sourceUrl: `https://etax.${region}.chinatax.gov.cn/`,
     }
     client.setOnboarding(payload => {
       if (payload.action === 'status') return draft
@@ -351,7 +481,7 @@ describe('Zhangjie onboarding', () => {
       return { phase: 'idle' }
     })
     try {
-      client.click('开始建档')
+      client.openOnboarding()
       client.render()
       await settle()
       client.change('企业全称', initialEnterprise.companyName)
@@ -365,7 +495,11 @@ describe('Zhangjie onboarding', () => {
       await settle()
       client.click('已登录，读取税务资料')
       await settle()
-      expect(client.value('纳税人类型')).toBe('')
+      expect(client.value('纳税人类型')).toBe('small-scale')
+      expect(client.value('税务状态')).toBe('停业')
+      expect(client.value('主管税务机关')).toBe('合成税务机关')
+      expect(client.text()).toContain('增值税 · 按季')
+      expect(draft.enterprise.taxpayerIdentity).toBeUndefined()
       client.click('核对无误，回填税务资料')
       await settle()
       expect(client.value('纳税人类型')).toBe('small-scale')
