@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep the selected onboarding method in the draft so switching between manual entry and scanning preserves the current stage.
+
 - Set up Zhangjie's company in four guided stages. Enter or recognize company documents, review the tax portal result, set the bookkeeping month and payroll arrangements, and confirm handoff to the local ledger. Resume saved drafts when reopening a conversation.
 - Open the official Beijing or Zhejiang enterprise tax QR login from Zhangjie onboarding, then review and apply the selected enterprise's tax information. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable.
 - Disconnect WeChat from the connection dialog and scan a new code when reconnecting. Keep the original owner and conversation available after restart.

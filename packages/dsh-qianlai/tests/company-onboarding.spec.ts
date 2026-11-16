@@ -48,6 +48,18 @@ function ready(wizard: CompanyOnboarding, company = enterprise, books = accounti
 }
 
 describe('企业建档', () => {
+  it('扫码与手动填写来回切换时保留当前草稿、已填银行账户和步骤', () => {
+    const { store, wizard } = setup()
+    const draft = accepted(wizard.save(1, wizard.status().revision, enterprise))
+    const scan = accepted(wizard.setMode(draft.revision, 'scan'))
+    const reopened = new CompanyOnboarding(store, now)
+    const manual = accepted(reopened.setMode(scan.revision, 'manual'))
+
+    expect(manual).toMatchObject({ draftId: draft.draftId, step: 2, mode: 'manual', enterprise: draft.enterprise })
+    expect(reopened.setMode(scan.revision, 'scan')).toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    expect(reopened.status()).toEqual(manual)
+  })
+
   it('在关闭并重开账本后恢复草稿，并拒绝旧窗口覆盖', () => {
     const directory = mkdtempSync(join(tmpdir(), 'company-onboarding-'))
     const path = join(directory, 'book.sqlite')

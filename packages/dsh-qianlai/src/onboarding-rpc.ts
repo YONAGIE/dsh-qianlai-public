@@ -119,6 +119,8 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
           return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请重新打开建档。'))
         if (action === 'save' && (step === 1 || step === 2 || step === 3) && (payload.advance === undefined || typeof payload.advance === 'boolean'))
           return reply(onboarding.save(step, revision, payload.input, payload.advance !== false))
+        if (action === 'set-mode' && (payload.mode === 'scan' || payload.mode === 'manual'))
+          return reply(onboarding.setMode(revision, payload.mode))
         if (action === 'confirm') return reply(onboarding.confirm(revision, payload.replaceSampleBook === true))
         if (action === 'recognize' && typeof sessionId === 'string') {
           if (view.completed || revision !== view.revision) return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请核对后再上传。'))
