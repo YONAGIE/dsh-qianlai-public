@@ -401,7 +401,7 @@ export class CompanyOnboarding {
     return this.store.transaction(() => {
       const record = this.store.companyOnboarding()
       const enterprise = record?.enterprise
-      if (!record || record.completedAt || record.draftId !== draftId || !enterprise
+      if (!record || record.completedAt || record.mode === 'manual' || record.draftId !== draftId || !enterprise
         || enterprise.province !== province || enterprise.city !== city
         || enterprise.taxId !== profile.taxId || normalizeCompanyName(enterprise.companyName) !== normalizeCompanyName(profile.companyName))
         return refuse('TAX_DRAFT_CHANGED', '企业或地区已变化，请核对当前资料后重新读取。')
@@ -420,7 +420,8 @@ export class CompanyOnboarding {
       if (taxpayerIdentity !== 'unknown') enterprise.taxpayerIdentity = taxpayerIdentity
       if (taxStatus) enterprise.taxStatus = taxStatus
       enterprise.taxAuthority = profile.authority
-      record.step = 1
+      const today = todayInChina(this.now())
+      if (validateEnterprise(enterprise, today)) record.step = 1
       record.revision++
       this.store.saveCompanyOnboarding(record)
       return this.view(record)

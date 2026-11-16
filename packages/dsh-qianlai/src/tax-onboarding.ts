@@ -14,6 +14,7 @@ interface Flow {
   site: TaxPortal
   phase: Phase
   abort: AbortController
+  checked?: true
   expiry?: NodeJS.Timeout
   browser?: Browser
   page?: Page
@@ -54,6 +55,25 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
     clearTimeout(flow.expiry)
     flow.abort.abort()
     closeBrowser(flow)
+    delete flow.profile
+  }
+
+  function discard(flow: Flow) {
+    if (current === flow) current = undefined
+    end(flow)
+  }
+
+  async function revalidate(flow: Flow, requestSignal: AbortSignal) {
+    if (!flow.checked || flow.phase === 'submitted' || flow.phase === 'failed') return flow
+    const signal = AbortSignal.any([requestSignal, flow.abort.signal])
+    const result = await access.check(flow.target, signal)
+    if (current !== flow || signal.aborted) return undefined
+    if (!result.accepted) {
+      end(flow)
+      flow.phase = 'failed'
+      flow.message = result.message
+    }
+    return flow
   }
 
   async function open(flow: Flow) {
@@ -105,7 +125,8 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
       const result = await access.apply(flow.target, profile, signal)
       if (signal.aborted) return
       flow.phase = result.accepted ? 'submitted' : 'ready'
-      if (!result.accepted) flow.message = result.message
+      if (result.accepted) delete flow.profile
+      else flow.message = result.message
     } catch {
       if (flow.abort.signal.aborted) return
       flow.phase = 'ready'
@@ -143,40 +164,61 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
             || /[\p{Cc}\p{Cf}]/u.test(companyName) || typeof taxId !== 'string' || !/^[0-9A-Z]{18}$/.test(taxId))
           return refuse('请确认企业全称和 18 位统一社会信用代码。')
         const target = { sessionId, draftId, province, city, companyName: companyName.trim(), taxId }
-        try {
-          const result = await access.check(target, request.signal)
-          if (!result.accepted) return refuse(result.message)
-          request.signal.throwIfAborted()
-        } catch {
-          return refuse('暂时无法核对当前建档。请刷新后重试。')
-        }
         if (current && !['failed', 'submitted'].includes(current.phase)) {
           const own = findOwnFlow()
-          return own && own.target.companyName === target.companyName && own.target.taxId === taxId
-            && own.target.province === province && own.target.city === city
-            ? value(own)
-            : refuse('另一个建档窗口正在使用税务浏览器，请先完成或关闭它。')
+          if (!own || own.target.companyName !== target.companyName || own.target.taxId !== taxId
+              || own.target.province !== province || own.target.city !== city)
+            return refuse('另一个建档窗口正在使用税务浏览器，请先完成或关闭它。')
+          try { return value(await revalidate(own, request.signal)) }
+          catch { return refuse('暂时无法核对当前建档。请刷新后重试。') }
         }
-        if (current) end(current)
+        if (current) discard(current)
         const flow: Flow = {
           id, target, site, phase: 'opening', abort: new AbortController(),
         }
         current = flow
         flow.expiry = setTimeout(() => {
-          if (current !== flow) return
-          end(flow)
-          current = undefined
+          if (current === flow) discard(flow)
         }, 15 * 60_000)
         flow.expiry.unref()
+        // Reserve the operation before checking the session. Leaving scan mode
+        // can now cancel it even if authorization is still in progress.
+        const signal = AbortSignal.any([request.signal, flow.abort.signal])
+        const abortStart = () => {
+          if (current === flow) discard(flow)
+        }
+        signal.addEventListener('abort', abortStart, { once: true })
+        try {
+          signal.throwIfAborted()
+          const result = await access.check(target, signal)
+          if (current !== flow) return value()
+          signal.throwIfAborted()
+          if (!result.accepted) {
+            discard(flow)
+            return refuse(result.message)
+          }
+        } catch {
+          if (current !== flow) return value()
+          discard(flow)
+          return refuse('暂时无法核对当前建档。请刷新后重试。')
+        } finally {
+          signal.removeEventListener('abort', abortStart)
+        }
+        flow.checked = true
         void open(flow)
         return value(flow)
       }
       const flow = findOwnFlow()
-      if (!flow || action === 'status') return value(flow)
+      if (!flow) return value()
       if (action === 'cancel') {
-        end(flow)
-        current = undefined
+        discard(flow)
         return value()
+      }
+      try {
+        if (!await revalidate(flow, request.signal)) return value()
+      } catch {
+        if (current !== flow || flow.abort.signal.aborted || request.signal.aborted) return value()
+        return refuse('暂时无法核对当前建档。请刷新后重试。')
       }
       if (action === 'read' && flow.phase === 'waiting' && flow.page) {
         flow.phase = 'reading'
@@ -192,8 +234,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
     },
   })
   return () => {
-    if (current) end(current)
-    current = undefined
+    if (current) discard(current)
     void off()
   }
 }
