@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apply as applyTools } from '../src/index.js'
 import { BookStore } from '../src/store.js'
-import { isIntroductionSession, loginControl } from '../src/wechat/control.js'
+import { isIntroductionSession, loginControl, type LoginRpcControl } from '../src/wechat/control.js'
 import type { IlinkItem } from '../src/wechat/ilink.js'
 import { apply } from '../src/wechat/index.js'
 
@@ -17,6 +17,7 @@ const json = (value: object) => Response.json(value)
 const readState = (dir: string) => JSON.parse(readFileSync(join(dir, 'wechat.json'), 'utf8'))
 const writeState = (dir: string, state: object) => writeFileSync(join(dir, 'wechat.json'), JSON.stringify(state))
 const source = 'synthetic-desktop'
+const secondSource = 'synthetic-desktop-b'
 const sessionId = 'synthetic-wechat'
 const reply = '刚才提到核对2026年三月利润，还没有查询，要接着查吗？'
 const imageKey = Buffer.alloc(16, 7)
@@ -102,7 +103,10 @@ function desktopEvents(): Event[] {
     { type: 'assistant/message', seq: 2, time: Date.now(), data: { message: { content: [{ type: 'text', text: '这一步还没有查询，稍后继续。' }] } } },
   ]
 }
-function host(dir: string, options: { events?: Event[]; preset?: string; text?: string; histories?: Event[]; during?: () => Promise<void> } = {}) {
+function host(dir: string, options: {
+  events?: Event[]; preset?: string; text?: string; histories?: Event[]; during?: () => Promise<void>
+  workspaces?: { id: string; sessionIds: string[] }[]
+} = {}) {
   let dispose = () => {}
   let eventListener: ((session: { id: string }, event: Event) => void) | undefined
   let preStep: ((assembly: Assembly, next: () => Promise<Decision>) => Promise<Decision>) | undefined
@@ -116,9 +120,19 @@ function host(dir: string, options: { events?: Event[]; preset?: string; text?: 
     return context?.(assembly) ?? ''
   }
   let turn = 0
-  const inspect = vi.fn(async (id: string) => ({ meta: { agentPreset: options.preset ?? 'moneycome-zhangjie' }, events: id === source
+  const inspect = vi.fn(async (id: string) => ({ meta: { agentPreset: options.preset ?? 'moneycome-zhangjie' }, events: id === source || id === secondSource
     ? options.events ?? desktopEvents().map(event => event.type === 'agent-preset/selected' && options.preset ? { ...event, data: { agentPreset: options.preset } } : event)
     : histories }))
+  const workspaceRegistry = {
+    list: () => options.workspaces ?? [],
+    get: (id: string) => options.workspaces?.find(item => item.id === id),
+  }
+  const create = vi.fn(async (request: { workspaceId?: string; cwd?: string }) => {
+    const sequence = create.mock.calls.length
+    const created = sequence === 1 ? sessionId : sessionId + '-' + sequence
+    if (request.workspaceId) workspaceRegistry.get(request.workspaceId)!.sessionIds.push(created)
+    return { sessionId: created }
+  })
   vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
   apply({ effect: (fn: () => () => void) => { dispose = fn() },
     on: (name: string, listener: unknown) => {
@@ -128,12 +142,12 @@ function host(dir: string, options: { events?: Event[]; preset?: string; text?: 
     },
     get: (name: string) => name === 'systemPrompt'
       ? { context: ({ text }: { text: typeof context }) => { context = text; return () => { context = undefined } } }
-      : undefined,
+      : name === 'workspaceRegistry' ? workspaceRegistry : undefined,
     logger: { info() {}, warn() {}, error() {} },
-    sessionController: { inspect, create: async () => ({ sessionId }), prompt: async (request: typeof prompts[number]) => {
+    sessionController: { inspect, create, prompt: async (request: typeof prompts[number]) => {
       contexts.push(await modelContext(request.sessionId, request.requestId))
       prompts.push(request)
-      const emit = (type: string, data: Record<string, unknown>) => { const event = { type, data }; histories.push(event); eventListener?.({ id: sessionId }, event) }
+      const emit = (type: string, data: Record<string, unknown>) => { const event = { type, data }; histories.push(event); eventListener?.({ id: request.sessionId }, event) }
       setTimeout(() => { void (async () => {
         const currentTurn = ++turn
         emit('turn/start', { turn: currentTurn })
@@ -147,14 +161,15 @@ function host(dir: string, options: { events?: Event[]; preset?: string; text?: 
     } },
   } as never, { stateDir: dir, autoStart: false })
   disposers.push(() => dispose())
-  return { control: loginControl(dir)!, prompts, contexts, modelContext, inspect, stop: () => dispose() }
+  return { control: loginControl(dir) as LoginRpcControl, prompts, contexts, modelContext, inspect, create, stop: () => dispose() }
 }
 const completedWelcome = { welcomePending: false, welcomeProgress: 4, welcomeId: 'synthetic-finished' }
 const savedLogin = { botToken: 'synthetic-token', ownerUserId: 'synthetic-owner', contextToken: 'synthetic-context', ...completedWelcome }
 
 describe('微信欢迎与桌面任务主动续接', () => {
   it('首次扫码后发送欢迎与三张素材，并由现有 Agent 生成对应桌面任务的续接', async () => {
-    const net = network(), dir = directory(), active = host(dir)
+    const workspace = { id: 'workspace-a', sessionIds: [source] }
+    const net = network(), dir = directory(), active = host(dir, { workspaces: [workspace] })
     await active.control.run('start', source)
     await vi.waitFor(() => expect(net.sent).toHaveLength(5))
     expect(net.sent.map(item => item.type)).toEqual([1, 2, 2, 2, 1])
@@ -162,12 +177,64 @@ describe('微信欢迎与桌面任务主动续接', () => {
     expect(active.prompts).toHaveLength(1)
     expect(active.contexts).toEqual([''])
     expect(active.prompts[0]!.content[0]!.text).toContain('三月利润')
-    expect(readState(dir)).toMatchObject({ welcomePending: false, desktopHandoff: { sourceSessionId: source, throughSeq: 2, phase: 'complete' } })
+    expect(active.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', workspaceId: workspace.id })
+    expect(workspace.sessionIds).toEqual([source, sessionId])
+    expect(readState(dir)).toMatchObject({ workspaceId: workspace.id, welcomePending: false, desktopHandoff: { sourceSessionId: source, throughSeq: 2, phase: 'complete' } })
+  })
+  it('从空白的已登记桌面对话扫码，重启后首条微信消息仍归入原工作区', async () => {
+    const workspace = { id: 'workspace-a', sessionIds: [source] }
+    const net = network(), dir = directory(completedWelcome)
+    const active = host(dir, { events: [], workspaces: [workspace] })
+    await active.control.run('start', source)
+    await vi.waitFor(() => expect(readState(dir)).toMatchObject({ botToken: 'synthetic-token', workspaceId: workspace.id }))
+    expect(active.create).not.toHaveBeenCalled()
+    active.stop()
+
+    const restarted = host(dir, { workspaces: [workspace] })
+    await vi.waitFor(() => expect(net.canReceive()).toBe(true))
+    net.hello()
+    await vi.waitFor(() => expect(restarted.prompts).toHaveLength(1))
+    expect(restarted.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', workspaceId: workspace.id })
+    expect(workspace.sessionIds).toEqual([source, sessionId])
+  })
+  it('更换工作区需重新扫码，旧微信会话仍留在原工作区', async () => {
+    const first = { id: 'workspace-a', sessionIds: [source, 'previous-wechat'] }
+    const second = { id: 'workspace-b', sessionIds: [secondSource] }
+    const net = network(), dir = directory({ ...savedLogin, workspaceId: first.id, sessionId: 'previous-wechat' })
+    const active = host(dir, { workspaces: [first, second] })
+    expect(await active.control.run('status', secondSource)).toMatchObject({ status: 'connected' })
+    expect(active.inspect).not.toHaveBeenCalled()
+    await active.control.run('start', secondSource)
+    expect(active.create).not.toHaveBeenCalled()
+    expect(readState(dir)).toMatchObject({ workspaceId: first.id, sessionId: 'previous-wechat' })
+    expect(readState(dir).desktopHandoff).toBeUndefined()
+
+    active.control.disconnect()
+    await active.control.run('start', secondSource)
+    await vi.waitFor(() => expect(net.sent.some(item => item.id.startsWith('mc-handoff-'))).toBe(true))
+    expect(active.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', workspaceId: second.id })
+    expect(readState(dir)).toMatchObject({ workspaceId: second.id, sessionId, desktopHandoff: { sourceSessionId: secondSource } })
+    expect(first.sessionIds).toEqual([source, 'previous-wechat'])
+    expect(second.sessionIds).toEqual([secondSource, sessionId])
+  })
+  it('旧绑定重新接入已登记工作区时，为之后的微信消息创建有归属的对话', async () => {
+    const workspace = { id: 'workspace-a', sessionIds: [source] }
+    const net = network(), dir = directory({ ...savedLogin, sessionId: 'legacy-ungrouped' })
+    const active = host(dir, { events: [], workspaces: [workspace] })
+    await active.control.run('start', source)
+    expect(readState(dir)).toMatchObject({ workspaceId: workspace.id, sessionId: 'legacy-ungrouped' })
+    await vi.waitFor(() => expect(net.canReceive()).toBe(true))
+    net.hello()
+    await vi.waitFor(() => expect(active.prompts).toHaveLength(1))
+    expect(active.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', workspaceId: workspace.id })
+    expect(readState(dir).sessionId).toBe(sessionId)
+    expect(workspace.sessionIds).toEqual([source, sessionId])
   })
   it('有来源会话而无业务写入记录时，查询意图仍进入 AI 摘要；重连和重启不重复', async () => {
     const net = network(), dir = directory(savedLogin), active = host(dir)
     await active.control.run('start', source)
     await vi.waitFor(() => expect(net.sent).toHaveLength(1))
+    expect(active.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', cwd: join(dir, 'wechat-workspace') })
     expect(active.prompts[0]!.content[0]!.text).toContain('"progress":[]')
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/get_bot_qrcode'))).toBe(false)
     await active.control.run('refresh', source)
