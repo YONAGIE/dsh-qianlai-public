@@ -8,6 +8,7 @@ import type { TaxProfile } from './tax-portal.js'
 
 type Step = 1 | 2 | 3 | 4
 type EditableStep = Exclude<Step, 4>
+export type OnboardingMode = 'scan' | 'manual'
 type TaxpayerIdentity = 'small-scale' | 'general' | 'unknown'
 type Business = 'goods' | 'production' | 'cross-border' | 'multiple-entities' | 'none'
 type BankStatus = 'provided' | 'none' | 'pending'
@@ -67,6 +68,7 @@ export interface OnboardingRecord {
   draftId: string
   revision: number
   step: Step
+  mode?: OnboardingMode
   enterprise?: Enterprise
   accounting?: Accounting
   payroll?: Payroll
@@ -334,6 +336,21 @@ export class CompanyOnboarding {
 
   status(): OnboardingView {
     return this.store.transaction(() => this.view(this.record()))
+  }
+
+  setMode(revision: number, mode: OnboardingMode): OnboardingView | Refusal {
+    return this.store.transaction(() => {
+      const record = this.record()
+      if (revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请刷新后继续。')
+      if (record.completedAt) return refuse('ONBOARDING_COMPLETE', '企业已经完成建档。')
+      if (mode !== 'scan' && mode !== 'manual') return refuse('DRAFT_INPUT_INVALID', '请选择扫码建档或手动填写。')
+      if (record.mode !== mode) {
+        record.mode = mode
+        record.revision++
+        this.store.saveCompanyOnboarding(record)
+      }
+      return this.view(record)
+    })
   }
 
   save(step: EditableStep, revision: number, input: unknown, advance = true): OnboardingView | Refusal {
