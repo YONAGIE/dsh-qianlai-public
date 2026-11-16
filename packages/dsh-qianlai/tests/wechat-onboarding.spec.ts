@@ -106,6 +106,7 @@ function desktopEvents(): Event[] {
 function host(dir: string, options: {
   events?: Event[]; preset?: string; text?: string; histories?: Event[]; during?: () => Promise<void>
   workspaces?: { id: string; sessionIds: string[] }[]
+  runtimeContext?: boolean
 } = {}) {
   let dispose = () => {}
   let eventListener: ((session: { id: string }, event: Event) => void) | undefined
@@ -140,7 +141,7 @@ function host(dir: string, options: {
       if (name === 'agent/pre-step') preStep = listener as typeof preStep
       return () => {}
     },
-    get: (name: string) => name === 'systemPrompt'
+    get: (name: string) => name === 'systemPrompt' && options.runtimeContext !== false
       ? { context: ({ text }: { text: typeof context }) => { context = text; return () => { context = undefined } } }
       : name === 'workspaceRegistry' ? workspaceRegistry : undefined,
     logger: { info() {}, warn() {}, error() {} },
@@ -175,8 +176,8 @@ describe('微信欢迎与桌面任务主动续接', () => {
     expect(net.sent.map(item => item.type)).toEqual([1, 2, 2, 2, 1])
     expect(net.sent.at(-1)?.text).toBe(reply)
     expect(active.prompts).toHaveLength(1)
-    expect(active.contexts).toEqual([''])
-    expect(active.prompts[0]!.content[0]!.text).toContain('三月利润')
+    expect(active.prompts[0]!.content).toEqual([{ type: 'text', text: '张姐正在整理微信续接待办。' }])
+    expect(active.contexts[0]).toContain('三月利润')
     expect(active.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', workspaceId: workspace.id })
     expect(workspace.sessionIds).toEqual([source, sessionId])
     expect(readState(dir)).toMatchObject({ workspaceId: workspace.id, welcomePending: false, desktopHandoff: { sourceSessionId: source, throughSeq: 2, phase: 'complete' } })
@@ -235,7 +236,7 @@ describe('微信欢迎与桌面任务主动续接', () => {
     await active.control.run('start', source)
     await vi.waitFor(() => expect(net.sent).toHaveLength(1))
     expect(active.create).toHaveBeenCalledExactlyOnceWith({ agentPreset: 'moneycome-zhangjie', cwd: join(dir, 'wechat-workspace') })
-    expect(active.prompts[0]!.content[0]!.text).toContain('"progress":[]')
+    expect(active.contexts[0]).toContain('"progress":[]')
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/get_bot_qrcode'))).toBe(false)
     await active.control.run('refresh', source)
     active.stop()
@@ -253,15 +254,39 @@ describe('微信欢迎与桌面任务主动续接', () => {
     const secret = 'sk-' + 'syntheticsecret0123456789'
     const active = host(dir, { events: [...desktopEvents(),
       { type: 'system/message', seq: 3, data: { message: { content: [{ type: 'text', text: 'private-system-instruction' }] } } },
-      { type: 'assistant/message', seq: 4, time: Date.now(), data: { message: { content: [{ type: 'thinking', text: 'private-reasoning' }, { type: 'text', text: '临时测试值 ' + secret }] } } },
+      { type: 'user/message', seq: 4, data: { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: 'private-runtime-context' }] } },
+      { type: 'user/message', seq: 5, data: { source: { kind: 'user', rpcId: 'mc-handoff-old' }, content: [{ type: 'text', text: 'previous-handoff-prompt' }] } },
+      { type: 'assistant/message', seq: 6, time: Date.now(), data: { message: { content: [{ type: 'thinking', text: 'private-reasoning' }, { type: 'text', text: '临时测试值 ' + secret }] } } },
     ] })
     await active.control.run('start', source)
     await vi.waitFor(() => expect(net.sent).toHaveLength(1))
-    const submitted = active.prompts[0]!.content[0]!.text!
+    const submitted = active.contexts[0]!
     expect(submitted).not.toContain('private-system-instruction')
     expect(submitted).not.toContain('private-reasoning')
+    expect(submitted).not.toContain('private-runtime-context')
+    expect(submitted).not.toContain('previous-handoff-prompt')
     expect(submitted).not.toContain(secret)
     expect(submitted).toContain('[REDACTED]')
+    expect(active.prompts[0]?.content).toEqual([{ type: 'text', text: '张姐正在整理微信续接待办。' }])
+  })
+  it('续接上下文仅供本次摘要，之后的普通微信轮照常处理原消息', async () => {
+    const net = network(), dir = directory(savedLogin), active = host(dir)
+    await active.control.run('start', source)
+    await vi.waitFor(() => expect(net.sent).toHaveLength(1))
+    expect(active.contexts[0]).toContain('三月利润')
+    net.hello([{ type: 1, text_item: { text: '帮我看四月流水' } }])
+    await vi.waitFor(() => expect(active.prompts).toHaveLength(2))
+    expect(active.contexts[1]).toBe('')
+    expect(active.prompts[1]?.content).toEqual([{ type: 'text', text: '帮我看四月流水' }])
+  })
+  it('宿主没有运行上下文时，跳过主动摘要并保留正常微信消息处理', async () => {
+    const net = network(), dir = directory(savedLogin), active = host(dir, { runtimeContext: false })
+    await active.control.run('start', source)
+    await vi.waitFor(() => expect(readState(dir).desktopHandoff.phase).toBe('failed'))
+    expect(active.prompts).toHaveLength(0)
+    net.hello()
+    await vi.waitFor(() => expect(active.prompts).toHaveLength(1))
+    expect(active.prompts[0]?.content).toEqual([{ type: 'text', text: '你好' }])
   })
   it('服务端要求先有入站上下文时，旧绑定在首条消息后补齐未完成欢迎', async () => {
     const net = network(); net.requireContext()
@@ -347,7 +372,8 @@ describe('微信欢迎与桌面任务主动续接', () => {
     const requestId = 'synthetic-handoff-request'
     writeState(dir, { ...savedLogin, sessionId, desktopHandoff: { key: 'synthetic-handoff-key', sourceSessionId: source, throughSeq: 2, company, requestId, phase: 'submitted' } })
     const active = host(dir, { histories: [
-      { type: 'user/message', data: { source: { rpcId: requestId } } },
+      { type: 'user/message', data: { source: { kind: 'user', rpcId: requestId } } },
+      { type: 'user/message', data: { source: { kind: 'runtime-context' } } },
       { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: reply }] } } },
       { type: 'turn/end', data: { reason: { kind: 'completed' } } },
     ] })

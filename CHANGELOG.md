@@ -6,6 +6,7 @@
 - Open the official Beijing or Zhejiang enterprise tax QR login from Zhangjie onboarding, then review and apply the selected enterprise's tax information. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable.
 - Disconnect WeChat from the connection dialog and scan a new code when reconnecting. Keep the original owner and conversation available after restart.
 - Create new WeChat conversations in the DSH workspace where the owner connected WeChat. Keep older conversations in history when reconnecting from a different workspace.
+- Show a short notice while Zhangjie prepares the WeChat handoff. Supply the filtered desktop dialogue and business context to the model through DSH's runtime context.
 - Use the current business date for missing bank statement reminders during an open month. Check complete coverage when closing that month.
 - Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post.
 - Provide the first WeChat reply with the fixed welcome's send status and text when available so it can continue the conversation.
