@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cancel obsolete onboarding tax scans and only apply verified results to the current draft.
+
 - Keep the selected onboarding method in the draft so switching between manual entry and scanning preserves the current stage.
 
 - Set up Zhangjie's company in four guided stages. Enter or recognize company documents, review the tax portal result, set the bookkeeping month and payroll arrangements, and confirm handoff to the local ledger. Resume saved drafts when reopening a conversation.

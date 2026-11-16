@@ -69,11 +69,9 @@ export function companyTaxDraftAccess(onboarding: CompanyOnboarding, sessions?: 
   function currentTarget(target: TaxOnboardingTarget) {
     const view = onboarding.status()
     const enterprise = view.enterprise
-    if (view.draftId !== target.draftId || view.completed ||
-        (enterprise?.companyName && enterprise.companyName !== target.companyName) ||
-        (enterprise?.taxId && enterprise.taxId !== target.taxId) ||
-        (enterprise?.province && enterprise.province !== target.province) ||
-        (enterprise?.city && enterprise.city !== target.city))
+    if (view.draftId !== target.draftId || view.completed || view.mode === 'manual' ||
+        enterprise?.companyName !== target.companyName || enterprise.taxId !== target.taxId ||
+        enterprise.province !== target.province || enterprise.city !== target.city)
       return refuse('ONBOARDING_CHANGED', '企业资料已更新，请回到当前建档，核对后重新扫码。')
     return { accepted: true as const }
   }
