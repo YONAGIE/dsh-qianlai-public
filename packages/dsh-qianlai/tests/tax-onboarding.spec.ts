@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { expect, it, vi } from 'vitest'
+import type { Page } from 'playwright-core'
+import { beforeEach, expect, it, vi } from 'vitest'
 
 import { openTaxBrowser } from '../src/tax-browser.js'
 import { registerTaxOnboarding, type TaxDraftAccess } from '../src/tax-onboarding.js'
-import { openTaxPortalLogin, readTaxProfile, type TaxProfile } from '../src/tax-portal.js'
+import { openTaxPortalLogin, readTaxProfile, TaxPortalError, waitForTaxPortalLogin, type TaxProfile } from '../src/tax-portal.js'
 import { taxPortalFor } from '../src/tax-portals.js'
 
 vi.mock('../src/tax-browser.js', () => ({ openTaxBrowser: vi.fn() }))
@@ -11,7 +12,13 @@ vi.mock('../src/tax-portal.js', async importOriginal => ({
   ...await importOriginal<object>(),
   openTaxPortalLogin: vi.fn(),
   readTaxProfile: vi.fn(),
+  waitForTaxPortalLogin: vi.fn(),
 }))
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  vi.mocked(waitForTaxPortalLogin).mockImplementation(() => new Promise(() => {}))
+})
 
 function fixture(access: TaxDraftAccess, draftId = randomUUID(), sessionId = 'synthetic-session') {
   let route: ((request: Request) => Promise<Response>) | undefined
@@ -27,7 +34,7 @@ function fixture(access: TaxDraftAccess, draftId = randomUUID(), sessionId = 'sy
     }))
     return (await response.json() as { result: { ok: boolean; value?: unknown } }).result
   }
-  return { call, unregister }
+  return { call, id, unregister }
 }
 
 const beijing = {
@@ -41,15 +48,18 @@ function deferred<Value>() {
 }
 
 it.each([
-  { province: '浙江省', city: '杭州市', taxId: '91330000MA00000000', authority: '国家税务总局杭州市某区税务局', region: 'zhejiang' },
-  { province: '北京市', city: '北京市', taxId: '91110000MA00000000', authority: '国家税务总局北京市某区税务局', region: 'beijing' },
-])('$province 只让来源会话确认服务端核对的税务资料', async ({ province, city, taxId, authority, region }) => {
-  vi.clearAllMocks()
+  { province: '浙江省', city: '杭州市', taxId: '91330000MA00000000', authority: '国家税务总局杭州市某区税务局', region: 'zhejiang', prefilled: true },
+  { province: '北京市', city: '北京市', taxId: '91110000MA00000000', authority: '国家税务总局北京市某区税务局', region: 'beijing', prefilled: false },
+])('$province 在选择企业后自动取数，来源会话确认后才回填', async ({ province, city, taxId, authority, region, prefilled }) => {
   const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
   vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
   vi.mocked(openTaxPortalLogin).mockResolvedValue({} as never)
+  const login = deferred<Page>()
+  const loggedInPage = {} as Page
+  vi.mocked(waitForTaxPortalLogin).mockReturnValueOnce(login.promise)
   const expected = { companyName: '合成服务企业', taxId }
-  const target = { province, city, ...expected }
+  const initialIdentity = prefilled ? expected : { companyName: '', taxId: '' }
+  const target = { province, city, ...initialIdentity }
   const profile: TaxProfile = {
     ...expected, authority, obligations: [{ taxItem: '增值税', filingCycle: '按季' }],
     obligationCoverage: 'visible_page', observedAt: '2026-11-15T08:00:00.000Z',
@@ -64,7 +74,7 @@ it.each([
       : { accepted: false as const, message: '这份建档已变更。' }),
     apply: vi.fn(async () => ({ accepted: true as const })),
   }
-  const { call, unregister } = fixture(access, draftId, sessionId)
+  const { call, id, unregister } = fixture(access, draftId, sessionId)
   try {
     expect(await call('start', { province: '浙江省', city: '上海市', ...expected })).toMatchObject({ ok: false })
     expect(await call('start', { province: '浙江省', city: '宁波市', ...expected })).toMatchObject({ ok: false })
@@ -78,9 +88,11 @@ it.each([
     expect(openTaxPortalLogin).toHaveBeenCalledWith(expect.objectContaining({
       loginOrigin: `https://tpass.${region}.chinatax.gov.cn:8443`,
     }), expect.anything(), expect.any(AbortSignal))
-    await call('read')
+    expect(readTaxProfile).not.toHaveBeenCalled()
+    login.resolve(loggedInPage)
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'ready', profile } }))
-    expect(readTaxProfile).toHaveBeenCalledWith(site, expect.anything(), expected, expect.any(AbortSignal))
+    expect(readTaxProfile).toHaveBeenCalledTimes(1)
+    expect(readTaxProfile).toHaveBeenCalledWith(site, loggedInPage, initialIdentity, expect.any(AbortSignal))
     expect(await call('status', { id: randomUUID() })).toMatchObject({ value: { phase: 'idle' } })
     expect(await call('status', { draftId: randomUUID() })).toMatchObject({ value: { phase: 'idle' } })
     expect(await call('submit', { sessionId: 'other-session' })).toMatchObject({ value: { phase: 'idle' } })
@@ -92,7 +104,7 @@ it.each([
     await call('submit')
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'submitted' } }))
     expect(access.apply).toHaveBeenCalledTimes(1)
-    expect(access.apply).toHaveBeenCalledWith({ sessionId, draftId, ...target }, profile, expect.any(AbortSignal))
+    expect(access.apply).toHaveBeenCalledWith({ sessionId, draftId, ...target }, profile, id, expect.any(AbortSignal))
     expect(await call('cancel')).toMatchObject({ value: { phase: 'idle' } })
   } finally {
     unregister()
@@ -100,7 +112,6 @@ it.each([
 })
 
 it.each(['cancel', 'abort'])('%s 中断尚未核对完成的扫码，迟到的核对结果不会开启浏览器或关闭新的扫码', async method => {
-  vi.clearAllMocks()
   const pendingCheck = deferred<{ accepted: true }>()
   const check = vi.fn<TaxDraftAccess['check']>().mockResolvedValue({ accepted: true }).mockReturnValueOnce(pendingCheck.promise)
   const apply = vi.fn<TaxDraftAccess['apply']>()
@@ -129,7 +140,6 @@ it.each(['cancel', 'abort'])('%s 中断尚未核对完成的扫码，迟到的�
 })
 
 it.each(['status', 'start'])('切回手填后的 %s 会关闭旧窗口，迟到的官方结果无法回填', async action => {
-  vi.clearAllMocks()
   const pendingRead = deferred<TaxProfile>()
   const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
   vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
@@ -150,6 +160,7 @@ it.each(['status', 'start'])('切回手填后的 %s 会关闭旧窗口，迟到�
     await call('start', beijing)
     await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'waiting' } }))
     expect(await call('read')).toMatchObject({ value: { phase: 'reading' } })
+    await vi.waitFor(() => expect(readTaxProfile).toHaveBeenCalledTimes(1))
     const readSignal = vi.mocked(readTaxProfile).mock.calls[0]?.[3]
 
     manual = true
@@ -160,5 +171,62 @@ it.each(['status', 'start'])('切回手填后的 %s 会关闭旧窗口，迟到�
     expect((await call('status')).value).not.toHaveProperty('profile')
     expect(browser.close).toHaveBeenCalledTimes(1)
     expect(apply).not.toHaveBeenCalled()
+  } finally { unregister() }
+})
+
+it.each(['cancel', 'timeout'])('%s 后停止等待登录，迟到的授权页面无法触发取数', async action => {
+  vi.useFakeTimers()
+  const login = deferred<Page>()
+  const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
+  vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
+  vi.mocked(openTaxPortalLogin).mockResolvedValue({} as never)
+  vi.mocked(waitForTaxPortalLogin).mockReturnValueOnce(login.promise)
+  const { call, unregister } = fixture({ check: () => ({ accepted: true }), apply: vi.fn() })
+  try {
+    await call('start', { province: beijing.province, city: beijing.city })
+    expect(await call('status')).toMatchObject({ value: { phase: 'waiting' } })
+    if (action === 'cancel') {
+      expect(await call('cancel')).toMatchObject({ value: { phase: 'idle' } })
+    } else {
+      await vi.advanceTimersByTimeAsync(15 * 60_000)
+      expect(await call('status')).toMatchObject({ value: { phase: 'failed', message: expect.stringContaining('超时') } })
+    }
+    expect(vi.mocked(waitForTaxPortalLogin).mock.calls[0]?.[2].aborted).toBe(true)
+    login.resolve({} as Page)
+    await Promise.resolve()
+    expect(readTaxProfile).not.toHaveBeenCalled()
+    expect(browser.close).toHaveBeenCalledTimes(1)
+  } finally {
+    unregister()
+    vi.useRealTimers()
+  }
+})
+
+it('官方登录完成后遇到未知查询页面，只在可手动重试时提示重试', async () => {
+  const login = deferred<Page>()
+  const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
+  const profile: TaxProfile = {
+    companyName: beijing.companyName, taxId: beijing.taxId, authority: '国家税务总局北京市某区税务局',
+    obligations: [], obligationCoverage: 'visible_page', observedAt: '2026-11-16T08:00:00.000Z',
+    sourceUrl: 'https://etax.beijing.chinatax.gov.cn:8443/',
+  }
+  vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
+  vi.mocked(openTaxPortalLogin).mockResolvedValue({} as never)
+  vi.mocked(waitForTaxPortalLogin).mockReturnValueOnce(login.promise)
+  vi.mocked(readTaxProfile).mockRejectedValueOnce(new TaxPortalError('TAX_QUERY_UNRECOGNIZED', '合成查询失败'))
+    .mockResolvedValueOnce(profile)
+  const { call, unregister } = fixture({ check: () => ({ accepted: true }), apply: vi.fn() })
+  try {
+    await call('start', beijing)
+    const waiting = await call('status')
+    expect(waiting.value).toMatchObject({ phase: 'waiting' })
+    expect(waiting.value).not.toHaveProperty('retryRead')
+    login.resolve({} as Page)
+    await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'waiting', retryRead: true } }))
+    expect(browser.close).not.toHaveBeenCalled()
+    await call('read')
+    await vi.waitFor(async () => expect(await call('status')).toMatchObject({ value: { phase: 'ready', profile } }))
+    expect((await call('status')).value).not.toHaveProperty('retryRead')
+    expect(readTaxProfile).toHaveBeenCalledTimes(2)
   } finally { unregister() }
 })
