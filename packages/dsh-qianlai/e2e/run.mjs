@@ -204,6 +204,10 @@ async function runScenario(s) {
   if (existsSync(home) && readdirSync(home).length) throw Error('Scenario home already contains data; choose a fresh E2E_OUT.')
   mkdirSync(home, { recursive: true })
   mkdirSync(ws, { recursive: true })
+  if (!s.emptyBook) {
+    const { seedSyntheticBook } = await import('./sample-book-fixture.mjs')
+    seedSyntheticBook(home)
+  }
   const port = nextPort === 0 ? 0 : nextPort++
   const transcript = [`# ${s.name}\n\n${s.description}\n`]
   const failures = []

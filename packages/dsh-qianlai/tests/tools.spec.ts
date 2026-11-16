@@ -12,6 +12,9 @@ import { PDFDocument } from 'pdf-lib'
 import { apply } from '../src/index.js'
 // Worker URLs resolve relative to the shipped JS entry, so this integration uses the built plugin.
 import { apply as applyBuilt } from '../lib/index.js'
+import { loadPack } from '../src/pack.js'
+import { seedSampleBook } from '../src/sample-book.js'
+import { BookStore } from '../src/store.js'
 
 // 企业是编的。这里测的是工具入口：参数校验、出错兜底、和别的进程抢同一本账。
 
@@ -34,7 +37,7 @@ function plugin() {
 
 async function ownBook() {
   const p = plugin()
-  await p.call('moneycome_open_book', { companyName: '杭州青禾数据服务有限公司', accountingStartMonth: '2026-01', replaceSampleBook: true })
+  await p.call('moneycome_open_book', { companyName: '杭州青禾数据服务有限公司', accountingStartMonth: '2026-01' })
   await p.call('moneycome_set_opening_balances', { balances: [] })
   return p
 }
@@ -55,6 +58,8 @@ describe('工具入口', () => {
     const tools = new Map<string, Tool>()
     let dispose = () => {}
     try {
+      const legacy = new BookStore(join(home, 'moneycome', 'book.sqlite'))
+      try { seedSampleBook(legacy, loadPack(), new Date('2026-04-01T00:00:00Z')) } finally { legacy.close() }
       mkdirSync(join(home, 'attachments'))
       const pdf = await PDFDocument.create()
       pdf.addPage([100, 100]).drawText('synthetic')

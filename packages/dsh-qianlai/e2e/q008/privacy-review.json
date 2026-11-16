@@ -79,7 +79,7 @@
     "original-failures.md": "a5f58948c383c0d448b7996481b2c931cd800b34639a45996b6efe2943d8fba1",
     "personas.json": "686a352c92f17ef8b37b4194d011fc0d5d16a72876f5a69f8d61c235a70ca137",
     "review.md": "5afe5e5b4856ab46c6282d91b94d9969e83865e548df788678a1e4014cbf0173",
-    "run.mjs": "7bb9a7efc15ca7192bb031b0471c05983e5b392c7ceff34f13277ed05f31a708"
+    "run.mjs": "24a79c296ec7da90797327a62f35cccede7e178f4714f0f5f6a0c5318e12e7d7"
   },
   "publicMigration": {
     "date": "2026-10-30",
