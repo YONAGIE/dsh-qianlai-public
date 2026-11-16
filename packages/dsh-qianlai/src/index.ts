@@ -237,7 +237,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               }
               const conflict = openingConflict()
               if (conflict) return conflict
-              const result = run(args)
+              const result = run(args, exec?.signal, exec)
               if (WORK_OPERATIONS.has(name) && (result as { accepted?: boolean })?.accepted === true)
                 store.recordWork(name, args, result)
               if (receiptKey && (result as { accepted?: boolean })?.accepted === true)
@@ -254,6 +254,22 @@ export function apply(ctx: Context, config: Config = {}): void {
       })
     }
     const disposers = [
+      tool(
+        'moneycome_onboarding',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 在对话中给出扫码建档和手动填写选择。continue 只展示本步待补字段或打开右侧表单。fill 仅保存从老板本轮明确提供的内容或实际读到的材料中确认的空白字段，返回下一步卡片。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        {
+          action: { type: 'string', enum: ['start', 'continue', 'fill'] },
+          fields: { type: 'array', items: { type: 'string' }, description: '可选的本轮缺项键。省略时自动给出当前缺项，最多三项。' },
+          values: stringMap('fill 可用的已知字段。企业：companyName、taxId、establishedOn、taxRegion（省|市，如北京市|北京市）、taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus、bankStatus（provided / none / pending）。记账：history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）。工资：payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+        },
+        ['action'],
+        (args, _signal, execution) => {
+          const sessionId = execution?.agent?.session.id
+          if (!sessionId || isWechatSession(sessionId) || isIntroductionSession(sessionId))
+            return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
+          return new CompanyOnboarding(store).guide(sessionId, args.action as 'start' | 'continue' | 'fill', args.fields, args.values)
+        },
+      ),
       tool(
         'moneycome_wechat',
         '获取本插件专用的微信登录二维码，不依赖通用绘图工具；旧会话说过不能获取时，以本次工具状态为准并纠正过期说明。先用 status 查询真实状态；仅在老板明确要求连接微信或刷新时用 start/refresh。返回的图片才是当前申请的二维码，不复用旧图、不猜有效期。loading 时稍后查询 status，expired/error 可重新获取。connected 说明已连接，无须扫码，不刷新现有连接。窗口打开不等于出码、登录或欢迎发送成功。只能操作本机张姐的微信登录，不发自定义消息、不读取凭据。',

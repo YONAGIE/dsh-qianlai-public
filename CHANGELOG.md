@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Save onboarding choices and small field forms directly to the current draft with a reviewable chat receipt.
+
 - Cancel obsolete onboarding tax scans and only apply verified results to the current draft.
 
 - Keep the selected onboarding method in the draft so switching between manual entry and scanning preserves the current stage.
