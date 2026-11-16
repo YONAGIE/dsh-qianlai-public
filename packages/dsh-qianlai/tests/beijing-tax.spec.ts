@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import type { Page } from 'playwright-core'
+import { describe, expect, it, vi } from 'vitest'
 
-import { parseTaxProfile, type TaxPageData } from '../src/tax-portal.js'
+import { parseTaxProfile, readTaxProfile, waitForTaxPortalLogin, type TaxPageData } from '../src/tax-portal.js'
 import { taxPortalFor } from '../src/tax-portals.js'
 
 const beijing = taxPortalFor('北京市', '北京市')!
@@ -35,6 +36,76 @@ describe('北京电子税务局', () => {
       observedAt: now.toISOString(), sourceUrl: source, obligationCoverage: 'visible_page',
       obligations: [{ taxItem: '增值税', filingCycle: '季', effectiveFrom: '2026-11-01', effectiveTo: '9999-12-31' }],
     })
+  })
+
+  it('用所选企业的官方信息建立待核对结果，成立日期必须来自对应字段', () => {
+    const blank = { companyName: '', taxId: '' }
+    const registered = { ...basic, facts: [...basic.facts, ['税务登记日期', '2025-02-10']] }
+    expect(parseTaxProfile(beijing, registered, recognition, blank, now)).toMatchObject({
+      ...company, registrationDate: '2025-02-10',
+    })
+    expect(parseTaxProfile(beijing, registered, recognition, blank, now)).not.toHaveProperty('establishedOn')
+    expect(parseTaxProfile(beijing, {
+      ...registered, facts: [...registered.facts, ['成立日期', '2025 年 2 月 3 日']],
+    }, recognition, blank, now)).toMatchObject({ establishedOn: '2025-02-03' })
+    expect(parseTaxProfile(beijing, {
+      ...registered, facts: [...registered.facts, ['成立日期', '2025-02-31']],
+    }, recognition, blank, now)).not.toHaveProperty('establishedOn')
+    expect(() => parseTaxProfile(beijing, registered, recognition, { ...blank, companyName: '另一企业' }, now))
+      .toThrow(expect.objectContaining({ code: 'TAX_IDENTITY_MISMATCH' }))
+  })
+
+  it('二维码、公共首页和非官方页面不触发读取，出现企业查询后自动继续', async () => {
+    let selected = false
+    const browserContext = { pages: () => [login, home, thirdParty] }
+    function page(url: () => string, display: () => string[]) {
+      const inspect = vi.fn(async () => undefined)
+      const frame = {
+        evaluate: inspect, url,
+        getByText: (text: RegExp) => ({ filter: () => ({ count: async () => display().filter(value => text.test(value)).length }) }),
+      }
+      const item = { url, frames: () => [frame], isClosed: () => false, context: () => browserContext }
+      return { page: item as unknown as Page, inspect }
+    }
+    const { page: login, inspect: inspectLogin } = page(
+      () => selected ? beijing.homeOrigin + '/enterprise' : beijing.loginOrigin + '/login',
+      () => selected ? ['退出登录', '我要查询'] : ['企业业务', '请选择企业'],
+    )
+    const { page: home, inspect: inspectHome } = page(() => beijing.homeOrigin, () => ['切换身份', '我要查询', '登录'])
+    const { page: thirdParty, inspect: inspectThirdParty } = page(() => 'https://example.test/', () => ['退出登录', '我要查询'])
+    const stop = new AbortController()
+    const result = waitForTaxPortalLogin(beijing, login, stop.signal)
+    try {
+      await vi.waitFor(() => expect(inspectHome).toHaveBeenCalledTimes(1))
+      expect(inspectLogin).not.toHaveBeenCalled()
+      expect(inspectThirdParty).not.toHaveBeenCalled()
+      selected = true
+      await expect(result).resolves.toBe(login)
+    } finally {
+      stop.abort()
+      await result.catch(() => {})
+    }
+  })
+
+  it('菜单依次加载或查询另开标签页时仍只打开已知的只读查询', async () => {
+    const selections: string[] = []
+    const route = ['我要查询', '一户式查询', '纳税人信息查询']
+    const browserContext = { pages: () => selections.length === route.length ? [home, query] : [home] }
+    function page(url: string, snapshot?: TaxPageData) {
+      const frame = {
+        evaluate: async () => snapshot, url: () => url,
+        getByText: (label: string) => ({ filter: () => ({
+          count: async () => Number(label === route[selections.length]),
+          click: async () => { selections.push(label) },
+        }) }),
+      }
+      return { url: () => url, frames: () => [frame], isClosed: () => false, context: () => browserContext } as unknown as Page
+    }
+    const home = page(beijing.homeOrigin + '/enterprise')
+    const query = page(source, { ...basic, tables: recognition.tables })
+    await expect(readTaxProfile(beijing, home, { companyName: '', taxId: '' }, new AbortController().signal))
+      .resolves.toMatchObject({ ...company, sourceUrl: source })
+    expect(selections).toEqual(route)
   })
 
   it('接受北京经开区税务机关的名称', () => {
