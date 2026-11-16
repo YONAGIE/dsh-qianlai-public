@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
 
 import { openBook } from './book.js'
-import { availableFields, fieldPatch, type FormField } from './onboarding-fields.js'
+import { availableFields, fieldPatch, onboardingFields, type FormField } from './onboarding-fields.js'
 import { isCalendarDate, PERIOD_KEY, previousPeriod, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore } from './store.js'
 import regions from './tax-regions.json' with { type: 'json' }
 import type { TaxProfile } from './tax-portal.js'
+import { taxPortalFor } from './tax-portals.js'
 
 type Step = 1 | 2 | 3 | 4
 type EditableStep = Exclude<Step, 4>
@@ -70,6 +71,9 @@ export interface OnboardingRecord {
   revision: number
   step: Step
   mode?: OnboardingMode
+  companyEntry?: 'upload' | 'manual'
+  taxEntry?: 'upload' | 'manual'
+  taxFlowId?: string
   cards?: StoredCard[]
   enterprise?: Enterprise
   accounting?: Accounting
@@ -79,7 +83,7 @@ export interface OnboardingRecord {
 
 type NextAction = 'review-book-periods' | 'opening-balances' | 'bookkeeping'
 
-export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards'> {
+export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'companyEntry' | 'taxEntry' | 'taxFlowId'> {
   accepted: true
   completed: boolean
   replacesSampleBook: boolean
@@ -94,9 +98,17 @@ interface CardBase {
   revision: number
 }
 
-type OnboardingCard = CardBase & ({ kind: 'mode' } | { kind: 'fields'; fields: FormField[] })
-interface CardReceipt { labels: string[]; mode?: OnboardingMode }
-interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt }
+type CardContent = (
+  | { kind: 'mode' | 'region' | 'bank' | 'bank-next' }
+  | { kind: 'source' | 'upload'; documentKind: 'license' | 'tax' }
+  | { kind: 'fields'; fields: FormField[]; message?: string; step?: EditableStep; initialValues?: Record<string, unknown> }
+  | { kind: 'tax-scan'; province: string; city: string }
+  | { kind: 'confirm'; replacesSampleBook: boolean }
+  | { kind: 'blocked'; message: string }
+) & { title?: string; canSwitchToScan?: boolean }
+type OnboardingCard = CardBase & CardContent
+interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
+interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; nextCardId?: string }
 
 const TAX_ID = /^[0-9A-Z]{18}$/
 const cities: Readonly<Record<string, readonly string[]>> = regions
@@ -369,13 +381,13 @@ export class CompanyOnboarding {
     })
   }
 
-  private stepValues(record: OnboardingRecord): Record<string, unknown> {
-    return { ...({ 1: record.enterprise, 2: record.accounting, 3: record.payroll, 4: undefined }[record.step]) }
+  private stepValues(record: OnboardingRecord, step = record.step): Record<string, unknown> {
+    return { ...({ 1: record.enterprise, 2: record.accounting, 3: record.payroll, 4: undefined }[step]) }
   }
 
   /** Save only missing fields. Existing data, including account details, stays in the draft. */
-  private saveFields(record: OnboardingRecord, fields: readonly FormField[], values: unknown): OnboardingView | Refusal {
-    if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请在右侧核对资料。')
+  private saveFields(record: OnboardingRecord, fields: readonly FormField[], values: unknown, step = record.step): OnboardingView | Refusal {
+    if (step === 4) return refuse('STEP_UNAVAILABLE', '请通过对话里的确认卡继续。')
     let patch: Record<string, unknown>
     try {
       patch = fieldPatch(fields, object(values), todayInChina(this.now()))
@@ -383,7 +395,111 @@ export class CompanyOnboarding {
     } catch (error) {
       return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
     }
-    return this.save(record.step, record.revision, { ...this.stepValues(record), ...patch }, false)
+    return this.save(step, record.revision, { ...this.stepValues(record, step), ...patch }, false)
+  }
+
+  private editCard(record: OnboardingRecord, step: EditableStep): CardContent {
+    const current = this.stepValues(record, step)
+    const fields = onboardingFields[step].filter(({ key }) => key !== 'taxRegion' &&
+      (!record.enterprise?.officialTax || !['companyName', 'taxId', 'taxAuthority', 'taxStatus', 'taxpayerIdentity'].includes(key)) &&
+      (key !== 'lastMonth' || current.history === 'previous') &&
+      (key !== 'payday' || current.payroll === 'scheduled'))
+    const initialValues = Object.fromEntries(fields.filter(field => current[field.key] !== undefined)
+      .map(field => [field.key, field.key === 'payday' ? String(current[field.key]) : current[field.key]]))
+    return { kind: 'fields', title: { 1: '更正企业资料', 2: '更正记账准备', 3: '更正工资社保' }[step], step, fields, initialValues }
+  }
+
+  private nextCard(record: OnboardingRecord): CardContent | undefined {
+    if (record.completedAt) return undefined
+    if (!record.mode) return { kind: 'mode' }
+    const today = todayInChina(this.now())
+    const enterprise = record.enterprise
+    if (record.mode === 'scan' && !enterprise?.officialTax) {
+      if (!enterprise?.province || !enterprise.city || !taxPortalFor(enterprise.province, enterprise.city)) return { kind: 'region' }
+      return { kind: 'tax-scan', province: enterprise.province, city: enterprise.city }
+    }
+    if (record.step === 1) {
+      const fields = availableFields(1, this.stepValues(record))
+      const company = fields.filter(field => ['companyName', 'taxId', 'establishedOn'].includes(field.key))
+      if (company.length) {
+        if (!record.companyEntry && !enterprise?.officialTax) return { kind: 'source', documentKind: 'license' }
+        if (record.companyEntry === 'upload') return { kind: 'upload', documentKind: 'license' }
+        return { kind: 'fields', title: '补充公司资料', fields: company }
+      }
+      if (!enterprise?.taxpayerIdentity) {
+        if (!record.taxEntry && !enterprise?.officialTax) return { kind: 'source', documentKind: 'tax' }
+        if (record.taxEntry === 'upload') return { kind: 'upload', documentKind: 'tax' }
+        return { kind: 'fields', title: '补充税务资料', fields: fields.filter(field => ['taxpayerIdentity', 'taxAuthority', 'taxStatus'].includes(field.key)) }
+      }
+      const error = validateEnterprise(enterprise, today)
+      if (error?.code === 'ENTERPRISE_UNSUPPORTED') return { kind: 'blocked', message: error.message }
+      if (fields.some(field => field.key === 'business')) return { kind: 'fields', title: '确认实际经营', fields: fields.filter(field => field.key === 'business') }
+      if (fields.some(field => field.key === 'bankStatus')) return { kind: 'fields', title: '确认账户情况', fields: fields.filter(field => field.key === 'bankStatus') }
+      if (enterprise?.bankStatus === 'provided' && !enterprise.accounts.length) return { kind: 'bank' }
+      if (error) return { kind: 'blocked', message: error.message }
+    } else if (record.step === 2 || record.step === 3) {
+      const current = this.stepValues(record)
+      const error = record.step === 2 ? validateAccounting(record.accounting, record.enterprise, today) : validatePayroll(record.payroll)
+      if (error) {
+        const missing = availableFields(record.step, current)
+        const fieldSet = missing.length ? missing : onboardingFields[record.step].filter(({ key }) =>
+          (key !== 'lastMonth' || current.history === 'previous') && (key !== 'payday' || current.payroll === 'scheduled'))
+        const expected = ['ACCOUNTING_REQUIRED', 'PAYROLL_REQUIRED'].includes(error.code)
+        return { kind: 'fields', title: record.step === 2 ? '确认记账准备' : '确认工资社保', fields: fieldSet, ...(!expected ? { message: error.message } : {}) }
+      }
+    } else {
+      if (enterprise?.taxpayerIdentity !== 'small-scale') return {
+        kind: 'fields', title: '确认纳税人类型', step: 1, message: '建档前请核实企业的纳税人类型。',
+        fields: onboardingFields[1].filter(field => field.key === 'taxpayerIdentity'),
+      }
+      return { kind: 'confirm', replacesSampleBook: this.store.company()?.isSample === true }
+    }
+    // Complete stages advance once the existing domain validations pass.
+    if (record.step < 4) {
+      const saved = this.save(record.step as EditableStep, record.revision, this.stepValues(record))
+      if (!saved.accepted) return { kind: 'blocked', message: saved.message }
+      return this.nextCard(this.record())
+    }
+  }
+
+  private issueCard(sessionId: string, content: CardContent) {
+    const record = this.record()
+    if (record.step === 1 && record.mode === 'manual' && !record.enterprise?.officialTax &&
+      ['source', 'upload', 'fields', 'bank-next', 'blocked'].includes(content.kind)) {
+      content = { ...content, canSwitchToScan: true }
+    }
+    const current = record.cards?.find(item => item.sessionId === sessionId && !item.receipt &&
+      item.card.revision === record.revision && item.card.kind === content.kind &&
+      JSON.stringify(this.cardContent(item.card)) === JSON.stringify(content))
+    if (current) return current.card
+    const card: OnboardingCard = { id: randomUUID(), draftId: record.draftId, revision: record.revision, ...content }
+    record.cards = [...(record.cards ?? []), { sessionId, card }]
+    this.store.saveCompanyOnboarding(record)
+    return card
+  }
+
+  private cardContent(card: OnboardingCard): CardContent {
+    const content = { ...card } as Partial<CardBase> & CardContent
+    delete content.id
+    delete content.draftId
+    delete content.revision
+    return content
+  }
+
+  private cardResult(record: OnboardingRecord, item: StoredCard) {
+    const nextCard = record.cards?.find(candidate => candidate.card.id === item.nextCardId)?.card
+    return { accepted: true as const, view: this.view(record), ...(item.receipt ? { receipt: item.receipt } : {}), stale: false, ...(nextCard ? { nextCard } : {}) }
+  }
+
+  private transition(sessionId: string, cardId: string, receipt: CardReceipt, choose: () => CardContent | undefined) {
+    const next = choose()
+    const nextCard = next && this.issueCard(sessionId, next)
+    const latest = this.record()
+    const stored = latest.cards!.find(candidate => candidate.card.id === cardId)!
+    stored.receipt = receipt
+    if (nextCard) stored.nextCardId = nextCard.id
+    this.store.saveCompanyOnboarding(latest)
+    return this.cardResult(latest, stored)
   }
 
   guide(sessionId: string, action: 'start' | 'continue' | 'fill', fields?: unknown, values?: unknown) {
@@ -391,63 +507,143 @@ export class CompanyOnboarding {
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
       if (action === 'fill') {
-        if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请在右侧修改或确认建档资料。')
+        if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请通过对话里的确认卡继续。')
         const saved = this.saveFields(record, availableFields(record.step, this.stepValues(record)), values)
         if (!saved.accepted) return saved
         record = this.record()
       }
       const requested = Array.isArray(fields) ? fields : []
-      const candidates = record.step < 4 ? availableFields(record.step as EditableStep, this.stepValues(record)) : []
-      const scanKeys = ['companyName', 'taxId', 'taxRegion']
-      const scanFields = record.step === 1 && record.mode === 'scan' ? candidates.filter(field => scanKeys.includes(field.key)) : []
-      const nextFields = (requested.length ? candidates.filter(field => requested.includes(field.key)) : scanFields.length ? scanFields : candidates).slice(0, 3)
-      const kind = action === 'start' || !record.mode ? 'mode' : 'fields'
-      const result = { accepted: true as const, step: record.step, ...(record.mode ? { mode: record.mode } : {}) }
-      const current = record.cards?.find(item => item.sessionId === sessionId && !item.receipt &&
-        item.card.revision === record.revision && item.card.kind === kind &&
-        (item.card.kind === 'mode' || item.card.fields.map(field => field.key).join() === nextFields.map(field => field.key).join()))
-      if (current) return { ...result, card: current.card }
-      const base = { id: randomUUID(), draftId: record.draftId, revision: record.revision }
-      const card: OnboardingCard = kind === 'mode' ? { ...base, kind } : { ...base, kind, fields: nextFields }
-      record.cards = [...(record.cards ?? []).filter(item => item.receipt || item.card.revision === record.revision), { sessionId, card }]
-      this.store.saveCompanyOnboarding(record)
-      return { ...result, card }
+      const known = record.step < 4 ? availableFields(record.step as EditableStep, this.stepValues(record))
+        .filter(field => requested.includes(field.key)).slice(0, 3) : []
+      const content = action === 'start' ? { kind: 'mode' as const }
+        : known.length && record.mode === 'manual' ? { kind: 'fields' as const, fields: known } : this.nextCard(record)
+      const latest = this.record()
+      return { accepted: true as const, step: latest.step, ...(latest.mode ? { mode: latest.mode } : {}),
+        ...(content ? { card: this.issueCard(sessionId, content) } : {}) }
     })
   }
 
   cardStatus(sessionId: string, cardId: string) {
-    const record = this.store.companyOnboarding()
-    const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
-    if (item?.receipt) return { accepted: true as const, receipt: item.receipt }
-    if (!item || !record || record.revision !== item.card.revision || record.completedAt)
-      return { accepted: true as const, stale: true }
-    return { accepted: true as const, stale: false, view: this.view(record) }
+    return this.store.transaction(() => {
+      const record = this.store.companyOnboarding()
+      const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
+      if (!record || !item) return { accepted: true as const, stale: true }
+      if (item.receipt) return this.cardResult(record, item)
+      if (item.card.kind === 'tax-scan' && record.taxFlowId === cardId)
+        return this.transition(sessionId, cardId, { labels: ['已回填官方税务资料'] }, () => this.nextCard(this.record()))
+      if (record.revision !== item.card.revision || record.completedAt) return { accepted: true as const, stale: true }
+      return this.cardResult(record, item)
+    })
   }
 
-  submitCard(sessionId: string, cardId: string, revision: number, choice: unknown, values: unknown) {
+  uploadKind(sessionId: string, cardId: string, revision: number) {
+    const record = this.store.companyOnboarding()
+    const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
+    return item?.card.kind === 'upload' && !item.receipt && !record?.completedAt && item.card.revision === revision &&
+      record?.revision === revision ? item.card.documentKind : undefined
+  }
+
+  submitCard(sessionId: string, cardId: string, revision: number, choice: unknown, values: unknown, replaceSampleBook = false, recognized?: Record<string, unknown>) {
     return this.store.transaction(() => {
       const record = this.record()
       const item = record.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
       if (!item || item.card.revision !== revision) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
-      if (item.receipt) return { accepted: true as const, receipt: item.receipt, view: this.view(record) }
-      if (record.completedAt || revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请在右侧查看或让张姐重新出卡。')
-      let saved: OnboardingView | Refusal
-      let receipt: CardReceipt
-      if (item.card.kind === 'mode') {
-        if (choice !== 'scan' && choice !== 'manual') return refuse('DRAFT_INPUT_INVALID', '请选择建档方式。')
-        saved = this.setMode(revision, choice)
-        receipt = { labels: ['建档方式'], mode: choice }
-      } else {
-        saved = this.saveFields(record, item.card.fields, values)
-        if (!saved.accepted) return saved
-        receipt = { labels: item.card.fields.filter(field => Object.hasOwn(values as object, field.key)).map(field => field.label) }
+      if (item.receipt) return this.cardResult(record, item)
+      if (record.completedAt || revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请发送「继续建档」刷新当前步骤。')
+      const card = item.card
+      const invalid = () => refuse('DRAFT_INPUT_INVALID', '请按当前建档卡片继续。')
+      const next = (receipt: CardReceipt, content?: CardContent) =>
+        this.transition(sessionId, cardId, receipt, () => content ?? this.nextCard(this.record()))
+      if (card.kind === 'mode' || ((card.kind === 'region' || card.kind === 'tax-scan') && choice === 'manual')) {
+        if (choice !== 'scan' && choice !== 'manual') return invalid()
+        const saved = this.setMode(revision, choice)
+        return saved.accepted ? next({ labels: ['建档方式'], mode: choice }) : saved
       }
-      if (!saved.accepted) return saved
-      const updated = this.record()
-      const stored = updated.cards!.find(candidate => candidate.card.id === cardId)!
-      stored.receipt = receipt
-      this.store.saveCompanyOnboarding(updated)
-      return { accepted: true as const, receipt, view: saved }
+      if (card.canSwitchToScan && choice === 'scan') {
+        if (card.kind === 'fields' && values !== undefined &&
+          (typeof values !== 'object' || !values || Array.isArray(values) || Object.keys(values).length > 0)) {
+          const saved = this.saveFields(record, card.fields, values, card.step)
+          if (!saved.accepted) return saved
+        }
+        const saved = this.setMode(this.record().revision, 'scan')
+        return saved.accepted ? next({ labels: ['建档方式'], mode: 'scan' }) : saved
+      }
+      if (card.kind === 'source' || card.kind === 'upload') {
+        if (!recognized && choice !== 'manual' && !(card.kind === 'source' && choice === 'license')) return invalid()
+        if (recognized) {
+          if ((typeof recognized.companyName === 'string' && record.enterprise?.companyName &&
+              normalizeCompanyName(recognized.companyName) !== normalizeCompanyName(record.enterprise.companyName)) ||
+              (typeof recognized.taxId === 'string' && record.enterprise?.taxId && recognized.taxId !== record.enterprise.taxId))
+            return refuse('DOCUMENT_SUBJECT_MISMATCH', '识别出的企业与当前建档资料不一致。请选择这家企业的材料。')
+          const fields = availableFields(1, this.stepValues(record)).filter(field => field.key !== 'taxRegion')
+          const picked = Object.fromEntries(fields.filter(field => Object.hasOwn(recognized, field.key))
+            .map(field => [field.key, recognized[field.key]]))
+          if (!Object.keys(picked).length)
+            return refuse('DOCUMENT_EMPTY', '没有识别到可填的缺项。请换一张清晰资料，或选择自己填写。')
+          const saved = this.saveFields(record, fields, picked)
+          if (!saved.accepted) return saved
+        }
+        const updated = this.record()
+        updated[card.documentKind === 'license' ? 'companyEntry' : 'taxEntry'] = choice === 'license' ? 'upload' : 'manual'
+        updated.revision++
+        this.store.saveCompanyOnboarding(updated)
+        return next({ labels: [recognized ? '已识别并保存资料' : '资料提供方式'], ...(typeof choice === 'string' ? { choice } : {}) })
+      }
+      if (card.kind === 'region') {
+        const { province, city } = values && typeof values === 'object' ? values as Record<string, unknown> : {}
+        if (typeof province !== 'string' || typeof city !== 'string' || !Object.hasOwn(cities, province) || !cities[province]?.includes(city))
+          return invalid()
+        const saved = this.save(1, revision, { ...record.enterprise, province, city }, false)
+        if (!saved.accepted) return saved
+        if (!taxPortalFor(province, city)) {
+          const changed = this.setMode(saved.revision, 'manual')
+          if (!changed.accepted) return changed
+          return next({ labels: ['税务地区'], mode: 'manual', notice: '已保存税务地区。该辖区可上传官方材料或手填。' })
+        }
+        return next({ labels: ['税务地区'] }, { kind: 'tax-scan', province, city })
+      }
+      if (card.kind === 'fields') {
+        const saved = this.saveFields(record, card.fields, values, card.step)
+        if (!saved.accepted) return saved
+        return next({ labels: card.fields.filter(field => Object.hasOwn(values as object, field.key)).map(field => field.label) })
+      }
+      if (card.kind === 'bank') {
+        const data = values && typeof values === 'object' ? values as Record<string, unknown> : {}
+        if (choice === 'skip') {
+          const saved = this.save(1, revision, { ...record.enterprise, bankStatus: 'pending' }, false)
+          return saved.accepted ? next({ labels: ['银行资料待补'] }) : saved
+        }
+        if (!record.enterprise || !data.holder || !data.bank || typeof data.number !== 'string' ||
+            !/^\d{4,34}$/.test(data.number.replace(/[ -]/g, '')) ||
+            record.enterprise.accounts.some(account => account.number === (data.number as string).replace(/[ -]/g, '')))
+          return invalid()
+        if (data.currency && (typeof data.currency !== 'string' || !/^[A-Z]{3}$/.test(data.currency)))
+          return refuse('BANK_CURRENCY_INVALID', '请选择账户币种。')
+        if (data.openedOn && (typeof data.openedOn !== 'string' || !isCalendarDate(data.openedOn) || data.openedOn > todayInChina(this.now())))
+          return refuse('BANK_DATE_INVALID', '请核对账户开户日期。')
+        const saved = this.save(1, revision, { ...record.enterprise, accounts: [
+          ...record.enterprise.accounts, { holder: data.holder, number: data.number, bank: data.bank, currency: data.currency || 'CNY', openedOn: data.openedOn },
+        ] }, false)
+        return saved.accepted ? next({ labels: ['已保存银行账户'] }, { kind: 'bank-next' }) : saved
+      }
+      if (card.kind === 'bank-next' && (choice === 'add' || choice === 'continue'))
+        return next({ labels: [choice === 'add' ? '继续补充账户' : '银行账户已核对'] }, choice === 'add' ? { kind: 'bank' } : undefined)
+      if (card.kind === 'confirm' && choice === 'confirm') {
+        const saved = this.confirm(revision, replaceSampleBook)
+        return saved.accepted ? next({ labels: ['建档已完成'] }) : saved
+      }
+      if (card.kind === 'confirm') {
+        const step = choice === 'edit-company' ? 1 : choice === 'edit-accounting' ? 2 : choice === 'edit-payroll' ? 3 : undefined
+        if (step)
+          return next({ labels: ['请核对要更正的资料'] }, this.editCard(record, step))
+      }
+      if (card.kind === 'blocked' && choice === 'edit' && record.step === 1) {
+        const fields = onboardingFields[1].filter(({ key }) => ['business', 'bankStatus', 'taxpayerIdentity', 'taxStatus'].includes(key))
+        record.revision++
+        this.store.saveCompanyOnboarding(record)
+        return next({ labels: ['重新核对资料'] }, { kind: 'fields', title: '核对企业情况', fields })
+      }
+      return invalid()
     })
   }
 
@@ -495,14 +691,20 @@ export class CompanyOnboarding {
     })
   }
 
-  applyTaxProfile(draftId: string, province: string, city: string, profile: TaxProfile): OnboardingView | Refusal {
+  applyTaxProfile(draftId: string, province: string, city: string, profile: TaxProfile, flowId?: string): OnboardingView | Refusal {
     return this.store.transaction(() => {
       const record = this.store.companyOnboarding()
       const enterprise = record?.enterprise
       if (!record || record.completedAt || record.mode === 'manual' || record.draftId !== draftId || !enterprise
         || enterprise.province !== province || enterprise.city !== city
-        || enterprise.taxId !== profile.taxId || normalizeCompanyName(enterprise.companyName) !== normalizeCompanyName(profile.companyName))
+        || !TAX_ID.test(profile.taxId) || !profile.companyName.trim()
+        || (enterprise.taxId && enterprise.taxId !== profile.taxId)
+        || (enterprise.companyName && normalizeCompanyName(enterprise.companyName) !== normalizeCompanyName(profile.companyName)))
         return refuse('TAX_DRAFT_CHANGED', '企业或地区已变化，请核对当前资料后重新读取。')
+      enterprise.taxId ||= profile.taxId
+      enterprise.companyName ||= profile.companyName
+      if (!enterprise.establishedOn && profile.establishedOn && isCalendarDate(profile.establishedOn)) enterprise.establishedOn = profile.establishedOn
+      if (flowId) record.taxFlowId = flowId
       const qualification = profile.taxpayerQualification ?? ''
       const taxpayerIdentity = qualification.includes('一般纳税人') ? 'general'
         : qualification.includes('小规模纳税人') ? 'small-scale' : 'unknown'
