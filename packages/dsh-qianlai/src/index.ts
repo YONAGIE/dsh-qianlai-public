@@ -6,7 +6,7 @@ import { checkArgs } from './args.js'
 import { readBalances } from './balances.js'
 import { bookStatus, openBook, setCompanyFacts, setOpeningBalances, type OpeningBalanceInput } from './book.js'
 import { closePeriod, closingCheck } from './closing.js'
-import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus } from './company-onboarding.js'
+import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus, type OnboardingGuideAction } from './company-onboarding.js'
 import { quarterFilingPrep, upcomingDeadlines } from './deadlines.js'
 import {
   addEvidence,
@@ -256,18 +256,19 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 给出扫码或手填方式卡，continue 在当前对话给出下一步。选项、上传、补填和确认由卡片连续引导，右侧显示资料和进度。fill 仅保存从老板本轮明确提供的内容或实际读到的材料中确认的空白字段。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 在收到建档卡回话后取得已保存的下一步。老板用自然语言明确要求切换方式时用 switch-mode 和 mode，保留同一份草稿。fill 只保存从老板本轮明确提供的内容或实际读到的材料中确认的缺项。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧显示资料和进度。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
         {
-          action: { type: 'string', enum: ['start', 'continue', 'fill'] },
+          action: { type: 'string', enum: ['start', 'continue', 'fill', 'switch-mode'] },
+          mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
           fields: { type: 'array', items: { type: 'string' }, description: '可选的本轮缺项键。省略时自动给出当前缺项，最多三项。' },
-          values: stringMap('fill 可用的已知字段。企业：companyName、taxId、establishedOn、taxRegion（省|市，如北京市|北京市）、taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus、bankStatus（provided / none / pending）。记账：history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）。工资：payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+          values: stringMap('fill 可用的已知字段。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。企业：companyName、taxId、establishedOn、taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus、bankStatus（provided / none / pending）。记账：history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）。工资：payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
         },
         ['action'],
         (args, _signal, execution) => {
           const sessionId = execution?.agent?.session.id
           if (!sessionId || isWechatSession(sessionId) || isIntroductionSession(sessionId))
             return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
-          return new CompanyOnboarding(store).guide(sessionId, args.action as 'start' | 'continue' | 'fill', args.fields, args.values)
+          return new CompanyOnboarding(store).guide(sessionId, args.action as OnboardingGuideAction, args.fields, args.values, args.mode)
         },
       ),
       tool(

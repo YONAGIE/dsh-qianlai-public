@@ -16,6 +16,7 @@ interface Flow {
   abort: AbortController
   checked?: true
   expiry?: NodeJS.Timeout
+  monitor?: NodeJS.Timeout
   browser?: Browser
   page?: Page
   watchingLogin?: true
@@ -36,7 +37,8 @@ export interface TaxOnboardingTarget {
 type DraftAccessResult = { accepted: true } | { accepted: false; message: string }
 
 export interface TaxDraftAccess {
-  check(target: TaxOnboardingTarget, signal: AbortSignal): DraftAccessResult | Promise<DraftAccessResult>
+  check(target: TaxOnboardingTarget, signal: AbortSignal, flowId: string): DraftAccessResult | Promise<DraftAccessResult>
+  isCurrent?(target: TaxOnboardingTarget, flowId: string): boolean
   apply(target: TaxOnboardingTarget, profile: TaxProfile, flowId: string, signal: AbortSignal): DraftAccessResult | Promise<DraftAccessResult>
 }
 
@@ -56,6 +58,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
 
   function end(flow: Flow) {
     clearTimeout(flow.expiry)
+    clearInterval(flow.monitor)
     flow.abort.abort()
     closeBrowser(flow)
     delete flow.profile
@@ -73,11 +76,20 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
     end(flow)
   }
 
+  function stopIfObsolete(flow: Flow) {
+    if (!access.isCurrent || ['submitting', 'submitted', 'failed'].includes(flow.phase)) return
+    try {
+      if (!access.isCurrent(flow.target, flow.id)) fail(flow, '建档已切换步骤，请在当前对话继续。')
+    } catch {
+      fail(flow, '暂时无法核对当前建档。请在对话里继续。')
+    }
+  }
+
   async function revalidate(flow: Flow, requestSignal: AbortSignal) {
     const draftCanChange = () => !['submitting', 'submitted', 'failed'].includes(flow.phase)
     if (!flow.checked || !draftCanChange()) return flow
     const signal = AbortSignal.any([requestSignal, flow.abort.signal])
-    const result = await access.check(flow.target, signal)
+    const result = await access.check(flow.target, signal, flow.id)
     if (current !== flow || signal.aborted) return undefined
     if (!result.accepted && draftCanChange()) fail(flow, result.message)
     return flow
@@ -207,6 +219,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
             || typeof code !== 'string' || (code && !/^[0-9A-Z]{18}$/.test(code)))
           return refuse('请核对已填写的企业全称和 18 位统一社会信用代码。')
         const target = { sessionId, draftId, province, city, companyName: name.trim(), taxId: code }
+        if (current?.checked) stopIfObsolete(current)
         if (current && !['failed', 'submitted'].includes(current.phase)) {
           const own = findOwnFlow()
           if (!own || own.target.companyName !== target.companyName || own.target.taxId !== target.taxId
@@ -235,7 +248,7 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
         signal.addEventListener('abort', abortStart, { once: true })
         try {
           signal.throwIfAborted()
-          const result = await access.check(target, signal)
+          const result = await access.check(target, signal, id)
           if (current !== flow) return value()
           signal.throwIfAborted()
           if (!result.accepted) {
@@ -250,6 +263,11 @@ export function registerTaxOnboarding(connection: RpcConnection, dshHome: string
           signal.removeEventListener('abort', abortStart)
         }
         flow.checked = true
+        if (access.isCurrent) {
+          // The draft can change through a chat turn while the tax card is offscreen.
+          flow.monitor = setInterval(() => stopIfObsolete(flow), 1_000)
+          flow.monitor.unref()
+        }
         void open(flow)
         return value(flow)
       }

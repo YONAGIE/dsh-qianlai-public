@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
     const AVATAR = '__AVATAR_DATA_URL__'
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
     let connection
+    let sessions
 
     function WechatPanel({ sessionId }) {
       const titleId = useId()
@@ -123,10 +124,15 @@ window.__ModuleLoader__.load({
     function refreshOnboarding(sessionId, view) {
       if (!view) return
       const preview = onboardingTaxPreviews.get(sessionId)
-      if (preview && (view.completed || (preview.draftId && preview.draftId !== view.draftId))) {
+      if (preview && (view.completed || view.mode === 'manual' || (preview.draftId && preview.draftId !== view.draftId))) {
         onboardingTaxPreviews.delete(sessionId)
       }
       for (const update of onboardingListeners) update(sessionId, { view })
+    }
+
+    function subscribeOnboarding(listener) {
+      onboardingListeners.add(listener)
+      return () => onboardingListeners.delete(listener)
     }
 
     function previewOnboardingTax(sessionId, profile, draftId) {
@@ -141,6 +147,12 @@ window.__ModuleLoader__.load({
       if (!target || target.sessionId !== sessionId) return false
       sidebarRight.openTabFromTarget(ONBOARDING_TAB, target)
       return true
+    }
+
+    function sendOnboardingReply(sessionId, text) {
+      const conversation = sessions?.scope(sessionId)?.get('conversation')
+      if (!conversation) throw Error('当前对话暂时无法发送消息。')
+      return conversation.send(text)
     }
 
     async function onboardingRequest(sessionId, action, extra = {}, signal = AbortSignal.timeout(action === 'recognize' ? 120000 : 10000)) {
@@ -249,13 +261,13 @@ window.__ModuleLoader__.load({
             draft.draftId === previous?.draftId && draft.revision < previous.revision ? previous : draft,
           )
         }
-        onboardingListeners.add(sync)
+        const unsubscribe = subscribeOnboarding(sync)
         void onboardingRequest(sessionId, 'status', {}, AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]))
           .then(draft => { if (!abort.signal.aborted && !changed) sync(sessionId, { view: draft }) })
           .catch(error => { if (!abort.signal.aborted && !changed) setMessage(error.message) })
         return () => {
           abort.abort()
-          onboardingListeners.delete(sync)
+          unsubscribe()
         }
       }, [sessionId])
       const profile = !preview?.draftId || preview.draftId === view?.draftId ? preview?.profile : undefined
@@ -457,6 +469,10 @@ window.__ModuleLoader__.load({
         connection = scope.connection
         scope.effect(() => () => { connection = undefined }, 'dsh-qianlai: connection')
       })
+      ctx.inject(['sessions', 'conversation'], scope => {
+        sessions = scope.sessions
+        scope.effect(() => () => { sessions = undefined }, 'dsh-qianlai: onboarding turns')
+      })
       ctx.inject(['theme'], (scope) => {
         theme = scope.theme
         applyLayer()
@@ -488,7 +504,8 @@ window.__ModuleLoader__.load({
         ), 'dsh-qianlai: onboarding tab body')
       })
       registerOnboardingChat(ctx, {
-        jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest, previewOnboardingTax, readOnboardingFile, taxRequest,
+        jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest,
+        sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
         taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })
       ctx.inject(['uiConversation'], scope => {

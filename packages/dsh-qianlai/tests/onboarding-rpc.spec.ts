@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { CompanyOnboarding } from '../src/company-onboarding.js'
-import { registerCompanyOnboarding, type OnboardingHostServices } from '../src/onboarding-rpc.js'
+import { CompanyOnboarding, type OnboardingGuideAction } from '../src/company-onboarding.js'
+import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices } from '../src/onboarding-rpc.js'
 import { BookStore } from '../src/store.js'
 import type { RpcConnection } from '../src/wechat/control.js'
 
@@ -14,13 +14,14 @@ function setup(services: OnboardingHostServices = {}) {
   const onboarding = new CompanyOnboarding(store)
   let handler: Parameters<RpcConnection['fetch']['register']>[0]['fetch']
   const connection: RpcConnection = { fetch: { register(route) { handler = route.fetch; return async () => {} } } }
-  registerCompanyOnboarding(connection, onboarding, {
-    async inspect(id) {
+  const sessions = {
+    async inspect(id: string) {
       return { meta: { agentPreset: id.startsWith('test-zhangjie') ? 'moneycome-zhangjie' : 'default' }, events: [
         { type: 'model/selection', data: { provider: 'synthetic', model: 'vision-fixture' } },
       ] }
     },
-  }, () => services)
+  }
+  registerCompanyOnboarding(connection, onboarding, sessions, () => services)
   async function request(action: string, extra: Record<string, unknown> = {}) {
     const response = await handler(new Request('http://localhost/api/qianlai/company-onboarding', {
       method: 'POST', body: JSON.stringify({
@@ -30,7 +31,14 @@ function setup(services: OnboardingHostServices = {}) {
     }))
     return (await response.json()).result.value
   }
-  return { request, onboarding, store }
+  const card = (action: OnboardingGuideAction = 'continue', fields?: unknown, values?: unknown, mode?: unknown) => {
+    const result = onboarding.guide('test-zhangjie', action, fields, values, mode)
+    if (!result.accepted || !('card' in result) || !result.card) throw Error('Missing onboarding card')
+    return result.card
+  }
+  const submit = ({ id, revision, draftId }: ReturnType<typeof card>, extra: Record<string, unknown>) =>
+    request('submit-card', { cardId: id, revision, draftId, ...extra })
+  return { request, onboarding, store, card, submit, sessions }
 }
 
 describe('company onboarding RPC', () => {
@@ -62,27 +70,32 @@ describe('company onboarding RPC', () => {
   })
 
   it('continues from manual choice to its own company form and preserves a value-free receipt on reopen', async () => {
-    const { request, onboarding, store } = setup()
+    const { request, card, submit, store } = setup()
     expect(store.company()).toBeUndefined()
-    const guide = onboarding.guide('test-zhangjie', 'start')
-    if (!guide.accepted || !('card' in guide) || !guide.card) throw Error('Missing mode card')
-    const { id: cardId, draftId, revision } = guide.card
+    const modeCard = card('start')
+    const { id: cardId, draftId, revision } = modeCard
     await expect(request('submit-card', { sessionId: 'test-zhangjie-2', cardId, draftId, revision, mode: 'manual' }))
       .resolves.toMatchObject({ accepted: false, code: 'CARD_UNAVAILABLE' })
-    const choice = await request('submit-card', { cardId, draftId, revision, mode: 'manual' })
-    expect(choice).toMatchObject({ accepted: true, receipt: { mode: 'manual' }, nextCard: { kind: 'source', documentKind: 'license' } })
-    const source = await request('submit-card', { cardId: choice.nextCard.id, draftId, revision: choice.nextCard.revision, choice: 'manual' })
-    expect(source.nextCard.fields.map((field: { key: string }) => field.key)).toEqual(['companyName', 'taxId', 'establishedOn'])
-    const next = { cardId: source.nextCard.id, draftId, revision: source.nextCard.revision }
-    await expect(request('submit-card', { ...next, values: { startMonth: '2026-11' } }))
+    const choice = await submit(modeCard, { mode: 'manual' })
+    expect(choice).toMatchObject({ accepted: true, receipt: { mode: 'manual' } })
+    expect(choice).not.toHaveProperty('nextCard')
+    const source = card('continue')
+    expect(source).toMatchObject({ kind: 'source', documentKind: 'license' })
+    expect(card('start')).toEqual(source)
+    await submit(source, { choice: 'manual' })
+    const company = card()
+    expect(company).toMatchObject({ kind: 'fields', fields: [
+      expect.objectContaining({ key: 'companyName' }), expect.objectContaining({ key: 'taxId' }), expect.objectContaining({ key: 'establishedOn' }),
+    ] })
+    await expect(submit(company, { values: { startMonth: '2026-11' } }))
       .resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
-    await expect(request('submit-card', { ...next, values: { companyName: '合成资料企业', taxId: '000000000000000033' } }))
-      .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业' } },
-        nextCard: { kind: 'fields', fields: [expect.objectContaining({ key: 'establishedOn' })] } })
-    await expect(request('card-status', { cardId: next.cardId })).resolves.toMatchObject({
-      accepted: true, receipt: { labels: ['企业全称', '统一社会信用代码'] }, nextCard: { kind: 'fields' },
-    })
-    await expect(request('submit-card', { ...next, values: { companyName: '不应覆盖' } }))
+    await expect(submit(company, { values: { companyName: '合成资料企业', taxId: '000000000000000033' } }))
+      .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业' } } })
+    const receipt = await request('card-status', { cardId: company.id })
+    expect(receipt).toMatchObject({ accepted: true, receipt: { labels: ['企业全称', '统一社会信用代码'] } })
+    expect(receipt).not.toHaveProperty('nextCard')
+    expect(card()).toMatchObject({ kind: 'fields', fields: [expect.objectContaining({ key: 'establishedOn' })] })
+    await expect(submit(company, { values: { companyName: '不应覆盖' } }))
       .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业' } } })
     expect(store.company()).toBeUndefined()
   })
@@ -95,72 +108,93 @@ describe('company onboarding RPC', () => {
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     }))
-    const { request, onboarding } = setup({ llm: { prepareCall }, attachments: { async saveImage() { return {} } } })
-    const root = onboarding.guide('test-zhangjie', 'start')
-    if (!root.accepted || !('card' in root) || !root.card) throw Error('Missing mode card')
-    const send = (card: { id: string; revision: number }, extra: Record<string, unknown>) => request('submit-card', {
-      cardId: card.id, revision: card.revision, draftId: root.card!.draftId, ...extra,
-    })
-    const choice = await send(root.card, { mode: 'manual' })
-    const file = await send(choice.nextCard, { choice: 'license' })
-    expect(file.nextCard).toMatchObject({ kind: 'upload', documentKind: 'license' })
+    const { card, submit } = setup({ llm: { prepareCall }, attachments: { async saveImage() { return {} } } })
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { choice: 'license' })
+    const file = card()
+    expect(file).toMatchObject({ kind: 'upload', documentKind: 'license' })
     const document = { name: 'synthetic.png', mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axouYQAAAAASUVORK5CYII=' }
-    const read = await send(file.nextCard, { document })
-    expect(read).toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成执照企业' } },
-      nextCard: { fields: [expect.objectContaining({ key: 'establishedOn' })] } })
-    await send(file.nextCard, { document })
+    const read = await submit(file, { document })
+    expect(read).toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成执照企业' } } })
+    expect(card()).toMatchObject({ fields: [expect.objectContaining({ key: 'establishedOn' })] })
+    await submit(file, { document })
     expect(prepareCall).toHaveBeenCalledTimes(1)
   })
 
   it('starts Beijing scanning with only province and city and continues after the verified profile is applied', async () => {
-    const { request, onboarding } = setup()
-    const root = onboarding.guide('test-zhangjie', 'start')
-    if (!root.accepted || !('card' in root) || !root.card) throw Error('Missing mode card')
-    const { id, draftId, revision } = root.card
-    const selected = await request('submit-card', { cardId: id, draftId, revision, mode: 'scan' })
-    expect(selected.nextCard.kind).toBe('region')
-    const selectedRegion = await request('submit-card', { cardId: selected.nextCard.id, draftId, revision: selected.nextCard.revision,
-      values: { province: '北京市', city: '北京市' } })
-    expect(selectedRegion.nextCard).toMatchObject({ kind: 'tax-scan', province: '北京市', city: '北京市' })
+    const { request, card, submit, onboarding, sessions } = setup()
+    const first = card('start')
+    await submit(first, { mode: 'scan' })
+    const region = card()
+    expect(region.kind).toBe('region')
+    const selectedRegion = await submit(region, { values: { province: '北京市', city: '北京市' } })
+    const scan = card()
+    expect(scan).toMatchObject({ kind: 'tax-scan', province: '北京市', city: '北京市', autoStart: true })
+    expect(card()).toEqual(scan)
+    expect(card('fill', undefined, { province: '北京市', city: '北京市' })).toEqual(scan)
     expect(selectedRegion.view.enterprise.companyName).toBe('')
-    expect(onboarding.applyTaxProfile(draftId, '北京市', '北京市', {
+    const args = { draftId: scan.draftId, cardId: scan.id, revision: scan.revision }
+    await expect(request('claim-tax-auto-start', { ...args, sessionId: 'test-zhangjie-2' })).resolves.toMatchObject({ start: false })
+    await expect(request('claim-tax-auto-start', { ...args, revision: region.revision })).resolves.toMatchObject({ start: false })
+    await expect(request('claim-tax-auto-start', args)).resolves.toMatchObject({ start: true })
+    await expect(request('claim-tax-auto-start', args)).resolves.toMatchObject({ start: false })
+    const access = companyTaxDraftAccess(onboarding, sessions)
+    const target = { sessionId: 'test-zhangjie', draftId: scan.draftId, province: '北京市', city: '北京市', companyName: '', taxId: '' }
+    const signal = new AbortController().signal
+    await expect(access.check(target, signal, region.id)).resolves.toMatchObject({ accepted: false })
+    await expect(access.check(target, signal, scan.id)).resolves.toMatchObject({ accepted: true })
+    await expect(access.apply(target, {
       companyName: '合成税务企业', taxId: '000000000000000055', taxpayerQualification: '小规模纳税人',
       authority: '国家税务总局北京市税务局', obligations: [], obligationCoverage: 'visible_page',
       observedAt: '2026-11-16T08:00:00.000Z', sourceUrl: 'https://example.invalid/synthetic',
-    }, selectedRegion.nextCard.id)).toMatchObject({ accepted: true })
-    await expect(request('card-status', { cardId: selectedRegion.nextCard.id })).resolves.toMatchObject({
+    }, scan.id, signal)).resolves.toMatchObject({ accepted: true })
+    await expect(request('card-status', { cardId: scan.id })).resolves.toMatchObject({
       accepted: true, receipt: { labels: ['已回填官方税务资料'] },
-      nextCard: { kind: 'fields', fields: [expect.objectContaining({ key: 'establishedOn' })] },
       view: { enterprise: { companyName: '合成税务企业', taxId: '000000000000000055' } },
     })
+    expect(card()).toMatchObject({ kind: 'fields', fields: [expect.objectContaining({ key: 'establishedOn' })] })
   })
 
   it('keeps inline company entries while switching between manual entry and scanning', async () => {
-    const { request, onboarding } = setup()
-    const root = onboarding.guide('test-zhangjie', 'start')
-    if (!root.accepted || !('card' in root) || !root.card) throw Error('Missing mode card')
-    const send = (card: { id: string; revision: number }, extra: Record<string, unknown>) => request('submit-card', {
-      cardId: card.id, revision: card.revision, draftId: root.card!.draftId, ...extra,
-    })
-    const started = await send(root.card, { mode: 'manual' })
-    const form = await send(started.nextCard, { choice: 'manual' })
-    expect(form.nextCard.canSwitchToScan).toBe(true)
-    const scan = await send(form.nextCard, { choice: 'scan', values: { companyName: '合成草稿企业' } })
-    expect(scan).toMatchObject({ view: { enterprise: { companyName: '合成草稿企业' } }, nextCard: { kind: 'region' } })
-    const manual = await send(scan.nextCard, { choice: 'manual' })
-    expect(manual).toMatchObject({ view: { enterprise: { companyName: '合成草稿企业' } }, nextCard: { kind: 'fields' } })
-    expect(manual.nextCard.fields.map((field: { key: string }) => field.key)).toEqual(['taxId', 'establishedOn'])
+    const { request, onboarding, card, submit } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { choice: 'manual' })
+    await submit(card(), { values: { companyName: '合成草稿企业' } })
+    const region = card('switch-mode', undefined, undefined, 'scan')
+    expect(region.kind).toBe('region')
+    expect(onboarding.guide('test-zhangjie', 'fill', undefined, { province: '浙江省', city: '北京市' })).toMatchObject({ accepted: false })
+    const scan = card('fill', undefined, { province: '北京市', city: '北京市' })
+    expect(scan).toMatchObject({ kind: 'tax-scan', province: '北京市', city: '北京市', autoStart: true })
+    expect(onboarding.isTaxScanCurrent('test-zhangjie', scan.draftId, scan.id)).toBe(true)
+    const manual = card('switch-mode', undefined, undefined, 'manual')
+    expect(onboarding.isTaxScanCurrent('test-zhangjie', scan.draftId, scan.id)).toBe(false)
+    expect(manual).toMatchObject({ draftId: scan.draftId, kind: 'fields', fields: [
+      expect.objectContaining({ key: 'taxId' }), expect.objectContaining({ key: 'establishedOn' }),
+    ] })
+    await expect(request('status')).resolves.toMatchObject({ mode: 'manual', enterprise: { companyName: '合成草稿企业' } })
+    expect(card('switch-mode', undefined, undefined, 'scan').kind).toBe('region')
+    expect(onboarding.isTaxScanCurrent('test-zhangjie', scan.draftId, scan.id)).toBe(false)
+    expect(card('fill', undefined, { province: '上海市', city: '上海市' })).toMatchObject({ kind: 'region', message: expect.stringContaining('暂未接入') })
+    await expect(request('status')).resolves.toMatchObject({ mode: 'scan' })
+  })
+
+  it('leaves the upload step when the user asks to fill those details directly in chat', async () => {
+    const { request, card, submit } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { choice: 'license' })
+    const upload = card()
+    expect(upload).toMatchObject({ kind: 'upload' })
+    expect(card('switch-mode', undefined, undefined, 'manual')).toMatchObject({ kind: 'fields', title: '补充公司资料' })
+    await expect(request('card-status', { cardId: upload.id })).resolves.toMatchObject({ stale: true })
   })
 
   it('progresses from inline company details to final review and persists a correction before opening the book', async () => {
-    const { request, onboarding, store } = setup()
-    const root = onboarding.guide('test-zhangjie', 'start')
-    if (!root.accepted || !('card' in root) || !root.card) throw Error('Missing mode card')
-    let card = root.card
+    const { card, submit, store } = setup()
+    let active = card('start')
     const send = async (extra: Record<string, unknown>) => {
-      const result = await request('submit-card', { cardId: card.id, revision: card.revision, draftId: card.draftId, ...extra })
+      const result = await submit(active, extra)
       if (!result.accepted) throw Error(JSON.stringify(result))
-      card = result.nextCard
+      if (!result.view.completed) active = card()
       return result
     }
     await send({ mode: 'manual' })
@@ -172,12 +206,12 @@ describe('company onboarding RPC', () => {
     await send({ values: { bankStatus: 'none' } })
     await send({ values: { history: 'new', startMonth: '2026-11' } })
     await send({ values: { payroll: 'none', social: 'none' } })
-    expect(card.kind).toBe('confirm')
+    expect(active.kind).toBe('confirm')
     expect(store.company()).toBeUndefined()
     await send({ choice: 'edit-payroll' })
-    expect(card).toMatchObject({ kind: 'fields', initialValues: { payroll: 'none', social: 'none' } })
+    expect(active).toMatchObject({ kind: 'fields', initialValues: { payroll: 'none', social: 'none' } })
     await send({ values: { social: 'all' } })
-    expect(card.kind).toBe('confirm')
+    expect(active.kind).toBe('confirm')
     expect(store.company()).toBeUndefined()
     expect(await send({ choice: 'confirm' })).toMatchObject({ view: { completed: true, payroll: { social: 'all' } } })
     expect(store.company()).toMatchObject({ name: '合成建档企业' })
