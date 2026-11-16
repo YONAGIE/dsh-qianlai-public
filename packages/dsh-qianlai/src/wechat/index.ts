@@ -40,6 +40,7 @@ interface State {
   ownerUserId?: string
   contextToken?: string
   sessionId?: string
+  workspaceId?: string
   welcomePending?: boolean
   welcomeProgress?: number
   welcomeId?: string
@@ -82,6 +83,11 @@ interface SessionEventLike {
   }
 }
 
+interface WorkspaceRegistry {
+  get(id: string): { sessionIds: readonly string[] } | undefined
+  list(): readonly { id: string; sessionIds: readonly string[] }[]
+}
+
 interface Context {
   effect(fn: () => () => void): void
   on(event: 'session/event', listener: (session: { id: string }, event: SessionEventLike) => void): () => void
@@ -89,7 +95,7 @@ interface Context {
   logger: { info(message: string): void; warn(message: string): void; error(message: string): void }
   sessionController: {
     inspect?(sessionId: string, signal?: AbortSignal): Promise<{ meta: { agentPreset?: string }; events: readonly SessionEventLike[] }>
-    create(request: { agentPreset: string; cwd: string }): Promise<{ sessionId: string }>
+    create(request: { agentPreset: string } & ({ workspaceId: string } | { cwd: string })): Promise<{ sessionId: string }>
     prompt(
       request: { sessionId: string; requestId: string; mode: 'queue'; content: PromptPart[]; clientTimeZone?: string },
       signal: AbortSignal,
@@ -187,6 +193,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   const qrPath = join(stateDir, 'wechat-login.png')
   const workspace = join(stateDir, 'wechat-workspace')
   const agentPreset = config.agentPreset ?? 'moneycome-zhangjie'
+  const workspaces = () => ctx.get('workspaceRegistry') as WorkspaceRegistry | undefined
+  const workspaceOf = (sessionId: string) => workspaces()?.list().find(item => item.sessionIds.includes(sessionId))?.id
   // 收发都记一行到 wechat.log（只记事件与条数，不记消息内容），同时交给 DSH 的 logger。
   const logPath = join(stateDir, 'wechat.log')
   const line = (level: string, message: string) => {
@@ -419,7 +427,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       }, { prepend: true })
 
     const offEvents = ctx.on('session/event', (session, event) => {
-      if (session.id !== state.sessionId) return
+      if (session.id !== state.sessionId) {
+        if (event.type === 'turn/end' && isIntroductionSession(session.id)) setIntroductionSession(session.id, false)
+        return
+      }
       const data = event.data ?? {}
       if (event.type === 'turn/start' && typeof data.turn === 'number') lastTurnStart = data.turn
       const ordinaryMessage = data.source?.kind === 'user' || typeof data.source?.rpcId === 'string'
@@ -464,12 +475,21 @@ export function apply(ctx: Context, config: Config = {}): void {
 
     const ensureSession = async (signal: AbortSignal, fresh = false): Promise<string> => {
       signal.throwIfAborted()
-      if (state.sessionId && !fresh) return state.sessionId
+      const workspaceId = state.workspaceId
+      const registered = workspaceId ? workspaces()?.get(workspaceId) : undefined
+      if (state.sessionId && !fresh && (!registered || registered.sessionIds.includes(state.sessionId))) return state.sessionId
       if (creatingSession) return creatingSession
       const creating = (async () => {
-        mkdirSync(workspace, { recursive: true })
-        const created = await ctx.sessionController.create({ agentPreset, cwd: workspace })
+        if (!registered) mkdirSync(workspace, { recursive: true })
+        const created = await ctx.sessionController.create(registered && workspaceId
+          ? { agentPreset, workspaceId }
+          : { agentPreset, cwd: workspace })
         signal.throwIfAborted()
+        // DSH requires a matching cwd for membership. A previous session with
+        // another cwd stays in history, while this binding uses the new session.
+        pendingRequests.clear()
+        for (const pending of turns.values()) clearInterval(pending.typing)
+        turns.clear()
         state.sessionId = created.sessionId
         save()
         log.info(`moneycome-wechat: session ${created.sessionId}`)
@@ -510,11 +530,20 @@ export function apply(ctx: Context, config: Config = {}): void {
       })).filter(message => message.text).slice(-8)
     const presetOf = (source: { meta: { agentPreset?: string }; events: readonly SessionEventLike[] }) =>
       source.events.filter(event => event.type === 'agent-preset/selected').at(-1)?.data?.agentPreset ?? source.meta.agentPreset
-    const captureDesktop = async (sessionId: string, requestedGeneration: number) => {
+    const captureDesktop = async (sessionId: string, requestedGeneration: number, confirmedScan?: AbortSignal) => {
       if (!ctx.sessionController.inspect || sessionId === state.sessionId) return
       try {
-        const source = await ctx.sessionController.inspect(sessionId, abort.signal)
-        if (presetOf(source) !== agentPreset) return
+        const source = await ctx.sessionController.inspect(sessionId, confirmedScan ?? abort.signal)
+        if (stopped || requestedGeneration !== generation || presetOf(source) !== agentPreset) return
+        const selectedWorkspace = workspaceOf(sessionId)
+        if (selectedWorkspace && selectedWorkspace !== state.workspaceId) {
+          if (!confirmedScan && (state.workspaceId || creatingSession || pendingRequests.size || turns.size || state.desktopHandoff?.phase === 'submitted')) return
+          if (state.desktopHandoff && (state.desktopHandoff.phase === 'submitted' || workspaceOf(state.desktopHandoff.sourceSessionId) !== selectedWorkspace))
+            delete state.desktopHandoff
+          state.workspaceId = selectedWorkspace
+          save()
+        }
+        if (state.workspaceId && selectedWorkspace !== state.workspaceId) return
         const messages = visibleMessages(source.events)
         const latest = source.events.at(-1)?.time
         if (!messages.length || (latest !== undefined && Date.now() - latest > 7 * 86400_000)) return
@@ -797,6 +826,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           state = {
             ...(state.ownerUserId ? { ownerUserId: state.ownerUserId } : {}),
             ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+            ...(state.workspaceId ? { workspaceId: state.workspaceId } : {}),
             ...(state.handledMessages ? { handledMessages: state.handledMessages } : {}),
             ...(state.outbox ? { outbox: state.outbox } : {}),
             ...(state.welcomePending !== undefined ? { welcomePending: state.welcomePending, welcomeProgress: state.welcomeProgress, welcomeId: state.welcomeId } : {}),
@@ -831,7 +861,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       void flushReplies()
     }
 
-    const login = async () => {
+    const login = async (sourceSessionId?: string) => {
       const current = ++generation
       loginAbort?.abort()
       const controller = new AbortController()
@@ -855,6 +885,8 @@ export function apply(ctx: Context, config: Config = {}): void {
               view = { status: 'error', message: '扫码微信与已绑定账户不一致。为保护原账本，请使用原微信重新扫码。' }
               return
             }
+            if (sourceSessionId) await captureDesktop(sourceSessionId, current, controller.signal)
+            if (stopped || current !== generation) return
             state.botToken = status.botToken
             delete state.manuallyDisconnected
             delete state.cursor
@@ -915,14 +947,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
       async run(action, sourceSessionId) {
         if (stopped) return { status: 'error', message: '微信服务已停止，请重新加载插件。' }
-        if (action !== 'status' && sourceSessionId) {
+        if (action === 'status') return snapshot()
+        if (view.status === 'connected' && sourceSessionId) {
           const requestedGeneration = generation
           await captureDesktop(sourceSessionId, requestedGeneration)
           if (stopped || requestedGeneration !== generation) return snapshot()
           if (view.status === 'connected') void onboarding('desktop-request')
         }
-        if (action !== 'status' && view.status !== 'connected' && (!state.botToken || action === 'refresh')) {
-          if (action === 'refresh' || !['loading', 'waiting', 'scanned'].includes(view.status)) void login()
+        if (view.status !== 'connected' && (!state.botToken || action === 'refresh')) {
+          if (action === 'refresh' || !['loading', 'waiting', 'scanned'].includes(view.status)) void login(sourceSessionId)
         }
         return snapshot()
       },
