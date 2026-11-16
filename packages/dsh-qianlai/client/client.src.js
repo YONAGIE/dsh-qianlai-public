@@ -130,6 +130,11 @@ window.__ModuleLoader__.load({
       for (const update of onboardingListeners) update(sessionId, { view })
     }
 
+    function subscribeOnboarding(listener) {
+      onboardingListeners.add(listener)
+      return () => onboardingListeners.delete(listener)
+    }
+
     function previewOnboardingTax(sessionId, profile, draftId) {
       if (profile) onboardingTaxPreviews.set(sessionId, { profile, draftId })
       else onboardingTaxPreviews.delete(sessionId)
@@ -256,13 +261,13 @@ window.__ModuleLoader__.load({
             draft.draftId === previous?.draftId && draft.revision < previous.revision ? previous : draft,
           )
         }
-        onboardingListeners.add(sync)
+        const unsubscribe = subscribeOnboarding(sync)
         void onboardingRequest(sessionId, 'status', {}, AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]))
           .then(draft => { if (!abort.signal.aborted && !changed) sync(sessionId, { view: draft }) })
           .catch(error => { if (!abort.signal.aborted && !changed) setMessage(error.message) })
         return () => {
           abort.abort()
-          onboardingListeners.delete(sync)
+          unsubscribe()
         }
       }, [sessionId])
       const profile = !preview?.draftId || preview.draftId === view?.draftId ? preview?.profile : undefined
@@ -500,7 +505,7 @@ window.__ModuleLoader__.load({
       })
       registerOnboardingChat(ctx, {
         jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest,
-        sendOnboardingReply, previewOnboardingTax, readOnboardingFile, taxRequest,
+        sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
         taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })
       ctx.inject(['uiConversation'], scope => {
