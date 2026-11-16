@@ -206,15 +206,15 @@ describe('company onboarding RPC', () => {
     await send({ values: { bankStatus: 'none' } })
     await send({ values: { history: 'new', startMonth: '2026-11' } })
     await send({ values: { payroll: 'none', social: 'none' } })
-    expect(active.kind).toBe('confirm')
+    expect(active).toMatchObject({ kind: 'confirm', replacesSampleBook: false })
     expect(store.company()).toBeUndefined()
     await send({ choice: 'edit-payroll' })
     expect(active).toMatchObject({ kind: 'fields', initialValues: { payroll: 'none', social: 'none' } })
     await send({ values: { social: 'all' } })
-    expect(active.kind).toBe('confirm')
+    expect(active).toMatchObject({ kind: 'confirm', replacesSampleBook: false })
     expect(store.company()).toBeUndefined()
     expect(await send({ choice: 'confirm' })).toMatchObject({ view: { completed: true, payroll: { social: 'all' } } })
-    expect(store.company()).toMatchObject({ name: '合成建档企业' })
+    expect(store.company()).toMatchObject({ name: '合成建档企业', isSample: false })
   })
 
   it('rejects a card issued before a newer draft revision', async () => {

@@ -33,7 +33,8 @@ try {
     tools: { register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name) } },
     get(name) { if (name === 'approval') return { request: async () => 'allowed-once' } },
   })
-  await ok('open_book', { companyName, accountingStartMonth: period.periodKey, replaceSampleBook: true })
+  assert.equal((await call('book_status', {})).code, 'NO_BOOK')
+  await ok('open_book', { companyName, accountingStartMonth: period.periodKey })
   await ok('set_opening_balances', { balances: [
     { subjectCode: '1002', side: 'debit', amount: '1000.00' },
     { subjectCode: '4001', side: 'credit', amount: '1000.00' },

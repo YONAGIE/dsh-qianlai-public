@@ -1,5 +1,5 @@
 /**
- * 场景剧本。每个场景从一本全新的样本账开始。
+ * 场景剧本。历史场景预置合成样本账，首启引导从空账开始。
  *
  * 每一轮可以核：calls（这一轮必须调到的工具）、noCalls（不许调的）、says / notSays（回复里该有、不该有的话）。
  * 工具规则写工具名，或 {tool, args, unless}：args 要命中参数，unless 命中参数时不算。
@@ -52,6 +52,16 @@ const PERSONA_RECOVERY = {
 const PERSONA_BOOK = [sampleBook, { ...vouchers, equals: 13 }, { ...lines, equals: 0 }, { ...locked, equals: 0 }]
 
 export const scenarios = [
+  {
+    name: 'first-greeting', emptyBook: true,
+    description: '空账首次问候只介绍张姐、实际能做的事和建档入口。',
+    turns: [{ say: '你好', expect: {
+      calls: T('book_status'), noCalls: [T('upcoming'), T('open_book'), T('record_entry')],
+      says: [/张姐/, /发票|票据/, /我要建档/],
+      notSays: /样本账|示例小店|报税|申报|到期|截止/,
+    } }],
+    book: [{ what: '没有自动创建企业', sql: 'SELECT count(*) FROM company', equals: 0 }, { ...vouchers, equals: 0 }],
+  },
   {
     name: 'wechat-qr-current-capability', wechatFixture: 'disconnected',
     description: '#47：登录二维码使用已有专用工具，不因没有通用绘图工具而拒绝；仅 iLink 为合成网络。',

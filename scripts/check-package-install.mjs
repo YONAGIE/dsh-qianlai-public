@@ -62,7 +62,7 @@ const tools = new Map()
 let dispose = () => {}
 try {
   apply({ effect: fn => { dispose = fn() }, tools: { register: tool => { tools.set(tool.name, tool); return () => {} } } })
-  assert.equal((await tools.get('moneycome_book_status').execute({})).isSampleBook, true)
+  assert.equal((await tools.get('moneycome_book_status').execute({})).code, 'NO_BOOK')
   const attachments = join(process.env.DSH_HOME, 'attachments')
   mkdirSync(attachments, { recursive: true })
   for (const extension of ['xls', 'xlsx']) {
@@ -76,7 +76,7 @@ try {
   writeFileSync(path, 'date,amount\\n2026-01-10,10.00')
   assert.equal((await tools.get('moneycome_read_upload').execute({ path })).accepted, true)
   assert.equal(typeof wechat.apply, 'function')
-  console.log(JSON.stringify({ installedTools: tools.size, sampleBook: true, csv: true, xls: true, xlsx: true, wechatImport: true }))
+  console.log(JSON.stringify({ installedTools: tools.size, emptyBook: true, csv: true, xls: true, xlsx: true, wechatImport: true }))
 } finally { dispose() }
 `)
   const result = execFileSync(process.execPath, ['probe.mjs'], { cwd: root, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 })

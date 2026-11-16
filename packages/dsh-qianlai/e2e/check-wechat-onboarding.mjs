@@ -8,6 +8,8 @@ import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { seedSyntheticBook } from './sample-book-fixture.mjs'
+
 if (!process.env.DEEPSEEK_API_KEY || !process.env.DSH_ENTRY) throw Error('Supply DEEPSEEK_API_KEY and DSH_ENTRY; calls the real model.')
 const plugin = fileURLToPath(new URL('../', import.meta.url))
 const cli = resolve(process.env.DSH_ENTRY), node = process.env.DSH_BIN ?? process.execPath
@@ -71,6 +73,7 @@ try {
     const dir = join(root, `${run}-${requireContext ? 'context-required' : 'context-free'}`), home = join(dir, 'home')
     const stateDir = join(home, 'moneycome'), delivery = join(dir, 'delivery.json'), preload = join(dir, 'synthetic-ilink.mjs')
     mkdirSync(stateDir, { recursive: true }); writeFileSync(delivery, '[]')
+    seedSyntheticBook(home)
     writeFileSync(preload, `
 import {readFileSync,writeFileSync,renameSync} from 'node:fs'
 const original=globalThis.fetch;let incoming,sequence=0,hello=false

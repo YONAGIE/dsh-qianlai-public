@@ -22,7 +22,7 @@ import { checkInvoice, type InvoiceReading } from './invoices.js'
 import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessions } from './onboarding-rpc.js'
 import { loadPack } from './pack.js'
 import { hasFullAccess, type PermissionPresets } from './permissions.js'
-import { refuse } from './period.js'
+import { refuse, todayInChina } from './period.js'
 import {
   createPdfReferences,
   type PdfReferenceApproval as Approval,
@@ -33,7 +33,6 @@ import {
 } from './referenced-pdf.js'
 import { balanceTransferItems, readProfit, readStatements } from './reports.js'
 import { exportReviewPack } from './review-pack.js'
-import { seedSampleBook } from './sample-book.js'
 import { importStatement, readUpload, renameBankAccount, unrecordedStatementLines, type ImportStatementInput } from './statements.js'
 import { BookStore } from './store.js'
 import { registerTaxOnboarding } from './tax-onboarding.js'
@@ -132,7 +131,6 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())
-    seedSampleBook(store, pack, new Date())
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
     const stopObserving = ctx.on?.('session/event', (session, event) => pdfReferences.observe(session, event))
     const stopQuestionGuard = ctx.tools.guard?.((execution) => {
@@ -302,13 +300,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_book_status',
-        '看账本现状：北京时间的当前业务日期（businessDate）、哪家公司、是不是样本账、从哪个月开始记、期初余额录了没有、导过流水的银行账户、记到哪个月、哪些月已结账、核过还没记账的发票、还没记账的流水笔数，以及 10 天内到期还没办的事（dueSoon，有就顺带提醒老板一句）。每次会话开头先调一次；老板问“账记到哪了”“还有什么没弄”也用它。它不给金额：问余额用 moneycome_read_balances，问利润用 moneycome_read_profit。',
+        '查看北京时间业务日（businessDate）、建档状态和账本进度。首次单纯问候时，只用结果判断是否引导建档，不主动播报账本信息或申报期限。处理账务或老板问账务进度时用于核对公司、期初、已记和已结月份、待记发票与流水。问余额用 moneycome_read_balances，问利润用 moneycome_read_profit，问申报或结账期限用 moneycome_upcoming。',
         {},
         [],
         () => {
-          const status = bookStatus(store, { pack, now: new Date() })
+          const status = bookStatus(store)
           const onboarding = onboardingBookStatus(store)
-          return status.accepted && onboarding ? { ...status, onboarding } : status
+          return { ...status, businessDate: todayInChina(new Date()), ...(onboarding ? { onboarding } : {}) }
         },
       ),
       tool(

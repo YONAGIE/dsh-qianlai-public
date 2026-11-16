@@ -1,10 +1,12 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { readBalances } from '../src/balances.js'
+import { openBook } from '../src/book.js'
+import { CompanyOnboarding } from '../src/company-onboarding.js'
 import { apply } from '../src/index.js'
 import { loadPack } from '../src/pack.js'
 import { SAMPLE_COMPANY, seedSampleBook } from '../src/sample-book.js'
@@ -73,38 +75,87 @@ describe('查余额', () => {
 })
 
 describe('插件入口', () => {
-  it('注册查余额工具，账本落在给定路径，卸载时关闭', async () => {
-    const registered: { name: string; execute(args: Record<string, unknown>): Promise<unknown> }[] = []
-    let disposer: (() => void) | undefined
+  type Tool = Parameters<Parameters<typeof apply>[0]['tools']['register']>[0]
+  const cleanups: (() => void)[] = []
+  afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup() })
+
+  function location() {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-qianlai-'))
+    cleanups.push(() => rmSync(directory, { recursive: true, force: true }))
+    return join(directory, 'book.sqlite')
+  }
+
+  function activate(bookPath: string) {
+    const registered: Tool[] = []
+    let dispose = () => {}
     let unregistered = 0
-    const ctx = {
-      effect(fn: () => () => void) {
-        disposer = fn()
-      },
+    apply({
+      effect(fn) { dispose = fn() },
       tools: {
-        register(tool: (typeof registered)[number]) {
+        register(tool) {
           registered.push(tool)
-          return () => {
-            unregistered++
-          }
+          return () => { unregistered++ }
         },
       },
-    }
-    const bookPath = join(mkdtempSync(join(tmpdir(), 'dsh-qianlai-')), 'book.sqlite')
-    apply(ctx as never, { bookPath })
+    }, { bookPath })
+    const stop = () => { dispose(); dispose = () => {} }
+    cleanups.push(stop)
+    const call = (name: string, args: Record<string, unknown> = {}) =>
+      registered.find(tool => tool.name === name)!.execute(args)
+    return { registered, call, stop, unregistered: () => unregistered }
+  }
+
+  it('注册工具和空库，冷启动与重启都不创建样本账', async () => {
+    const bookPath = location()
+    const { registered, call, stop, unregistered } = activate(bookPath)
     expect(registered.map((t) => t.name)).toContain('moneycome_read_balances')
     expect(registered.every((t) => t.name.startsWith('moneycome_'))).toBe(true)
-    const balances = registered.find((t) => t.name === 'moneycome_read_balances')!
-    await expect(balances.execute({ periodKey: '2026-02' })).resolves.toMatchObject({
+    await expect(call('moneycome_book_status')).resolves.toMatchObject({
+      accepted: false, code: 'NO_BOOK', businessDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+    })
+    await expect(call('moneycome_read_balances', { periodKey: '2026-02' }))
+      .resolves.toMatchObject({ accepted: false, code: 'NO_BOOK' })
+    stop()
+    expect(unregistered()).toBe(registered.length)
+    const reopened = new BookStore(bookPath)
+    try {
+      expect(reopened.company()).toBeUndefined()
+      expect(reopened.postedPeriods()).toEqual([])
+      const wizard = new CompanyOnboarding(reopened)
+      expect(wizard.setMode(wizard.status().revision, 'manual')).toMatchObject({ accepted: true })
+    } finally { reopened.close() }
+    await expect(activate(bookPath).call('moneycome_book_status')).resolves.toMatchObject({
+      accepted: false, code: 'NO_BOOK', onboarding: { completed: false, step: 1 },
+    })
+  })
+
+  it('升级后旧样本账仍可按原数据查询', async () => {
+    const bookPath = location()
+    const previous = new BookStore(bookPath)
+    try { seedSampleBook(previous, loadPack(), NOW) } finally { previous.close() }
+    const { call } = activate(bookPath)
+    await expect(call('moneycome_read_balances', { periodKey: '2026-02' })).resolves.toMatchObject({
       accepted: true,
       isSampleBook: true,
       bookedThrough: '2026-03',
     })
-    disposer!()
-    expect(unregistered).toBe(registered.length)
-    const reopened = new BookStore(bookPath)
-    expect(reopened.postedPeriods()).toHaveLength(3)
-    reopened.close()
+  })
+
+  it('升级后保留正式账本，期限仍可通过专用工具查询', async () => {
+    const bookPath = location()
+    const previous = new BookStore(bookPath)
+    try {
+      expect(openBook(previous, { companyName: '合成正式账本企业', accountingStartMonth: '2026-01' }))
+        .toMatchObject({ accepted: true })
+      previous.setOpeningBalances([], NOW)
+    } finally { previous.close() }
+    const { call } = activate(bookPath)
+    const status = await call('moneycome_book_status')
+    expect(status).toMatchObject({ accepted: true, company: '合成正式账本企业', isSampleBook: false, openingBalancesEntered: true })
+    expect(status).not.toHaveProperty('dueSoon')
+    await expect(call('moneycome_upcoming')).resolves.toMatchObject({
+      accepted: true, items: expect.arrayContaining([expect.objectContaining({ dueDate: expect.any(String) })]),
+    })
   })
 })
 
