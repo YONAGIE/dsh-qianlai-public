@@ -30,7 +30,9 @@ export DEEPSEEK_API_KEY=your-key
 dsh --profile web
 ```
 
-Open the printed URL, pick **钱来张姐** in the mode picker and click **开始建档** (Start setup). Review company details, the bookkeeping month, and payroll and social insurance arrangements before confirming. You can enter data yourself or review fields recognized by the current model. Save and collapse the card to resume later. Confirm before replacing the first-run sample ledger. If you have prior books, continue with the opening balances after setup.
+Open the printed URL and pick **钱来张姐** in the mode picker. On the first greeting, Zhangjie introduces the workflow. Send **我要建档** (Set up my company), then choose tax QR login or manual entry in the conversation. The right-hand **企业建档** tab shows company details, the bookkeeping month, payroll and social insurance, and final review.
+
+Fill missing fields in the chat card or edit the form on the right. Both paths save to the same draft. Switching modes saves the draft, and tax records appear in the form for review. Confirm before replacing the first-run sample ledger. If you have prior books, continue with the opening balances after setup.
 
 For Beijing, select **北京市** in both region fields and open the official QR page. For Zhejiang, select a city served by the provincial tax bureau. After signing in with the e-tax app, confirm the company, return to DSH, and read and review the tax information before applying it to the draft.
 
