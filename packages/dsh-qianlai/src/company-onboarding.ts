@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { openBook } from './book.js'
+import { availableFields, fieldPatch, type FormField } from './onboarding-fields.js'
 import { isCalendarDate, PERIOD_KEY, previousPeriod, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore } from './store.js'
 import regions from './tax-regions.json' with { type: 'json' }
@@ -69,6 +70,7 @@ export interface OnboardingRecord {
   revision: number
   step: Step
   mode?: OnboardingMode
+  cards?: StoredCard[]
   enterprise?: Enterprise
   accounting?: Accounting
   payroll?: Payroll
@@ -77,7 +79,7 @@ export interface OnboardingRecord {
 
 type NextAction = 'review-book-periods' | 'opening-balances' | 'bookkeeping'
 
-export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise'> {
+export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards'> {
   accepted: true
   completed: boolean
   replacesSampleBook: boolean
@@ -85,6 +87,16 @@ export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise'> {
   nextAction?: NextAction
   handoffWarning?: string
 }
+
+interface CardBase {
+  id: string
+  draftId: string
+  revision: number
+}
+
+type OnboardingCard = CardBase & ({ kind: 'mode' } | { kind: 'fields'; fields: FormField[] })
+interface CardReceipt { labels: string[]; mode?: OnboardingMode }
+interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt }
 
 const TAX_ID = /^[0-9A-Z]{18}$/
 const cities: Readonly<Record<string, readonly string[]>> = regions
@@ -313,9 +325,13 @@ export class CompanyOnboarding {
   }
 
   private view(record: OnboardingRecord): OnboardingView {
-    const { enterprise, ...state } = record
+    const { enterprise, draftId, revision, step, mode, accounting, payroll, completedAt } = record
     const view: OnboardingView = {
-      accepted: true, ...state, completed: !!record.completedAt,
+      accepted: true, draftId, revision, step, completed: !!completedAt,
+      ...(mode ? { mode } : {}),
+      ...(accounting ? { accounting } : {}),
+      ...(payroll ? { payroll } : {}),
+      ...(completedAt ? { completedAt } : {}),
       replacesSampleBook: this.store.company()?.isSample === true,
       ...(enterprise ? {
         enterprise: {
@@ -350,6 +366,88 @@ export class CompanyOnboarding {
         this.store.saveCompanyOnboarding(record)
       }
       return this.view(record)
+    })
+  }
+
+  private stepValues(record: OnboardingRecord): Record<string, unknown> {
+    return { ...({ 1: record.enterprise, 2: record.accounting, 3: record.payroll, 4: undefined }[record.step]) }
+  }
+
+  /** Save only missing fields. Existing data, including account details, stays in the draft. */
+  private saveFields(record: OnboardingRecord, fields: readonly FormField[], values: unknown): OnboardingView | Refusal {
+    if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请在右侧核对资料。')
+    let patch: Record<string, unknown>
+    try {
+      patch = fieldPatch(fields, object(values), todayInChina(this.now()))
+      if (!Object.keys(patch).length) throw Error('请先填写一项资料。')
+    } catch (error) {
+      return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
+    }
+    return this.save(record.step, record.revision, { ...this.stepValues(record), ...patch }, false)
+  }
+
+  guide(sessionId: string, action: 'start' | 'continue' | 'fill', fields?: unknown, values?: unknown) {
+    return this.store.transaction(() => {
+      let record = this.record()
+      if (record.completedAt) return { accepted: true as const, completed: true }
+      if (action === 'fill') {
+        if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请在右侧修改或确认建档资料。')
+        const saved = this.saveFields(record, availableFields(record.step, this.stepValues(record)), values)
+        if (!saved.accepted) return saved
+        record = this.record()
+      }
+      const requested = Array.isArray(fields) ? fields : []
+      const candidates = record.step < 4 ? availableFields(record.step as EditableStep, this.stepValues(record)) : []
+      const scanKeys = ['companyName', 'taxId', 'taxRegion']
+      const scanFields = record.step === 1 && record.mode === 'scan' ? candidates.filter(field => scanKeys.includes(field.key)) : []
+      const nextFields = (requested.length ? candidates.filter(field => requested.includes(field.key)) : scanFields.length ? scanFields : candidates).slice(0, 3)
+      const kind = action === 'start' || !record.mode ? 'mode' : 'fields'
+      const result = { accepted: true as const, step: record.step, ...(record.mode ? { mode: record.mode } : {}) }
+      const current = record.cards?.find(item => item.sessionId === sessionId && !item.receipt &&
+        item.card.revision === record.revision && item.card.kind === kind &&
+        (item.card.kind === 'mode' || item.card.fields.map(field => field.key).join() === nextFields.map(field => field.key).join()))
+      if (current) return { ...result, card: current.card }
+      const base = { id: randomUUID(), draftId: record.draftId, revision: record.revision }
+      const card: OnboardingCard = kind === 'mode' ? { ...base, kind } : { ...base, kind, fields: nextFields }
+      record.cards = [...(record.cards ?? []).filter(item => item.receipt || item.card.revision === record.revision), { sessionId, card }]
+      this.store.saveCompanyOnboarding(record)
+      return { ...result, card }
+    })
+  }
+
+  cardStatus(sessionId: string, cardId: string) {
+    const record = this.store.companyOnboarding()
+    const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
+    if (item?.receipt) return { accepted: true as const, receipt: item.receipt }
+    if (!item || !record || record.revision !== item.card.revision || record.completedAt)
+      return { accepted: true as const, stale: true }
+    return { accepted: true as const, stale: false, view: this.view(record) }
+  }
+
+  submitCard(sessionId: string, cardId: string, revision: number, choice: unknown, values: unknown) {
+    return this.store.transaction(() => {
+      const record = this.record()
+      const item = record.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
+      if (!item || item.card.revision !== revision) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
+      if (item.receipt) return { accepted: true as const, receipt: item.receipt, view: this.view(record) }
+      if (record.completedAt || revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请在右侧查看或让张姐重新出卡。')
+      let saved: OnboardingView | Refusal
+      let receipt: CardReceipt
+      if (item.card.kind === 'mode') {
+        if (choice !== 'scan' && choice !== 'manual') return refuse('DRAFT_INPUT_INVALID', '请选择建档方式。')
+        saved = this.setMode(revision, choice)
+        receipt = { labels: ['建档方式'], mode: choice }
+      } else {
+        saved = this.saveFields(record, item.card.fields, values)
+        if (!saved.accepted) return saved
+        receipt = { labels: item.card.fields.filter(field => Object.hasOwn(values as object, field.key)).map(field => field.label) }
+      }
+      if (!saved.accepted) return saved
+      const updated = this.record()
+      const stored = updated.cards!.find(candidate => candidate.card.id === cardId)!
+      stored.receipt = receipt
+      this.store.saveCompanyOnboarding(updated)
+      return { accepted: true as const, receipt, view: saved }
     })
   }
 

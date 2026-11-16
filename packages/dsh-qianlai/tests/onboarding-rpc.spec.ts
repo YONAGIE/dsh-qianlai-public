@@ -16,7 +16,7 @@ function setup(services: OnboardingHostServices = {}) {
   const connection: RpcConnection = { fetch: { register(route) { handler = route.fetch; return async () => {} } } }
   registerCompanyOnboarding(connection, onboarding, {
     async inspect(id) {
-      return { meta: { agentPreset: id === 'test-zhangjie' ? 'moneycome-zhangjie' : 'default' }, events: [
+      return { meta: { agentPreset: id.startsWith('test-zhangjie') ? 'moneycome-zhangjie' : 'default' }, events: [
         { type: 'model/selection', data: { provider: 'synthetic', model: 'vision-fixture' } },
       ] }
     },
@@ -30,7 +30,7 @@ function setup(services: OnboardingHostServices = {}) {
     }))
     return (await response.json()).result.value
   }
-  return { request }
+  return { request, onboarding, store }
 }
 
 describe('company onboarding RPC', () => {
@@ -59,5 +59,43 @@ describe('company onboarding RPC', () => {
     expect(result).toEqual({ accepted: true, fields: { companyName: '虚构示例企业', establishedOn: '2024-05-10' } })
     expect(prepareCall).toHaveBeenCalledWith({ provider: 'synthetic', model: 'vision-fixture', maxTokens: 2048 }, expect.any(AbortSignal))
     expect(await request('status')).toEqual(before)
+  })
+
+  it('opens a scoped choice card and saves fields directly with a value-free receipt', async () => {
+    const { request, onboarding, store } = setup()
+    expect(store.company()).toBeUndefined()
+    const guide = onboarding.guide('test-zhangjie', 'start')
+    if (!guide.accepted || !('card' in guide) || !guide.card) throw Error('Missing mode card')
+    const { id: cardId, draftId, revision } = guide.card
+    await expect(request('submit-card', { sessionId: 'test-zhangjie-2', cardId, draftId, revision, mode: 'scan' }))
+      .resolves.toMatchObject({ accepted: false, code: 'CARD_UNAVAILABLE' })
+    await expect(request('submit-card', { cardId, draftId, revision, mode: 'scan' }))
+      .resolves.toMatchObject({ accepted: true, receipt: { mode: 'scan' }, view: { draftId, mode: 'scan' } })
+    const fields = onboarding.guide('test-zhangjie', 'continue')
+    if (!fields.accepted || !('card' in fields) || fields.card?.kind !== 'fields') throw Error('Missing fields card')
+    expect(fields.card.fields.map(field => field.key)).toEqual(['companyName', 'taxId', 'taxRegion'])
+    const next = { cardId: fields.card.id, draftId, revision: fields.card.revision }
+    await expect(request('submit-card', { ...next, values: { startMonth: '2026-11' } }))
+      .resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    await expect(request('submit-card', { ...next, values: { companyName: '合成资料企业', taxId: '000000000000000033', taxRegion: '北京市|北京市' } }))
+      .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业', province: '北京市', city: '北京市' } } })
+    await expect(request('card-status', { cardId: next.cardId })).resolves.toEqual({
+      accepted: true, receipt: { labels: ['企业全称', '统一社会信用代码', '税务地区'] },
+    })
+    await expect(request('submit-card', { ...next, values: { companyName: '不应覆盖' } }))
+      .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业' } } })
+    expect(store.company()).toBeUndefined()
+  })
+
+  it('rejects a card issued before a newer draft revision', async () => {
+    const { request, onboarding } = setup()
+    const initial = await request('status')
+    const { draftId } = initial
+    const manual = await request('set-mode', { draftId, revision: initial.revision, mode: 'manual' })
+    const draft = await request('save', { draftId, revision: manual.revision, step: 1, advance: false, input: { companyName: '第二家合成资料企业' } })
+    const guide = onboarding.guide('test-zhangjie', 'continue', ['taxId'])
+    if (!guide.accepted || !('card' in guide) || !guide.card) throw Error('Missing fields card')
+    await request('set-mode', { draftId, revision: draft.revision, mode: 'scan' })
+    await expect(request('card-status', { cardId: guide.card.id })).resolves.toMatchObject({ stale: true })
   })
 })
