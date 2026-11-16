@@ -1,13 +1,18 @@
+import { setTimeout as pause } from 'node:timers/promises'
+
 import type { BrowserContext, Frame, Page } from 'playwright-core'
 
+import { isCalendarDate } from './period.js'
 import type { TaxPortal } from './tax-portals.js'
 
 const QUERY_TITLES = ['纳税人信息查询', '纳税人信息']
+const QUERY_PATH = ['纳税人信息查询', '一户式查询', '我要查询']
 const TAX_TABS = ['税费种认定信息', '税（费）种认定信息', '税(费)种认定信息']
 const LABELS = {
   companyName: ['纳税人名称', '企业名称'],
   taxId: ['统一社会信用代码', '纳税人识别号', '统一社会信用代码/纳税人识别号'],
   authority: ['主管税务机关', '主管税务机关名称'],
+  establishedOn: ['成立日期', '企业成立日期', '成立时间'],
   registrationStatus: ['税务登记状态', '登记状态'],
   registrationDate: ['税务登记日期', '登记日期'],
   taxpayerStatus: ['纳税人状态'],
@@ -36,6 +41,7 @@ type Obligation = {
 
 export interface TaxProfile extends TaxSubject {
   authority: string
+  establishedOn?: string
   registrationStatus?: string
   registrationDate?: string
   taxpayerStatus?: string
@@ -60,13 +66,13 @@ function officialUrl(site: TaxPortal, text: string, includeLogin: boolean) {
   return url
 }
 
-async function waitFor<T>(read: () => Promise<T | undefined>, signal: AbortSignal, timeout: number) {
+async function waitFor<T>(read: () => Promise<T | undefined>, signal: AbortSignal, timeout: number, interval = 180) {
   const end = Date.now() + timeout
   do {
     signal.throwIfAborted()
     const value = await read()
     if (value !== undefined) return value
-    await new Promise(resolve => setTimeout(resolve, 180))
+    await pause(interval, undefined, { signal })
   } while (Date.now() < end)
   signal.throwIfAborted()
 }
@@ -142,8 +148,9 @@ function requireSubject(site: TaxPortal, data: TaxPageData, expected: TaxSubject
   if (!officialUrl(site, data.url, false) || !data.headings.some(label => QUERY_TITLES.some(title => normal(title) === normal(label)))) throw unrecognized()
   const companyName = readFact(data, LABELS.companyName)
   const taxId = readFact(data, LABELS.taxId)
-  if (!companyName || !taxId) throw unrecognized()
-  if (normal(companyName) !== normal(expected.companyName) || identityId(taxId) !== identityId(expected.taxId))
+  if (!companyName || !taxId || !/^[0-9A-Z]{18}$/.test(identityId(taxId))) throw unrecognized()
+  if ((expected.companyName && normal(companyName) !== normal(expected.companyName)) ||
+      (expected.taxId && identityId(taxId) !== identityId(expected.taxId)))
     throw new TaxPortalError('TAX_IDENTITY_MISMATCH', '税务局当前企业与建档企业不一致。请切换到对应企业后重试。')
   const authority = readFact(data, LABELS.authority)
   if (!authority || !site.acceptsAuthority(authority) || !/(?:税务局|税务分局|税务所|税务机关)/.test(authority))
@@ -195,6 +202,14 @@ export function parseTaxProfile(
   const profile: TaxProfile = {
     ...subject, obligations, obligationCoverage: 'visible_page',
     observedAt: now.toISOString(), sourceUrl: url.origin + url.pathname,
+  }
+  const establishment = readFact(basic, LABELS.establishedOn)
+  if (establishment) {
+    const date = establishment.normalize('NFKC').replace(/\s/g, '').match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/)
+    if (date) {
+      const establishedOn = `${date[1]}-${date[2]!.padStart(2, '0')}-${date[3]!.padStart(2, '0')}`
+      if (isCalendarDate(establishedOn)) profile.establishedOn = establishedOn
+    }
   }
   for (const name of ['registrationStatus', 'registrationDate', 'taxpayerStatus', 'taxpayerQualification'] as const) {
     const value = readFact(basic, LABELS[name])
@@ -252,43 +267,75 @@ async function querySurface(site: TaxPortal, page: Page, signal: AbortSignal) {
   for (const frame of page.frames()) {
     signal.throwIfAborted()
     const data = await capture(site, frame)
-    if (data?.headings.some(title => QUERY_TITLES.some(known => normal(known) === normal(title))) && data.facts.length) return { frame, data }
+    if (!data?.headings.some(title => QUERY_TITLES.some(known => normal(known) === normal(title)))) continue
+    const labels = data.facts.map(([label]) => label && normal(label))
+    if (LABELS.companyName.some(label => labels.includes(normal(label))) && LABELS.taxId.some(label => labels.includes(normal(label))))
+      return { frame, data }
   }
+}
+
+/** Wait for the user to finish their own sign-in and choose an enterprise. */
+export async function waitForTaxPortalLogin(site: TaxPortal, login: Page, signal: AbortSignal): Promise<Page> {
+  const context = login.context()
+  const ready = await waitFor(async () => {
+    for (const candidate of context.pages()) {
+      signal.throwIfAborted()
+      if (candidate.isClosed() || !officialUrl(site, candidate.url(), false)) continue
+      if (await querySurface(site, candidate, signal) && officialUrl(site, candidate.url(), false)) return candidate
+      for (const frame of candidate.frames()) {
+        signal.throwIfAborted()
+        if (!officialUrl(site, frame.url(), false)) continue
+        const signedIn = await frame.getByText(/^(?:身份切换|切换身份|退出登录|安全退出|退出)$/)
+          .filter({ visible: true }).count().catch(() => 0)
+        if (!signedIn) continue
+        const signedOut = await frame.getByText(/^登\s*录$/).filter({ visible: true }).count().catch(() => 0)
+        const query = await frame.getByText(/^(?:我要查询|一户式查询|纳税人信息查询)$/)
+          .filter({ visible: true }).count().catch(() => 0)
+        if (!signedOut && query && officialUrl(site, candidate.url(), false)) return candidate
+      }
+    }
+  }, signal, 15 * 60_000, 850)
+  if (!ready) throw new TaxPortalError('TAX_LOGIN_PENDING', '未能确认已进入企业业务，请重新扫码并选择企业。')
+  return ready
 }
 
 async function clickQueryLabel(site: TaxPortal, page: Page, label: string, signal: AbortSignal) {
   signal.throwIfAborted()
+  if (!officialUrl(site, page.url(), false)) return false
   for (const frame of page.frames()) {
     if (!officialUrl(site, frame.url(), false)) continue
     const locator = frame.getByText(label, { exact: true }).filter({ visible: true })
-    if (await locator.count() !== 1) continue
-    await locator.click({ timeout: 1800 }).catch(() => {})
-    return
+    if (await locator.count().catch(() => 0) !== 1 || !officialUrl(site, frame.url(), false)) continue
+    signal.throwIfAborted()
+    if (await locator.click({ timeout: 1500 }).then(() => true, () => false)) return true
   }
+  return false
 }
 
 export async function readTaxProfile(site: TaxPortal, page: Page, expected: TaxSubject, signal: AbortSignal): Promise<TaxProfile> {
   signal.throwIfAborted()
   const context = page.context()
-  const pages = [...new Set([page, ...context.pages().reverse()])]
+  const officialPages = () => [...new Set([page, ...context.pages().reverse()])]
     .filter(candidate => !candidate.isClosed() && officialUrl(site, candidate.url(), false))
-  let portal = pages[0]
-  if (!portal) throw new TaxPortalError('TAX_LOGIN_PENDING', '请先在浏览器里扫码并完成企业身份确认。')
-  let surface: Awaited<ReturnType<typeof querySurface>>
-  for (const candidate of pages) {
-    surface = await querySurface(site, candidate, signal)
-    if (surface) { portal = candidate; break }
-  }
-  if (!surface) {
-    for (const label of ['我要查询', '一户式查询', '纳税人信息查询']) await clickQueryLabel(site, portal, label, signal)
-    surface = await waitFor(() => querySurface(site, portal, signal), signal, 4000)
-  }
-  if (!surface) {
-    if (context.pages().some(item => officialUrl(site, item.url(), true)?.origin === site.loginOrigin))
-      throw new TaxPortalError('TAX_LOGIN_PENDING', '请先在浏览器里扫码并完成企业身份确认，再打开纳税人信息查询。')
-    throw unrecognized()
-  }
-  const { data: basic, frame } = surface
+  const clicked = new Set<string>()
+  const query = await waitFor(async () => {
+    const candidates = officialPages()
+    if (!candidates.length) throw new TaxPortalError('TAX_LOGIN_PENDING', '请先在浏览器里扫码并完成企业身份确认。')
+    for (const candidate of candidates) {
+      const surface = await querySurface(site, candidate, signal)
+      if (surface && officialUrl(site, candidate.url(), false)) return { portal: candidate, ...surface }
+    }
+    for (const label of QUERY_PATH) {
+      if (clicked.has(label)) continue
+      const [portal] = candidates
+      if (portal && await clickQueryLabel(site, portal, label, signal)) {
+        clicked.add(label)
+        break
+      }
+    }
+  }, signal, 8000, 250)
+  if (!query) throw unrecognized()
+  const { portal, data: basic, frame } = query
   requireSubject(site, basic, expected)
   if (recognizedTable(basic) || basic.emptyRecognitions) return parseTaxProfile(site, basic, basic, expected, new Date())
   for (const label of TAX_TABS) {
