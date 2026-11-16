@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const suite = JSON.parse(readFileSync(join(here, 'cases.json'), 'utf8'))
@@ -149,6 +149,14 @@ async function runOne(item, variant, repeat, config) {
   const result = { variant: variant.id, personaSourceCommit: variant.sourceCommit, caseId: item.id, repeat, modelRequested: suite.model, turns: [], environment: null, bookChecks: [], manualReview: 'pending', error: null }
   let child, log = ''
   try {
+    if (!config.environmentOnly) {
+      // Keep the archived prompts and expected figures independent of the plugin's startup defaults.
+      const [{ BookStore }, { loadPack }, { seedSampleBook }] = await Promise.all(['store', 'pack', 'sample-book']
+        .map(name => import(pathToFileURL(join(config.plugin, 'lib', name + '.js')).href)))
+      const store = new BookStore(join(home, 'moneycome', 'book.sqlite'))
+      try { assert.equal(seedSampleBook(store, loadPack(), new Date()), true) }
+      finally { store.close() }
+    }
     const installed = spawnSync(config.node, [...prefix, 'plugin', '--profile', 'web', 'add', 'link:' + config.plugin], { cwd: workspace, env, encoding: 'utf8', windowsHide: true, timeout: 180000, maxBuffer: 4 * 1024 * 1024 })
     if (installed.status !== 0) throw Error('插件安装失败：' + clean((installed.stderr || installed.stdout || '').slice(-1600)))
     // JSON 是合法 YAML；只替换现有 preset 和模型配置，不增删宿主组件。

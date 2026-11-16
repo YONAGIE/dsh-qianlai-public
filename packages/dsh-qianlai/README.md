@@ -30,11 +30,11 @@ export DEEPSEEK_API_KEY=your-key
 dsh --profile web
 ```
 
-Open the printed URL and pick **钱来张姐** in the mode picker. On the first greeting, Zhangjie introduces the workflow. Send **我要建档** (Set up my company), then choose tax QR login or manual entry in the conversation. The right-hand **企业建档** tab shows company details, the bookkeeping month, payroll and social insurance, and final review.
+Open the printed URL and pick **钱来张姐** in the mode picker. A fresh data directory starts with an empty book. On the first greeting, Zhangjie introduces her capabilities and invites you to set up the company. Send **我要建档** (Set up my company), then choose tax QR login or manual entry in the conversation. The right-hand **企业建档** tab shows company details, the bookkeeping month, payroll and social insurance, and final review.
 
 With manual entry, your choice appears in the original conversation. Zhangjie asks in a new reply whether to upload a business license or enter company details. After an upload, recognized fields appear in the draft on the right, and Zhangjie asks for any missing details in the next turn. Submitting a form updates the draft and continues the conversation.
 
-Choose a setup method at the start. To switch later, ask Zhangjie in chat to use manual entry or tax QR login. Your draft carries over. Confirm before replacing the first-run sample ledger. If you have prior books, continue with the opening balances after setup.
+Choose a setup method at the start. To switch later, ask Zhangjie in chat to use manual entry or tax QR login. Your draft carries over. Company setup opens the real book when you confirm. Existing sample books from older versions still require your consent before replacement. If you have prior books, continue with the opening balances after setup.
 
 After you select tax QR login, Zhangjie asks for the province and city or district in a new reply. Choose **北京市** in both fields for Beijing or a city served by the Zhejiang provincial tax bureau. Confirming the region automatically opens the official QR page. You can supply the company name and unified social credit code through the scan. For Ningbo and other regions, upload an export or screenshot from the local official portal.
 

@@ -288,7 +288,7 @@ export function checkOnboardingBookOpen(store: BookStore, companyName: string, t
   const code = draft.enterprise.taxId
   const sameCode = TAX_ID.test(code) && code === taxId?.normalize('NFKC').replace(/\s+/g, '').toUpperCase()
   if (sameName || sameCode) {
-    return refuse('ONBOARDING_IN_PROGRESS', '这家企业已有建档草稿。请用对话头部的「开始建档」继续核对，再确认建档。', { step: draft.step })
+    return refuse('ONBOARDING_IN_PROGRESS', '这家企业已有建档草稿。请在对话里说「继续建档」，核对资料后再确认。', { step: draft.step })
   }
 }
 
@@ -299,7 +299,7 @@ export function onboardingBookStatus(store: BookStore) {
   if (!record.completedAt || !record.accounting) return {
     completed: false as const,
     step: record.step,
-    guidance: '企业建档资料已保存。请用对话头部的「开始建档」继续当前步骤。',
+    guidance: '企业建档资料已保存。在对话里说「继续建档」即可回到当前步骤。',
   }
   const { accounting, enterprise, payroll } = record
   const nextAction = handoffAction(store, accounting)
