@@ -2,7 +2,7 @@
 
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset,
-  openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply,
+  openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, subscribeOnboarding,
   readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
 }) {
   const kind = 'moneycome-onboarding-card'
@@ -312,6 +312,7 @@ export function registerOnboardingChat(ctx, {
     const [statusAttempt, setStatusAttempt] = useState(0)
     const [error, setError] = useState('')
     const [saving, setSaving] = useState(false)
+    const [obsoleteScan, setObsoleteScan] = useState(false)
     const [pendingReply, setPendingReply] = useState('')
     const submitting = useRef(false)
     const sending = useRef(false)
@@ -331,6 +332,12 @@ export function registerOnboardingChat(ctx, {
       })
       return () => { active = false }
     }, [sessionId, cardId, statusAttempt])
+    useEffect(() => {
+      if (card.kind !== 'tax-scan') return
+      return subscribeOnboarding?.((source, { view }) => {
+        if (source === sessionId && view?.draftId === draftId && view.revision > revision) setObsoleteScan(true)
+      })
+    }, [sessionId, draftId, revision, card.kind])
 
     async function openDraft(options) {
       try {
@@ -426,7 +433,7 @@ export function registerOnboardingChat(ctx, {
           children: receipt.notice ?? (mode ? '已选择' + mode : choice ?? (labels.length ? '已保存 ' + labels.join('、') : '资料已保存。')) }),
         pendingReply ? jsx('div', { style: actions, children: button('重试发送到对话', () => void sendReply(pendingReply), saving) }) : null,
       ]
-    } else if (status?.stale) {
+    } else if (status?.stale || obsoleteScan) {
       body = [
         jsx('p', { style: { ...secondary, margin: '7px 0 0' }, children: '建档进度已更新，请在右侧查看当前资料。' }),
         jsx('div', { style: actions, children: button('查看建档表单', () => void openDraft()) }),

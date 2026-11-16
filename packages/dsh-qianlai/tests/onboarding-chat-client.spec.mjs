@@ -375,6 +375,28 @@ describe('建档对话卡', () => {
     active.remount()
   })
 
+  it('切换方式后，历史扫码卡不再显示重新打开入口', async () => {
+    const scan = next(3, { kind: 'tax-scan', province: '北京市', city: '北京市' })
+    const view = { draftId, revision: scan.revision, mode: 'scan' }
+    let update
+    const unsubscribe = vi.fn()
+    const active = client(vi.fn(async () => ({ accepted: true, view })), undefined, {
+      subscribeOnboarding: listener => { update = listener; return unsubscribe },
+      taxRequest: vi.fn(async () => ({ phase: 'failed', message: '官方登录窗口已关闭。' })),
+    })
+    active.render(scan)
+    await settle()
+    active.render(scan)
+    await settle()
+    expect(find(active.render(scan), named('重新打开扫码页'))).toBeDefined()
+    update('another-session', { view: { ...view, mode: 'manual', revision: view.revision + 1 } })
+    expect(find(active.render(scan), named('重新打开扫码页'))).toBeDefined()
+    update(sessionId, { view: { ...view, mode: 'manual', revision: view.revision + 1 } })
+    expect(find(active.render(scan), named('重新打开扫码页'))).toBeUndefined()
+    active.remount()
+    expect(unsubscribe).toHaveBeenCalledOnce()
+  })
+
   it('核对页可以从对话发起定向更正，表单保留已填值供核对', async () => {
     const confirm = next(2, { kind: 'confirm', replacesSampleBook: true })
     const revise = next(3, {
