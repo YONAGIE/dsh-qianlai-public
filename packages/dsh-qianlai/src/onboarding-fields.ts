@@ -4,7 +4,7 @@ import { taxPortalFor, taxScanCities } from './tax-portals.js'
 export interface FormField {
   readonly key: string
   readonly label: string
-  readonly type: 'text' | 'date' | 'month' | 'select'
+  readonly type: 'text' | 'date' | 'month' | 'select' | 'multi'
   readonly maxLength?: number
   readonly options?: readonly { value: string; label: string }[]
 }
@@ -19,6 +19,11 @@ const input = (key: string, label: string, maxLength: number, type: FormField['t
 const regionOptions = Object.entries(taxScanCities()).flatMap(([province, cities]) => cities.map(city =>
   [province + '|' + city, province === city ? city : province + ' ' + city]))
 
+const business = { ...selection('business', '企业实际开展的业务', {
+  goods: '买卖商品或有库存', production: '生产或加工产品',
+  'cross-border': '有境外客户、供应商或外币收付款', 'multiple-entities': '有分公司或多个经营主体', none: '以上都没有',
+}), type: 'multi' as const }
+
 export const onboardingFields = {
   1: [
     input('companyName', '企业全称', 200), input('taxId', '统一社会信用代码', 18),
@@ -26,7 +31,7 @@ export const onboardingFields = {
     selection('taxRegion', '税务地区', Object.fromEntries(regionOptions)),
     input('taxAuthority', '主管税务机关', 200), input('taxStatus', '税务状态', 60),
     selection('taxpayerIdentity', '纳税人类型', { 'small-scale': '小规模纳税人', general: '一般纳税人', unknown: '待核实' }),
-    selection('bankStatus', '银行账户情况', { provided: '有银行账户', none: '没有银行账户', pending: '账户资料待补' }),
+    business, selection('bankStatus', '银行账户情况', { provided: '有银行账户', none: '没有银行账户', pending: '账户资料待补' }),
   ],
   2: [
     selection('history', '旧账情况', { previous: '已有旧账', unrecorded: '成立后未记账', new: '刚成立' }),
@@ -44,7 +49,7 @@ export function availableFields(step: 1 | 2 | 3, current: Record<string, unknown
     if (key === 'lastMonth') return current.history === 'previous' && !current.lastMonth
     if (key === 'payday') return current.payroll === 'scheduled' && !current.payday
     if (key === 'taxRegion') return !current.province || !current.city
-    if (key === 'taxpayerIdentity') return !current.taxpayerIdentity || current.taxpayerIdentity === 'unknown'
+    if (key === 'business') return !Array.isArray(current.business) || !current.business.length
     return !current[key]
   })
 }
@@ -53,7 +58,15 @@ export function fieldPatch(fields: readonly FormField[], values: Record<string, 
   const patch: Record<string, unknown> = {}
   for (const [key, raw] of Object.entries(values)) {
     const field = fields.find(candidate => candidate.key === key)
-    if (!field || typeof raw !== 'string' || !raw.trim() || /\p{Cc}|\p{Cf}/u.test(raw)) throw Error('请按当前表单填写资料。')
+    if (!field) throw Error('请按当前表单填写资料。')
+    if (field.type === 'multi') {
+      if (!Array.isArray(raw) || !raw.length || raw.length > (field.options?.length ?? 0) ||
+          raw.some(value => !field.options?.some(option => option.value === value)) ||
+          (raw.includes('none') && raw.length > 1)) throw Error(`请核对${field.label}。`)
+      patch[key] = [...new Set(raw)]
+      continue
+    }
+    if (typeof raw !== 'string' || !raw.trim() || /\p{Cc}|\p{Cf}/u.test(raw)) throw Error('请按当前表单填写资料。')
     const value = raw.trim()
     if ((field.maxLength && value.length > field.maxLength)
         || (field.options && !field.options.some(option => option.value === value))

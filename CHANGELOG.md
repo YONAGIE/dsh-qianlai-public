@@ -2,18 +2,18 @@
 
 ## Unreleased
 
-- Introduce Zhangjie and guide first-time users into onboarding from their chat.
+- Introduce Zhangjie when first-time users greet her and let them choose tax QR login or manual company setup in chat.
 
 - Use DSH’s right-hand tool panel for the onboarding draft, updating it after chat-form submissions and showing tax scan results for review.
 
-- Save onboarding choices and small field forms directly to the current draft with a reviewable chat receipt.
+- Offer license or tax-document upload and short forms in chat. Show only the fields needed for the current step and save submissions to the current draft with a chat receipt.
 
-- Cancel obsolete onboarding tax scans and only apply verified results to the current draft.
+- Cancel obsolete tax scans when switching setup methods. Verify the selected enterprise, source page and current draft before applying reviewed tax details.
 
 - Keep the selected onboarding method in the draft so switching between manual entry and scanning preserves the current stage.
 
 - Set up Zhangjie's company in four guided stages. Enter or recognize company documents, review the tax portal result, set the bookkeeping month and payroll arrangements, and confirm handoff to the local ledger. Resume saved drafts when reopening a conversation.
-- Open the official Beijing or Zhejiang enterprise tax QR login from Zhangjie onboarding, then review and apply the selected enterprise's tax information. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable.
+- Open the official Beijing or Zhejiang tax QR page as soon as the user confirms the region in chat. Detect enterprise login and read the visible tax details automatically after the user selects the company. Preview the results before saving them. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable. Real enterprise account validation is pending.
 - Disconnect WeChat from the connection dialog and scan a new code when reconnecting. Keep the original owner and conversation available after restart.
 - Use the current business date for missing bank statement reminders during an open month. Check complete coverage when closing that month.
 - Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post.

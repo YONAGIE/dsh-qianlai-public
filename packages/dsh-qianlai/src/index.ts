@@ -256,7 +256,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 在对话中给出扫码建档和手动填写选择。continue 只展示本步待补字段或打开右侧表单。fill 仅保存从老板本轮明确提供的内容或实际读到的材料中确认的空白字段，返回下一步卡片。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 给出扫码或手填方式卡，continue 在当前对话给出下一步。选项、上传、补填和确认由卡片连续引导，右侧显示资料和进度。fill 仅保存从老板本轮明确提供的内容或实际读到的材料中确认的空白字段。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
         {
           action: { type: 'string', enum: ['start', 'continue', 'fill'] },
           fields: { type: 'array', items: { type: 'string' }, description: '可选的本轮缺项键。省略时自动给出当前缺项，最多三项。' },

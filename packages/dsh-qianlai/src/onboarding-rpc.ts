@@ -69,8 +69,8 @@ export function companyTaxDraftAccess(onboarding: CompanyOnboarding, sessions?: 
   function currentTarget(target: TaxOnboardingTarget) {
     const view = onboarding.status()
     const enterprise = view.enterprise
-    if (view.draftId !== target.draftId || view.completed || view.mode === 'manual' ||
-        enterprise?.companyName !== target.companyName || enterprise.taxId !== target.taxId ||
+    if (view.draftId !== target.draftId || view.completed || view.mode === 'manual' || !enterprise ||
+        enterprise.companyName !== target.companyName || enterprise.taxId !== target.taxId ||
         enterprise.province !== target.province || enterprise.city !== target.city)
       return refuse('ONBOARDING_CHANGED', '企业资料已更新，请回到当前建档，核对后重新扫码。')
     return { accepted: true as const }
@@ -82,11 +82,11 @@ export function companyTaxDraftAccess(onboarding: CompanyOnboarding, sessions?: 
       signal.throwIfAborted()
       return currentTarget(target)
     },
-    async apply(target, profile, signal) {
+    async apply(target, profile, flowId, signal) {
       if (!await inspectZhangjie(sessions, target.sessionId, signal)) return refuse('ONBOARDING_SESSION', '请在钱来张姐对话中继续建档。')
       signal.throwIfAborted()
       const current = currentTarget(target)
-      return current.accepted ? onboarding.applyTaxProfile(target.draftId, target.province, target.city, profile) : current
+      return current.accepted ? onboarding.applyTaxProfile(target.draftId, target.province, target.city, profile, flowId) : current
     },
   }
 }
@@ -121,8 +121,25 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
           return reply(onboarding.save(step, revision, payload.input, payload.advance !== false))
         if (action === 'set-mode' && (payload.mode === 'scan' || payload.mode === 'manual'))
           return reply(onboarding.setMode(revision, payload.mode))
-        if (action === 'submit-card' && typeof sessionId === 'string' && typeof payload.cardId === 'string')
-          return reply(onboarding.submitCard(sessionId, payload.cardId, revision, payload.mode, payload.values))
+        if (action === 'submit-card' && typeof sessionId === 'string' && typeof payload.cardId === 'string') {
+          const choice = payload.mode ?? payload.choice
+          if (payload.document !== undefined) {
+            const current = onboarding.cardStatus(sessionId, payload.cardId)
+            if ('receipt' in current && current.receipt) return reply(current)
+            const kind = onboarding.uploadKind(sessionId, payload.cardId, revision)
+            if (!kind) return reply(refuse('CARD_UNAVAILABLE', '请用当前上传卡片继续。'))
+            if (recognizing) return reply(refuse('DOCUMENT_IN_PROGRESS', '上一份资料还在识别，请稍候。'))
+            recognizing = true
+            try {
+              const services = getServices()
+              const result = await recognizeCompanyDocument(services, sessionId, modelOf(session, services), kind, payload.document, signal)
+              signal.throwIfAborted()
+              if (!result.accepted) return reply(result)
+              return reply(onboarding.submitCard(sessionId, payload.cardId, revision, undefined, undefined, false, result.fields))
+            } finally { recognizing = false }
+          }
+          return reply(onboarding.submitCard(sessionId, payload.cardId, revision, choice, payload.values, payload.replaceSampleBook === true))
+        }
         if (action === 'confirm') return reply(onboarding.confirm(revision, payload.replaceSampleBook === true))
         if (action === 'recognize' && typeof sessionId === 'string') {
           if (view.completed || revision !== view.revision) return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请核对后再上传。'))
