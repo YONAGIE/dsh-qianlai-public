@@ -4,6 +4,8 @@
 
 - Introduce Zhangjie when first-time users greet her and let them choose tax QR login or manual company setup in chat.
 
+- Continue company setup in a new reply after each chat card submission. Show the method picker at the start and accept later switches by chat while preserving the draft. Open the official QR page automatically after confirming a supported region.
+
 - Use DSH’s right-hand tool panel for the onboarding draft, updating it after chat-form submissions and showing tax scan results for review.
 
 - Offer license or tax-document upload and short forms in chat. Show only the fields needed for the current step and save submissions to the current draft with a chat receipt.

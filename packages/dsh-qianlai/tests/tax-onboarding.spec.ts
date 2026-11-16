@@ -174,6 +174,33 @@ it.each(['status', 'start'])('切回手填后的 %s 会关闭旧窗口，迟到�
   } finally { unregister() }
 })
 
+it('聊天切换建档方式后，即使原卡片停止轮询也会关闭旧扫码页', async () => {
+  vi.useFakeTimers()
+  const login = deferred<Page>()
+  const browser = { close: vi.fn(async () => {}), on: vi.fn(), newContext: vi.fn(async () => ({})) }
+  vi.mocked(openTaxBrowser).mockResolvedValue(browser as never)
+  vi.mocked(openTaxPortalLogin).mockResolvedValue({} as never)
+  vi.mocked(waitForTaxPortalLogin).mockReturnValueOnce(login.promise)
+  const isCurrent = vi.fn(() => true)
+  const { call, id, unregister } = fixture({ check: () => ({ accepted: true }), isCurrent, apply: vi.fn() })
+  try {
+    expect(await call('start', beijing)).toMatchObject({ value: { phase: 'opening' } })
+    // Simulate a natural-language method change without a browser status RPC.
+    isCurrent.mockReturnValue(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(isCurrent).toHaveBeenCalledWith(expect.objectContaining(beijing), id)
+    expect(browser.close).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(waitForTaxPortalLogin).mock.calls[0]?.[2].aborted).toBe(true)
+    login.resolve({} as Page)
+    await Promise.resolve()
+    expect(readTaxProfile).not.toHaveBeenCalled()
+    expect(await call('status')).toMatchObject({ value: { phase: 'failed', message: expect.stringContaining('切换') } })
+  } finally {
+    unregister()
+    vi.useRealTimers()
+  }
+})
+
 it.each(['cancel', 'timeout'])('%s 后停止等待登录，迟到的授权页面无法触发取数', async action => {
   vi.useFakeTimers()
   const login = deferred<Page>()
