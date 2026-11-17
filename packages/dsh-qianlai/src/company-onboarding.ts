@@ -11,6 +11,7 @@ import { taxPortalFor } from './tax-portals.js'
 type Step = 1 | 2 | 3 | 4
 type EditableStep = Exclude<Step, 4>
 export type OnboardingMode = 'scan' | 'manual'
+type DocumentKind = 'license' | 'tax'
 type TaxpayerIdentity = 'small-scale' | 'general' | 'unknown'
 type Business = 'goods' | 'production' | 'cross-border' | 'multiple-entities' | 'none'
 type BankStatus = 'provided' | 'none' | 'pending'
@@ -71,8 +72,6 @@ export interface OnboardingRecord {
   revision: number
   step: Step
   mode?: OnboardingMode
-  companyEntry?: 'upload' | 'manual'
-  taxEntry?: 'upload' | 'manual'
   taxFlowId?: string
   cards?: StoredCard[]
   enterprise?: Enterprise
@@ -83,7 +82,7 @@ export interface OnboardingRecord {
 
 type NextAction = 'review-book-periods' | 'opening-balances' | 'bookkeeping'
 
-export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'companyEntry' | 'taxEntry' | 'taxFlowId'> {
+export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'taxFlowId'> {
   accepted: true
   completed: boolean
   replacesSampleBook: boolean
@@ -98,9 +97,17 @@ interface CardBase {
   revision: number
 }
 
+interface DocumentCard {
+  kind: 'document'
+  documentKind: DocumentKind
+  fields: FormField[]
+  initialValues?: Record<string, unknown>
+}
+
 type CardContent = (
   | { kind: 'mode' | 'region' | 'bank' | 'bank-next' }
   | { kind: 'source' | 'upload'; documentKind: 'license' | 'tax' }
+  | DocumentCard
   | { kind: 'fields'; fields: FormField[]; step?: EditableStep; initialValues?: Record<string, unknown> }
   | { kind: 'tax-scan'; province: string; city: string; autoStart?: true }
   | { kind: 'confirm'; replacesSampleBook: boolean }
@@ -109,7 +116,10 @@ type CardContent = (
 type OnboardingCard = CardBase & CardContent
 interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
 interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; autoStartClaimed?: true }
-export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'switch-mode'
+export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode'
+
+const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
+const taxDocumentKeys = ['taxpayerIdentity', 'taxAuthority', 'taxStatus']
 
 const TAX_ID = /^[0-9A-Z]{18}$/
 const cities: Readonly<Record<string, readonly string[]>> = regions
@@ -485,6 +495,39 @@ export class CompanyOnboarding {
     return { kind: 'fields', title: { 1: '更正企业资料', 2: '更正记账准备', 3: '更正工资社保' }[step], step, fields, initialValues }
   }
 
+  private documentCard(record: OnboardingRecord): DocumentCard | undefined {
+    if (record.step !== 1 || !record.mode || (record.mode === 'scan' && !record.enterprise?.officialTax)) return
+    const fields = availableFields(1, this.stepValues(record))
+    const company = fields.filter(field => companyDocumentKeys.includes(field.key))
+    if (company.length) return { kind: 'document', documentKind: 'license', fields: company }
+    if (!record.enterprise?.taxpayerIdentity)
+      return { kind: 'document', documentKind: 'tax', fields: fields.filter(field => taxDocumentKeys.includes(field.key)) }
+  }
+
+  private documentPreview(record: OnboardingRecord, card: DocumentCard, values: Record<string, unknown>) {
+    const { enterprise } = record
+    const { companyName, taxId } = values
+    const normalizedTaxId = typeof taxId === 'string' ? taxId.trim().toUpperCase() : ''
+    if ((typeof companyName === 'string' && enterprise?.companyName &&
+        normalizeCompanyName(companyName) !== normalizeCompanyName(enterprise.companyName)) ||
+        (TAX_ID.test(normalizedTaxId) && enterprise?.taxId && normalizedTaxId !== enterprise.taxId))
+      return refuse('DOCUMENT_SUBJECT_MISMATCH', '资料中的企业名称或信用代码与建档草稿不一致。请核对企业后再继续。')
+
+    const fields: Record<string, unknown> = {}
+    const today = todayInChina(this.now())
+    for (const field of card.fields) {
+      if (!Object.hasOwn(values, field.key)) continue
+      try {
+        Object.assign(fields, fieldPatch([field], { [field.key]: values[field.key] }, today))
+      } catch {
+        // An unreadable field stays empty so the user can fill it in.
+      }
+    }
+    if (!Object.keys(fields).length)
+      return refuse('DOCUMENT_EMPTY', '没有读到可核对的缺项。可以换一份清晰资料，或直接在卡片上填写。')
+    return { accepted: true as const, fields }
+  }
+
   private nextCard(record: OnboardingRecord): CardContent | undefined {
     if (record.completedAt) return undefined
     if (!record.mode) return { kind: 'mode' }
@@ -497,18 +540,9 @@ export class CompanyOnboarding {
       return { kind: 'tax-scan', province: enterprise.province, city: enterprise.city }
     }
     if (record.step === 1) {
+      const document = this.documentCard(record)
+      if (document) return document
       const fields = availableFields(1, this.stepValues(record))
-      const company = fields.filter(field => ['companyName', 'taxId', 'establishedOn'].includes(field.key))
-      if (company.length) {
-        if (!record.companyEntry && !enterprise?.officialTax) return { kind: 'source', documentKind: 'license' }
-        if (record.companyEntry === 'upload') return { kind: 'upload', documentKind: 'license' }
-        return { kind: 'fields', title: '补充公司资料', fields: company }
-      }
-      if (!enterprise?.taxpayerIdentity) {
-        if (!record.taxEntry && !enterprise?.officialTax) return { kind: 'source', documentKind: 'tax' }
-        if (record.taxEntry === 'upload') return { kind: 'upload', documentKind: 'tax' }
-        return { kind: 'fields', title: '补充税务资料', fields: fields.filter(field => ['taxpayerIdentity', 'taxAuthority', 'taxStatus'].includes(field.key)) }
-      }
       const error = validateEnterprise(enterprise, today)
       if (error?.code === 'ENTERPRISE_UNSUPPORTED') return { kind: 'blocked', message: error.message }
       if (fields.some(field => field.key === 'business')) return { kind: 'fields', title: '确认实际经营', fields: fields.filter(field => field.key === 'business') }
@@ -589,7 +623,7 @@ export class CompanyOnboarding {
     return { ...saved, content }
   }
 
-  guide(sessionId: string, action: OnboardingGuideAction, fields?: unknown, values?: unknown, mode?: unknown) {
+  guide(sessionId: string, action: OnboardingGuideAction, fields?: unknown, values?: unknown, mode?: unknown, documentKind?: unknown) {
     return this.store.transaction(() => {
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
@@ -597,22 +631,24 @@ export class CompanyOnboarding {
       if (action === 'switch-mode') {
         if (mode !== 'scan' && mode !== 'manual') return refuse('DRAFT_INPUT_INVALID', '请指定改用扫码建档或手动填写。')
         const changed = record.mode !== mode
-        const active = this.activeCard(record, sessionId)?.card
-        if (mode === 'manual' && !changed && active?.kind === 'upload') {
-          record[active.documentKind === 'license' ? 'companyEntry' : 'taxEntry'] = 'manual'
-          record.revision++
-          this.store.saveCompanyOnboarding(record)
-        }
         const saved = this.setMode(record.revision, mode)
         if (!saved.accepted) return saved
         record = this.record()
         if (changed && mode === 'scan' && !record.enterprise?.officialTax) content = { kind: 'region' }
       }
       const before = this.activeCard(record, sessionId)?.card
-      const suppliedRegion = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
-      const repeatedRegion = before?.kind === 'tax-scan' && Object.keys(suppliedRegion).length === 2 &&
-        suppliedRegion.province === before.province && suppliedRegion.city === before.city
-      if (action === 'fill' && repeatedRegion) {
+      const supplied = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
+      const repeatedRegion = before?.kind === 'tax-scan' && Object.keys(supplied).length === 2 &&
+        supplied.province === before.province && supplied.city === before.city
+      const document = this.documentCard(record)
+      if (action === 'review-document' || (action === 'fill' && document)) {
+        if (!document || (action === 'review-document' && documentKind !== document.documentKind))
+          return refuse('DOCUMENT_STEP', '请先完成当前建档步骤，再核对这份资料。')
+        const reviewed = this.documentPreview(record, document, supplied)
+        if (!reviewed.accepted) return reviewed
+        const earlier = before?.kind === 'document' && before.documentKind === document.documentKind ? before.initialValues : undefined
+        content = { ...document, initialValues: { ...earlier, ...reviewed.fields } }
+      } else if (action === 'fill' && repeatedRegion) {
         content = this.cardContent(before)
       } else if (action === 'fill' && record.mode === 'scan' && (before?.kind === 'region' ||
         (!before && this.nextCard(record)?.kind === 'region'))) {
@@ -622,6 +658,8 @@ export class CompanyOnboarding {
         content = saved.content
       } else if (action === 'fill') {
         if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请通过对话里的确认卡继续。')
+        if (!record.mode || (record.mode === 'scan' && !record.enterprise?.officialTax))
+          return refuse('DOCUMENT_STEP', '请先选择建档方式，或完成当前扫码步骤。')
         const saved = this.saveFields(record, availableFields(record.step, this.stepValues(record)), values)
         if (!saved.accepted) return saved
         record = this.record()
@@ -629,10 +667,13 @@ export class CompanyOnboarding {
       const requested = Array.isArray(fields) ? fields : []
       const known = record.step < 4 ? availableFields(record.step as EditableStep, this.stepValues(record))
         .filter(field => requested.includes(field.key)).slice(0, 3) : []
-      const active = this.activeCard(record, sessionId)?.card
+      const stored = this.activeCard(record, sessionId)?.card
+      const active = stored?.kind === 'source' || stored?.kind === 'upload' ? undefined : stored
+      content ??= !active ? this.documentCard(record) : undefined
       content ??= !active && known.length && record.mode === 'manual' ? { kind: 'fields', fields: known } : undefined
       if (!active) content ??= this.nextCard(record)
       const card = content ? this.issueCard(sessionId, content) : active
+      const needsDocumentConfirmation = card?.kind === 'document' && Boolean(card.initialValues)
       const latest = this.record()
       const { enterprise, accounting, payroll } = latest
       const draftSummary = {
@@ -645,7 +686,8 @@ export class CompanyOnboarding {
         ...(accounting ? { accounting } : {}),
         ...(payroll ? { payroll } : {}),
       }
-      return { accepted: true as const, step: latest.step, ...(latest.mode ? { mode: latest.mode } : {}), draftSummary, ...(card ? { card } : {}) }
+      return { accepted: true as const, step: latest.step, ...(latest.mode ? { mode: latest.mode } : {}), draftSummary,
+        ...(card ? { card } : {}), ...(needsDocumentConfirmation ? { needsDocumentConfirmation } : {}) }
     })
   }
 
@@ -677,20 +719,29 @@ export class CompanyOnboarding {
       if (item.receipt) return this.cardResult(record, item)
       if (item.card.kind === 'tax-scan' && record.taxFlowId === cardId)
         return this.transition(sessionId, cardId, { labels: ['已回填官方税务资料'] }, () => this.nextCard(this.record()))
-      if (record.completedAt || this.activeCard(record, sessionId)?.card.id !== cardId)
+      if (record.completedAt || item.card.kind === 'source' || item.card.kind === 'upload' || this.activeCard(record, sessionId)?.card.id !== cardId)
         return { accepted: true as const, stale: true }
       return this.cardResult(record, item)
     })
   }
 
-  uploadKind(sessionId: string, cardId: string, revision: number) {
-    const record = this.store.companyOnboarding()
-    const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
-    return record && item && (item.card.kind === 'source' || item.card.kind === 'upload') && !record.completedAt && item.card.revision === revision &&
-      this.activeCard(record, sessionId)?.card.id === cardId ? item.card.documentKind : undefined
+  private activeDocumentCard(record: OnboardingRecord, sessionId: string, cardId: string, revision: number) {
+    const card = this.activeCard(record, sessionId)?.card
+    return !record.completedAt && card?.kind === 'document' && card.id === cardId && card.revision === revision ? card : undefined
   }
 
-  submitCard(sessionId: string, cardId: string, revision: number, choice: unknown, values: unknown, replaceSampleBook = false, recognized?: Record<string, unknown>) {
+  documentKindForCard(sessionId: string, cardId: string, revision: number) {
+    return this.activeDocumentCard(this.record(), sessionId, cardId, revision)?.documentKind
+  }
+
+  previewDocumentCard(sessionId: string, cardId: string, revision: number, fields: Record<string, unknown>) {
+    const record = this.record()
+    const card = this.activeDocumentCard(record, sessionId, cardId, revision)
+    return card ? this.documentPreview(record, card, fields)
+      : refuse('CARD_UNAVAILABLE', '建档资料已更新，请继续建档后重新识别。')
+  }
+
+  submitCard(sessionId: string, cardId: string, revision: number, choice: unknown, values: unknown, replaceSampleBook = false) {
     return this.store.transaction(() => {
       const record = this.record()
       const item = record.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
@@ -708,34 +759,15 @@ export class CompanyOnboarding {
         return saved.accepted ? next({ labels: ['建档方式'], mode: choice },
           choice === 'scan' && !record.enterprise?.officialTax ? { kind: 'region' } : undefined) : saved
       }
-      if (card.kind === 'source' || card.kind === 'upload') {
-        if (!recognized && choice !== 'manual' && !(card.kind === 'source' && choice === 'license')) return invalid()
-        if (recognized) {
-          if ((typeof recognized.companyName === 'string' && record.enterprise?.companyName &&
-              normalizeCompanyName(recognized.companyName) !== normalizeCompanyName(record.enterprise.companyName)) ||
-              (typeof recognized.taxId === 'string' && record.enterprise?.taxId && recognized.taxId !== record.enterprise.taxId))
-            return refuse('DOCUMENT_SUBJECT_MISMATCH', '识别出的企业与当前建档资料不一致。请选择这家企业的材料。')
-          const fields = availableFields(1, this.stepValues(record)).filter(field => field.key !== 'taxRegion')
-          const picked = Object.fromEntries(fields.filter(field => Object.hasOwn(recognized, field.key))
-            .map(field => [field.key, recognized[field.key]]))
-          if (!Object.keys(picked).length)
-            return refuse('DOCUMENT_EMPTY', '没有识别到可填的缺项。请换一张清晰资料，或选择自己填写。')
-          const saved = this.saveFields(record, fields, picked)
-          if (!saved.accepted) return saved
-        }
-        const updated = this.record()
-        updated[card.documentKind === 'license' ? 'companyEntry' : 'taxEntry'] = choice === 'license' ? 'upload' : 'manual'
-        updated.revision++
-        this.store.saveCompanyOnboarding(updated)
-        return next({ labels: [recognized ? '已识别并保存资料' : '资料提供方式'], ...(typeof choice === 'string' ? { choice } : {}) })
-      }
+      if (card.kind === 'source' || card.kind === 'upload')
+        return refuse('CARD_UNAVAILABLE', '这张建档卡已更新，请按最新资料继续建档。')
       if (card.kind === 'region') {
         const saved = this.saveTaxRegion(record, values)
         if (!saved.accepted) return saved
         return next({ labels: ['税务地区'], ...(saved.content.message ? { notice: saved.content.message } : {}) }, saved.content)
       }
-      if (card.kind === 'fields') {
-        const saved = this.saveFields(record, card.fields, values, card.step)
+      if (card.kind === 'fields' || card.kind === 'document') {
+        const saved = this.saveFields(record, card.fields, values, card.kind === 'document' ? 1 : card.step)
         if (!saved.accepted) return saved
         return next({ labels: card.fields.filter(field => Object.hasOwn(values as object, field.key)).map(field => field.label) })
       }

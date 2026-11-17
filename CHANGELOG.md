@@ -12,9 +12,7 @@
 
 - Show editable draft fields directly in DSH’s right-hand panel. Keep unsaved input while chat updates the other fields and show conflicting changes before saving. Lay out short fields side by side when the card is wide enough.
 
-- Offer license or tax-document upload and short forms in chat. Show only the fields needed for the current step and save submissions to the current draft with a chat receipt.
-
-- Open the file chooser directly from the chat upload button. Refresh the onboarding panel after recognition and let users edit sections of the same draft there. Use the latest saved details when the chat continues.
+- Combine typing, file selection, and dropping a license or tax document on one chat card. Preview extracted fields on the card and update the draft after confirmation. Documents sent in chat also get a review card.
 
 - Cancel obsolete tax scans when switching setup methods. Verify the selected enterprise, source page and current draft before applying reviewed tax details.
 

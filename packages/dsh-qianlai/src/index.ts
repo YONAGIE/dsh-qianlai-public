@@ -254,19 +254,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和下一步卡片，按本轮结果继续。资料来源卡的上传按钮在当前聊天，点击直接选文件。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。fill 只保存从老板本轮明确提供的内容或实际读到的材料中确认的缺项。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和下一步卡片。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认，不能声称已保存。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。其他步骤的 fill 只保存老板明确提供的缺项。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
         {
-          action: { type: 'string', enum: ['start', 'continue', 'fill', 'switch-mode'] },
+          action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode'] },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
+          documentKind: { type: 'string', enum: ['license', 'tax'], description: '仅 review-document 使用。license 为营业执照，tax 为税务资料。' },
           fields: { type: 'array', items: { type: 'string' }, description: '可选的本轮缺项键。省略时自动给出当前缺项，最多三项。' },
-          values: stringMap('fill 可用的已知字段。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。企业：companyName、taxId、establishedOn、taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus、bankStatus（provided / none / pending）。记账：history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）。工资：payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+          values: stringMap('fill 或 review-document 可用的已知字段。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。其他：bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
         },
         ['action'],
         (args, _signal, execution) => {
           const sessionId = execution?.agent?.session.id
           if (!sessionId || isWechatSession(sessionId) || isIntroductionSession(sessionId))
             return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
-          return new CompanyOnboarding(store).guide(sessionId, args.action as OnboardingGuideAction, args.fields, args.values, args.mode)
+          return new CompanyOnboarding(store).guide(sessionId, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind)
         },
       ),
       tool(
