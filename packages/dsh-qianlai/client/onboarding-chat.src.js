@@ -40,7 +40,7 @@ export function registerOnboardingChat(ctx, {
     border: controlBorder, borderRadius: 14, padding: '16px 18px',
     color: 'var(--dsw-alias-label-primary)',
     background: 'color-mix(in srgb, var(--dsw-specific-bubble, #edf8f1) 34%, transparent)',
-    boxSizing: 'border-box', width: 'fit-content', maxWidth: 'min(100%, 38rem)', marginBlock: 10,
+    boxSizing: 'border-box', width: 'min(100%, 38rem)', marginBlock: 10,
   }
   const controlStyle = {
     border: controlBorder, borderRadius: 8, padding: '8px 12px', minHeight: 38,
@@ -48,6 +48,7 @@ export function registerOnboardingChat(ctx, {
   }
   const secondary = { color: 'var(--dsw-alias-label-secondary)', fontSize: '0.875em', lineHeight: 1.55 }
   const actions = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }
+  const formColumns = 'repeat(auto-fit, minmax(min(100%, max(10rem, 45%)), 1fr))'
   const startingTaxFlows = new Map()
 
   function validField(field) {
@@ -186,7 +187,7 @@ export function registerOnboardingChat(ctx, {
       minWidth: 0,
     }
     return jsx('form', {
-      style: { display: 'grid', gap: 12, marginTop: 12, width: 'min(100%, 28rem)' },
+      style: { display: 'grid', gridTemplateColumns: formColumns, gap: '12px 16px', marginTop: 12 },
       onSubmit: event => {
         event.preventDefault()
         if (!event.currentTarget) { onSubmit(values); return }
@@ -199,9 +200,11 @@ export function registerOnboardingChat(ctx, {
         if (field.type === 'multi') {
           const existing = values[field.key] ?? []
           return jsx('fieldset', {
-            style: { padding: 8, border: cardStyle.border, borderRadius: 6 },
-            children: [jsx('legend', { children: field.label }), ...field.options.map(({ value, label }) =>
-              jsx('label', { style: { display: 'block', paddingBlock: 3 }, children: [
+            style: { gridColumn: '1 / -1', minWidth: 0, margin: 0, padding: 8, border: cardStyle.border, borderRadius: 6 },
+            children: [jsx('legend', { children: field.label }), jsx('div', {
+              style: { display: 'flex', flexWrap: 'wrap', gap: '4px 16px' },
+              children: field.options.map(({ value, label }) => jsx('label', {
+                style: { display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 32 }, children: [
                 jsx('input', {
                   name: field.key, type: 'checkbox', value, disabled: saving, checked: existing.includes(value),
                   onChange: event => {
@@ -210,9 +213,9 @@ export function registerOnboardingChat(ctx, {
                       : existing.filter(item => item !== value)
                     change(field.key, selected)
                   },
-                }), ' ' + label,
-              ] }, value),
-            )],
+                }), label,
+              ] }, value)),
+            })],
           }, field.key)
         }
         const input = {
@@ -221,7 +224,8 @@ export function registerOnboardingChat(ctx, {
           style: inputStyle,
         }
         return jsx('label', {
-          style: { display: 'grid', gap: 5, minWidth: 0 }, children: [
+          style: { display: 'grid', alignContent: 'start', gap: 5, minWidth: 0,
+            ...(['companyName', 'taxAuthority'].includes(field.key) ? { gridColumn: '1 / -1' } : {}) }, children: [
             field.label,
             field.type === 'select'
               ? jsx('select', { ...input, disabled: saving || !field.options.length, children: [
@@ -231,7 +235,7 @@ export function registerOnboardingChat(ctx, {
               : jsx('input', { ...input, type: field.type, maxLength: field.maxLength }),
           ],
         }, field.key)
-      }), jsx('div', { style: { ...actions, marginTop: 0 }, children: button(label, undefined, saving, 'submit', true) })],
+      }), jsx('div', { style: { ...actions, gridColumn: '1 / -1', marginTop: 0 }, children: button(label, undefined, saving, 'submit', true) })],
     })
   }
 
