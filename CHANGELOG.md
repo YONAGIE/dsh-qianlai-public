@@ -12,6 +12,8 @@
 
 - Offer license or tax-document upload and short forms in chat. Show only the fields needed for the current step and save submissions to the current draft with a chat receipt.
 
+- Open the file chooser directly from the chat upload button. Refresh the onboarding panel after recognition and let users edit sections of the same draft there. Use the latest saved details when the chat continues.
+
 - Cancel obsolete tax scans when switching setup methods. Verify the selected enterprise, source page and current draft before applying reviewed tax details.
 
 - Keep the selected onboarding method in the draft so switching between manual entry and scanning preserves the current stage.
