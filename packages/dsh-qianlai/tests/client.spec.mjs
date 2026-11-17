@@ -57,7 +57,7 @@ function makeClient() {
       if (!unchanged) pendingEffects.push({ fiber, index, callback, dependencies })
     },
   }
-  const jsx = (type, props) => ({ type, props })
+  const jsx = (type, props, key) => ({ type, props, key })
   const window = {
     crypto: { randomUUID: () => 'synthetic-flow' },
     __ModuleLoader__: { load(definition) { this.factory = definition.factory } },
@@ -104,13 +104,14 @@ function makeClient() {
   function resolve(node) {
     if (Array.isArray(node)) return node.map(resolve)
     if (!node || typeof node !== 'object') return node
-    if (typeof node.type === 'function') return renderComponent(node.type, node.props)
+    if (typeof node.type === 'function') return renderComponent(node.type, node.props, node.key)
     return { ...node, props: { ...node.props, children: resolve(node.props.children) } }
   }
-  function renderComponent(component, props) {
-    const fiber = fibers.get(component) ?? { hooks: [] }
-    fibers.set(component, fiber)
-    rendered.add(component)
+  function renderComponent(component, props, key) {
+    const identity = key === undefined ? component : component.name + ':' + key
+    const fiber = fibers.get(identity) ?? { hooks: [] }
+    fibers.set(identity, fiber)
+    rendered.add(identity)
     const previousFiber = activeFiber
     const previousIndex = hookIndex
     activeFiber = fiber
@@ -173,13 +174,10 @@ function makeClient() {
     setOnboarding(respond) { onboarding = respond },
     text() { return getText(render()) },
     controls() { return ['input', 'select', 'button'].flatMap(type => findNodes(render()[1], type)) },
-    editSection(label) {
-      const button = findButtons(render()[1]).find(node => node.props['aria-label'] === '编辑' + label)
-      if (!button) throw Error('edit button unavailable: ' + label)
-      button.props.onClick()
-    },
     input(name) { return this.controls().find(node => node.props.name === name)?.props },
-    submitForm() { findNodes(render()[1], 'form')[0].props.onSubmit({ preventDefault() {} }) },
+    submitForm(section) {
+      findNodes(render()[1], 'form').find(node => node.props['aria-label'] === section).props.onSubmit({ preventDefault() {} })
+    },
     buttonText() { return findButtons(render())[0]?.props.children },
     buttons() { return findButtons(render()).map(node => node.props.children) },
     click(text) {
@@ -284,19 +282,19 @@ describe('Zhangjie onboarding sidebar', () => {
       }
       client.refreshOnboarding(draft)
       expect(client.text()).toContain('4/4 · 确认建档')
-      expect(client.text()).toContain('合成小店')
+      expect(client.input('companyName').value).toBe('合成小店')
       expect(client.text()).toContain('尾号 4321')
       expect(client.text()).not.toContain('000000654321')
-      expect(client.text()).toContain('2025-08')
-      expect(client.text()).toContain('每月 25 日')
-      expect(client.controls()).toHaveLength(5)
-      expect(client.controls().every(node => node.type === 'button' && node.props.children === '编辑')).toBe(true)
+      expect(client.input('account-0-number').value).toBe('')
+      expect(client.input('startMonth').value).toBe('2025-08')
+      expect(client.input('payday').value).toBe(25)
+      expect(client.buttons()).not.toContain('编辑')
 
       client.closeOnboarding()
       client.openOnboarding()
       client.render()
       await settle()
-      expect(client.text()).toContain('合成小店')
+      expect(client.input('companyName').value).toBe('合成小店')
       expect(respond.mock.calls).toEqual(Array.from({ length: 2 }, () => [{ action: 'status', sessionId: 'synthetic-session' }]))
     } finally {
       client.dispose()
@@ -316,20 +314,18 @@ describe('Zhangjie onboarding sidebar', () => {
       client.render()
       await settle()
       listener.mockClear()
-      client.editSection('公司资料')
       expect(client.input('companyName').value).toBe('合成企业')
       client.input('companyName').onChange({ target: { value: '合成公司' } })
-      client.submitForm()
-      client.submitForm()
+      client.submitForm('公司资料')
+      client.submitForm('公司资料')
       await settle()
       expect(respond.mock.calls.filter(([payload]) => payload.action === 'edit-section')).toEqual([[{
         action: 'edit-section', sessionId: 'synthetic-session', draftId: 'synthetic-draft', revision: 2,
         section: 'company', input: { companyName: '合成公司' },
       }]])
       expect(listener).toHaveBeenCalledExactlyOnceWith('synthetic-session', { view: saved })
-      expect(client.text()).toContain('合成公司')
-      expect(client.text()).toContain('公司资料已保存')
-      expect(client.input('companyName')).toBeUndefined()
+      expect(client.input('companyName').value).toBe('合成公司')
+      expect(client.text()).toContain('已保存到建档草稿')
     } finally {
       unsubscribe()
       client.dispose()
@@ -347,10 +343,9 @@ describe('Zhangjie onboarding sidebar', () => {
       client.openOnboarding()
       client.render()
       await settle()
-      client.editSection('银行账户')
       expect(client.input('account-0-number')).toMatchObject({ value: '', placeholder: '留空保留 尾号 4321' })
       client.input('account-0-bank').onChange({ target: { value: '合成另一银行' } })
-      client.submitForm()
+      client.submitForm('银行账户')
       await settle()
       expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { accounts: [{
         id: 'synthetic-account', holder: '合成公司', bank: '合成另一银行', currency: 'CNY', openedOn: '',
@@ -360,24 +355,28 @@ describe('Zhangjie onboarding sidebar', () => {
     }
   })
 
-  it('prevents stale edits from overwriting newer chat changes', async () => {
+  it('preserves a sidebar edit when chat refreshes and saves only explicit edits on the latest revision', async () => {
     const client = makeClient()
     const draft = { ...sampleDraft, revision: 1, enterprise: { companyName: '合成草稿' } }
-    const respond = vi.fn(() => draft)
+    const latest = { ...draft, revision: 2, enterprise: { companyName: '合成对话更新', establishedOn: '2025-03-08' } }
+    const respond = vi.fn(payload => payload.action === 'edit-section'
+      ? { ...latest, revision: 3, enterprise: { ...latest.enterprise, ...payload.input } } : draft)
     client.setOnboarding(respond)
     try {
       client.openOnboarding()
       client.render()
       await settle()
-      client.editSection('公司资料')
       client.input('companyName').onChange({ target: { value: '合成侧栏编辑' } })
-      client.refreshOnboarding({ ...draft, revision: 2, enterprise: { companyName: '合成对话更新' } })
-      client.submitForm()
-      expect(client.text()).toContain('建档资料已更新。请重新编辑这组资料。')
+      client.refreshOnboarding(latest)
+      expect(client.text()).toContain('资料有更新，已保留你的输入。')
+      expect(client.text()).toContain('草稿当前值 · 合成对话更新')
       expect(client.input('companyName').value).toBe('合成侧栏编辑')
+      expect(client.input('establishedOn').value).toBe('2025-03-08')
       expect(respond).toHaveBeenCalledTimes(1)
-      client.click('取消')
-      expect(client.text()).toContain('合成对话更新')
+      client.submitForm('公司资料')
+      await settle()
+      expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 2, input: { companyName: '合成侧栏编辑' } }))
+      expect(client.input('establishedOn').value).toBe('2025-03-08')
     } finally {
       client.dispose()
     }

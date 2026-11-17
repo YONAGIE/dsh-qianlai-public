@@ -116,7 +116,7 @@ window.__ModuleLoader__.load({
     const currencies = { CNY: '人民币 (CNY)', USD: '美元 (USD)', HKD: '港元 (HKD)', EUR: '欧元 (EUR)', JPY: '日元 (JPY)', GBP: '英镑 (GBP)', SGD: '新加坡元 (SGD)', AUD: '澳元 (AUD)', CAD: '加拿大元 (CAD)' }
     const readoutGrid = {
       display: 'grid', gap: '8px 16px', margin: 0,
-      gridTemplateColumns: 'repeat(auto-fit, minmax(min(11rem, 100%), 1fr))',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, max(11rem, 45%)), 1fr))',
     }
     const muted = 'var(--dsw-alias-label-secondary, #616b65)'
     const readoutBorder = '1px solid color-mix(in srgb, currentColor 16%, transparent)'
@@ -201,14 +201,9 @@ window.__ModuleLoader__.load({
       ] }, label)
     }
 
-    function readoutGroup(title, rows, edit) {
+    function readoutGroup(title, rows) {
       return jsx('section', { style: { borderTop: readoutBorder, padding: '12px 0' }, children: [
-        jsx('header', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 },
-          children: [
-            jsx('h3', { style: { margin: 0, fontSize: 14, fontWeight: 650 }, children: title }),
-            edit ? jsx('button', { type: 'button', 'aria-label': '编辑' + title, style: panelAction, onClick: edit, children: '编辑' }) : null,
-          ],
-        }),
+        jsx('h3', { style: { margin: '0 0 8px', fontSize: 14, fontWeight: 650 }, children: title }),
         jsx('dl', { style: readoutGrid, children: rows }),
       ] })
     }
@@ -234,27 +229,82 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function changedValues(editor) {
-      const { input, initial } = editor
-      const changed = Object.fromEntries(Object.entries(input).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(initial[key])))
-      if (changed.accounts) changed.accounts = changed.accounts.map(({ id, holder, bank, currency, openedOn, number }) => ({
+    const sameDraftValue = (left, right) => JSON.stringify(left) === JSON.stringify(right)
+
+    function serializeSectionPatch(changed) {
+      if (!changed.accounts) return changed
+      return { ...changed, accounts: changed.accounts.map(({ id, holder, bank, currency, openedOn, number }) => ({
         ...(id ? { id } : {}), holder, bank, currency, openedOn, ...(number ? { number } : {}),
-      }))
-      return changed
+      })) }
     }
 
-    function OnboardingEditor({ editor, change, cancel, save, saving, error }) {
-      const { section, input, officialTax } = editor
+    function OnboardingEditor({ sessionId, view, section }) {
+      const [edits, setEdits] = useState({})
+      const [error, setError] = useState('')
+      const [notice, setNotice] = useState('')
+      const [saving, setSaving] = useState(false)
+      const pendingSave = useRef(false)
+      const officialTax = view.enterprise?.officialTax
+      const current = sectionValues(view, section)
+      const changed = Object.entries(edits).filter(([key, edit]) => !sameDraftValue(current[key], edit.value))
+      const patch = Object.fromEntries(changed.map(([key, { value }]) => [key, value]))
+      const input = { ...current, ...patch }
+      const conflicts = new Set(changed.filter(([key, edit]) => !sameDraftValue(current[key], edit.initial)).map(([key]) => key))
       const title = sectionLabels[section]
+
+      function change(key, value) {
+        const changes = typeof key === 'string' ? { [key]: value } : key
+        setError('')
+        setNotice('')
+        setEdits(previous => {
+          const next = { ...previous }
+          for (const [name, proposed] of Object.entries(changes)) {
+            if (sameDraftValue(current[name], proposed)) delete next[name]
+            else next[name] = { value: proposed, initial: previous[name]?.initial ?? current[name] }
+          }
+          return next
+        })
+      }
+
+      async function save() {
+        if (pendingSave.current || !changed.length) return
+        pendingSave.current = true
+        setSaving(true)
+        setError('')
+        setNotice('')
+        try {
+          const draft = await onboardingRequest(sessionId, 'edit-section', {
+            draftId: view.draftId, revision: view.revision, section, input: serializeSectionPatch(patch),
+          })
+          onboardingTaxPreviews.delete(sessionId)
+          refreshOnboarding(sessionId, draft)
+          setEdits({})
+          setNotice('已保存到建档草稿')
+        } catch (error) {
+          setError(error.message)
+          if (['DRAFT_STALE', 'ONBOARDING_CHANGED'].includes(error.code)) {
+            try { refreshOnboarding(sessionId, await onboardingRequest(sessionId, 'status')) } catch { /* Keep the input for retry. */ }
+          }
+        } finally {
+          pendingSave.current = false
+          setSaving(false)
+        }
+      }
+
       const field = (label, name, options = {}) => {
-        const { type = 'text', list, locked, placeholder, maxLength, value = input[name], set = next => change(name, next) } = options
-        const props = { name, value: value ?? '', disabled: saving, onChange: event => set(event.target.value), style: panelInput }
-        return jsx('label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0 }, children: [
+        const { type = 'text', list, locked, fullWidth, placeholder, maxLength,
+          value = locked ? current[name] : input[name], set = next => change(name, next) } = options
+        const props = { name, value: value ?? '', disabled: saving || Boolean(list && !Object.keys(list).length),
+          onChange: event => set(event.target.value), style: panelInput }
+        return jsx('label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0,
+          ...(fullWidth ? { gridColumn: '1 / -1' } : {}) }, children: [
           jsx('span', { style: { color: muted, fontSize: 12 }, children: label }),
-          locked ? jsx('span', { title: '来自已核对的税务资料', children: value || '待补' }) : list ? jsx('select', { ...props, children: [
+          locked ? jsx('span', { title: '来自已核对的税务资料', style: { overflowWrap: 'anywhere' }, children: value || '待补' }) : list ? jsx('select', { ...props, children: [
             jsx('option', { value: '', children: '请选择' }),
             ...Object.entries(list).map(([key, text]) => jsx('option', { value: key, children: text }, key)),
           ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off' }),
+          !locked && conflicts.has(name) ? jsx('span', { style: { color: muted, fontSize: 12, overflowWrap: 'anywhere' },
+            children: '草稿当前值 · ' + (list?.[current[name]] || current[name] || '待补') }) : null,
         ] }, name)
       }
 
@@ -264,12 +314,12 @@ window.__ModuleLoader__.load({
       switch (section) {
         case 'company':
           fields = [
-            field('企业全称', 'companyName', { maxLength: 200, locked: Boolean(officialTax) }),
+            field('企业全称', 'companyName', { maxLength: 200, fullWidth: true, locked: Boolean(officialTax) }),
             field('统一社会信用代码', 'taxId', { maxLength: 18, locked: Boolean(officialTax) }),
             field('成立日期', 'establishedOn', { type: 'date' }),
-            jsx('fieldset', { style: { gridColumn: '1 / -1', border: 0, margin: 0, padding: 0 }, children: [
+            jsx('fieldset', { style: { gridColumn: '1 / -1', border: 0, margin: 0, padding: 0, minWidth: 0 }, children: [
               jsx('legend', { style: { color: muted, fontSize: 12, marginBottom: 6 }, children: '实际经营' }),
-              ...Object.entries(businessTypes).map(([key, label]) => jsx('label', {
+              jsx('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }, children: Object.entries(businessTypes).map(([key, label]) => jsx('label', {
                 style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30 },
                 children: [jsx('input', {
                   type: 'checkbox', checked: input.business.includes(key), disabled: saving,
@@ -278,7 +328,7 @@ window.__ModuleLoader__.load({
                     change('business', event.target.checked ? key === 'none' ? ['none'] : [...business, key] : input.business.filter(item => item !== key))
                   },
                 }), label],
-              }, key)),
+              }, key)) }),
             ] }),
           ]
           break
@@ -288,10 +338,13 @@ window.__ModuleLoader__.load({
             field('省份', 'province', { list: options(Object.keys(TAX_REGION_CITIES)), locked: Boolean(officialTax),
               set: value => change({ province: value, city: '' }) }),
             field('城市或地区', 'city', { list: options(TAX_REGION_CITIES[input.province] ?? []), locked: Boolean(officialTax) }),
-            field('主管税务机关', 'taxAuthority', { maxLength: 200, locked: Boolean(officialTax) }),
+            field('主管税务机关', 'taxAuthority', { maxLength: 200, fullWidth: true, locked: Boolean(officialTax) }),
             field('纳税人类型', 'taxpayerIdentity', { list: taxpayerTypes, value: officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown'
-              ? taxpayerTypes[input.taxpayerIdentity] : input.taxpayerIdentity, locked: Boolean(officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown') }),
+              ? taxpayerTypes[current.taxpayerIdentity] : input.taxpayerIdentity, locked: Boolean(officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown') }),
             field('税务状态', 'taxStatus', { maxLength: 60, locked: Boolean(officialTax?.taxStatus) }),
+            officialTax ? jsx('dl', { style: { gridColumn: '1 / -1', margin: 0 }, children:
+              readoutRow('当前页税费种', summarizeObligations(officialTax.obligations) || '本次未读取到'),
+            }) : null,
           ]
           break
         }
@@ -334,17 +387,20 @@ window.__ModuleLoader__.load({
           break
       }
       return jsx('form', {
-        'aria-label': '编辑' + title, style: { borderTop: readoutBorder, padding: '12px 0' },
+        'aria-label': title, style: { borderTop: readoutBorder, padding: '12px 0' },
         onSubmit: event => { event.preventDefault(); void save() },
         children: [
           jsx('h3', { style: { margin: '0 0 12px', fontSize: 14, fontWeight: 650 }, children: title }),
           jsx('div', { style: { ...readoutGrid, gap: '12px 16px' }, children: fields }),
           error ? jsx('p', { role: 'alert', style: { margin: '10px 0 0', color: 'var(--dsw-alias-label-danger, #ad3939)' }, children: error }) : null,
-          jsx('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }, children: [
-            jsx('button', { type: 'button', style: panelAction, disabled: saving, onClick: cancel, children: '取消' }),
+          notice ? jsx('p', { role: 'status', style: { color: muted, margin: '10px 0 0' }, children: notice }) : null,
+          changed.length ? jsx('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }, children: [
+            jsx('span', { role: 'status', style: { marginInlineEnd: 'auto', color: muted, fontSize: 12 },
+              children: conflicts.size ? '资料有更新，已保留你的输入。保存前请核对。' : '有未保存的修改' }),
+            jsx('button', { type: 'button', style: panelAction, disabled: saving, onClick: () => { setEdits({}); setError('') }, children: '放弃修改' }),
             jsx('button', { type: 'submit', style: { ...panelAction, background: 'var(--dsw-static-deepseek-600, #1b6f4a)', color: '#fff' },
-              disabled: saving || !Object.keys(changedValues(editor)).length, children: saving ? '保存中…' : '保存' }),
-          ] }),
+              disabled: saving, children: saving ? '保存中…' : conflicts.size ? '保存我的修改' : '保存' }),
+          ] }) : null,
         ],
       })
     }
@@ -353,11 +409,11 @@ window.__ModuleLoader__.load({
       return items?.map(item => [item.taxItem, item.filingCycle].filter(Boolean).join(' · ')).filter(Boolean).join('；')
     }
 
-    function OnboardingReadout({ view, profile, editor, startEdit, change, cancel, save, saving, error }) {
+    function OnboardingReadout({ sessionId, view, profile }) {
       const { enterprise, accounting, payroll } = view
-      const section = (name, rows) => !view.completed && editor?.section === name
-        ? jsx(OnboardingEditor, { editor, change, cancel, save, saving, error }, name)
-        : readoutGroup(sectionLabels[name], rows, view.completed || editor ? undefined : () => startEdit(name))
+      const section = (name, rows) => !view.completed
+        ? jsx(OnboardingEditor, { sessionId, view, section: name }, view.draftId + ':' + name)
+        : readoutGroup(sectionLabels[name], rows)
       const accountText = enterprise?.accounts?.map(account =>
         [account.holder, account.bank, account.maskedNumber, currencies[account.currency] ?? account.currency, account.openedOn]
           .filter(Boolean).join(' · '),
@@ -407,11 +463,6 @@ window.__ModuleLoader__.load({
       const [view, setView] = useState(null)
       const [preview, setPreview] = useState(() => onboardingTaxPreviews.get(sessionId))
       const [message, setMessage] = useState('')
-      const [editor, setEditor] = useState(null)
-      const [notice, setNotice] = useState('')
-      const [editError, setEditError] = useState('')
-      const pendingSave = useRef(false)
-      const [saving, setSaving] = useState(false)
       useEffect(() => {
         const abort = new AbortController()
         let changed = false
@@ -433,44 +484,6 @@ window.__ModuleLoader__.load({
           unsubscribe()
         }
       }, [sessionId])
-      function startEdit(section) {
-        const input = sectionValues(view, section)
-        setNotice('')
-        setEditError('')
-        setEditor({ section, draftId: view.draftId, revision: view.revision, officialTax: view.enterprise?.officialTax, initial: input, input })
-      }
-      function change(key, value) {
-        const patch = typeof key === 'string' ? { [key]: value } : key
-        setEditor(current => ({ ...current, input: { ...current.input, ...patch } }))
-      }
-      async function save() {
-        if (pendingSave.current || !editor) return
-        const { draftId, revision, section } = editor
-        if (view.completed || view.draftId !== draftId || view.revision !== revision) {
-          setEditError('建档资料已更新。请重新编辑这组资料。')
-          return
-        }
-        const input = changedValues(editor)
-        if (!Object.keys(input).length) return
-        pendingSave.current = true
-        setSaving(true)
-        setEditError('')
-        try {
-          const draft = await onboardingRequest(sessionId, 'edit-section', { draftId, revision, section, input })
-          onboardingTaxPreviews.delete(sessionId)
-          refreshOnboarding(sessionId, draft)
-          setEditor(null)
-          setNotice(sectionLabels[section] + '已保存')
-        } catch (error) {
-          setEditError(error.message)
-          if (['DRAFT_STALE', 'ONBOARDING_CHANGED'].includes(error.code)) {
-            try { refreshOnboarding(sessionId, await onboardingRequest(sessionId, 'status')) } catch { /* Keep the current error and input. */ }
-          }
-        } finally {
-          pendingSave.current = false
-          setSaving(false)
-        }
-      }
       const profile = !preview?.draftId || preview.draftId === view?.draftId ? preview?.profile : undefined
       return jsx('section', { 'aria-label': '建档资料', 'data-qianlai-onboarding': true, style: {
         height: '100%', minHeight: 0, overflowY: 'auto', padding: '16px 20px',
@@ -480,9 +493,8 @@ window.__ModuleLoader__.load({
         jsx('p', { role: 'status', style: { margin: '0 0 12px', color: muted },
           children: view?.completed ? '建档完成' : view ? view.step + '/4 · ' + steps[view.step - 1] : message || '正在读取建档进度…',
         }),
-        notice ? jsx('p', { role: 'status', style: { color: 'var(--dsw-alias-label-accent, #1b6f4a)', margin: '0 0 10px' }, children: notice }) : null,
         view?.handoffWarning ? jsx('p', { children: view.handoffWarning }) : null,
-        view ? jsx(OnboardingReadout, { view, profile, editor, startEdit, change, cancel: () => setEditor(null), save, saving, error: editError }) : null,
+        view ? jsx(OnboardingReadout, { sessionId, view, profile }) : null,
       ] })
     }
 

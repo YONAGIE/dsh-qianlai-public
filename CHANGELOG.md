@@ -10,7 +10,7 @@
 
 - Show the same onboarding card only once per reply, including when multiple tool calls return the same tax scan or a document step.
 
-- Use DSH’s right-hand tool panel for the onboarding draft, updating it after chat-form submissions and showing tax scan results for review.
+- Show editable draft fields directly in DSH’s right-hand panel. Keep unsaved input while chat updates the other fields and show conflicting changes before saving. Lay out short fields side by side when the card is wide enough.
 
 - Offer license or tax-document upload and short forms in chat. Show only the fields needed for the current step and save submissions to the current draft with a chat receipt.
 
