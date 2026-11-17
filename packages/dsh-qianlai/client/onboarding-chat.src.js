@@ -1,4 +1,4 @@
-/* global AbortSignal, FormData, setInterval, clearInterval */
+/* global FormData, setInterval, clearInterval */
 
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset,
@@ -9,7 +9,7 @@ export function registerOnboardingChat(ctx, {
   const toolName = 'moneycome_onboarding'
   const modes = { scan: '扫码建档', manual: '手动填写' }
   const fieldTypes = new Set(['text', 'date', 'month', 'select', 'multi'])
-  const kinds = new Set(['mode', 'source', 'upload', 'fields', 'region', 'tax-scan', 'bank', 'bank-next', 'confirm', 'blocked'])
+  const kinds = new Set(['mode', 'source', 'upload', 'document', 'fields', 'region', 'tax-scan', 'bank', 'bank-next', 'confirm', 'blocked'])
   const titles = {
     mode: '选择建档方式', source: '提供公司资料', upload: '上传建档资料', fields: '补充建档资料',
     region: '选择税务地区', 'tax-scan': '电子税务局扫码', bank: '填写银行账户',
@@ -64,9 +64,9 @@ export function registerOnboardingChat(ctx, {
     if (typeof card?.id !== 'string' || !idPattern.test(card.id)
       || typeof card.draftId !== 'string' || !idPattern.test(card.draftId)
       || !Number.isSafeInteger(card.revision) || card.revision < 0 || !kinds.has(card.kind)) return undefined
-    if (['source', 'upload'].includes(card.kind) && !['license', 'tax'].includes(card.documentKind)) return undefined
+    if (['source', 'upload', 'document'].includes(card.kind) && !['license', 'tax'].includes(card.documentKind)) return undefined
     if (card.kind === 'tax-scan' && (typeof card.province !== 'string' || typeof card.city !== 'string')) return undefined
-    if (card.kind === 'fields' && (!Array.isArray(card.fields) || card.fields.length > 9 || !card.fields.every(validField)
+    if (['fields', 'document'].includes(card.kind) && (!Array.isArray(card.fields) || card.fields.length > 9 || !card.fields.every(validField)
       || new Set(card.fields.map(({ key }) => key)).size !== card.fields.length)) return undefined
     return card
   }
@@ -160,6 +160,8 @@ export function registerOnboardingChat(ctx, {
           : '我想自己填写' + (card.documentKind === 'tax' ? '税务资料' : '公司资料') + '。'
       case 'upload':
         return '我已上传' + sourceText(card.documentKind) + '，请继续。'
+      case 'document':
+        return '我已核对并确认' + (card.documentKind === 'tax' ? '税务资料' : '公司资料') + '，请继续建档。'
       case 'tax-scan':
         return '我已核对并回填税务资料，请继续建档。'
       case 'bank':
@@ -341,7 +343,9 @@ export function registerOnboardingChat(ctx, {
     const [statusAttempt, setStatusAttempt] = useState(0)
     const [error, setError] = useState('')
     const [saving, setSaving] = useState(false)
-    const [readingDocument, setReadingDocument] = useState(false)
+    const [readingDocument, setReadingDocument] = useState('')
+    const [documentPreview, setDocumentPreview] = useState(null)
+    const [dropActive, setDropActive] = useState(false)
     const [obsolete, setObsolete] = useState(false)
     const [pendingReply, setPendingReply] = useState('')
     const submitting = useRef(false)
@@ -403,35 +407,67 @@ export function registerOnboardingChat(ctx, {
       await sendReply(replyFor(card, input, result))
     }
 
-    async function submit(input, readDocument = false) {
+    async function submit(input) {
       if (submitting.current || !status || status.receipt || status.stale || obsolete) return
       submitting.current = true
       setError('')
       setSaving(true)
-      if (readDocument) setReadingDocument(true)
       try {
-        const payload = { cardId, draftId, revision, ...(readDocument ? await input() : input) }
-        const result = await (readDocument
-          ? onboardingRequest(sessionId, 'submit-card', payload, AbortSignal.timeout(120000))
-          : onboardingRequest(sessionId, 'submit-card', payload))
+        const payload = { cardId, draftId, revision, ...input }
+        const result = await onboardingRequest(sessionId, 'submit-card', payload)
         await finishCard(result, payload)
       } catch (error) {
         setError(shownError(error, '建档资料暂时无法保存，请重试。'))
       } finally {
         submitting.current = false
         setSaving(false)
-        if (readDocument) setReadingDocument(false)
+      }
+    }
+
+    async function loadDocument(file) {
+      if (!file || submitting.current || !status || status.receipt || status.stale || obsolete) return
+      submitting.current = true
+      setError('')
+      setSaving(true)
+      setReadingDocument(file.name.slice(0, 120))
+      try {
+        if (!file.size || file.size > 8 * 1024 * 1024) throw Error('请选择不超过 8 MB 的 PDF 或图片。')
+        const result = await onboardingRequest(sessionId, 'recognize', {
+          cardId, draftId, revision,
+          file: { name: file.name, mimeType: file.type, base64: await readOnboardingFile(file) },
+        })
+        const current = { ...card.initialValues, ...values }
+        const held = card.fields.filter(({ key }) => current[key]?.trim() &&
+          Object.hasOwn(result.fields, key) && current[key].trim() !== result.fields[key]).map(({ label }) => label)
+        setDocumentPreview({ fields: result.fields, held })
+      } catch (error) {
+        setError(shownError(error, '这份资料暂时无法识别，可以继续填写。'))
+      } finally {
+        submitting.current = false
+        setSaving(false)
+        setReadingDocument('')
       }
     }
 
     function selectDocument(event) {
       const file = event.target.files?.[0]
       event.target.value = ''
-      if (!file) return
-      void submit(async () => {
-        if (!file.size || file.size > 8 * 1024 * 1024) throw Error('请选择不超过 8 MB 的 PDF 或图片。')
-        return { document: { name: file.name, mimeType: file.type, base64: await readOnboardingFile(file) } }
-      }, true)
+      void loadDocument(file)
+    }
+
+    function handleDocumentDrag(event, drop = false) {
+      if (!event.dataTransfer?.types?.includes('Files') && !event.dataTransfer?.files?.length) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (drop) {
+        setDropActive(false)
+        const files = event.dataTransfer.files
+        if (files.length === 1) void loadDocument(files[0])
+        else if (files.length > 1) setError('一次只能识别一份资料。请选择其中一份。')
+        return
+      }
+      event.dataTransfer.dropEffect = saving ? 'none' : 'copy'
+      if (!saving) setDropActive(true)
     }
 
     function change(key, value) {
@@ -447,9 +483,11 @@ export function registerOnboardingChat(ctx, {
     const prefilled = card.initialValues ?? {}
     const wantsTax = card.documentKind === 'tax'
     const sourceTitle = wantsTax ? '选择税务资料填写方式' : '选择公司资料填写方式'
-    const title = viewOnly ? '继续建档' : card.title || (card.kind === 'source' ? sourceTitle : titles[card.kind])
+    const documentTitle = wantsTax ? '核对税务资料' : '核对公司资料'
+    const title = viewOnly ? '继续建档' : card.title || (card.kind === 'source' ? sourceTitle : card.kind === 'document' ? documentTitle : titles[card.kind])
     const receipt = status?.receipt
     const documentCard = card.kind === 'source' || card.kind === 'upload'
+    const documentForm = card.kind === 'document' && status && !status.stale && !receipt && !obsolete
     const choices = {
       mode: Object.entries(modes).map(([mode, label]) => button(label, () => void submit({ mode }), saving, 'button', mode === 'scan')),
       'bank-next': [
@@ -484,22 +522,34 @@ export function registerOnboardingChat(ctx, {
       }) }) : jsx('p', { role: 'status', style: { ...secondary, margin: '7px 0 0' }, children: '正在加载建档进度…' })
     } else if (Object.hasOwn(choices, card.kind)) {
       body = jsx('div', { style: actions, children: choices[card.kind] })
-    } else if (documentCard) {
-      const label = '上传' + sourceText(card.documentKind)
+    } else if (documentForm) {
+      const label = '选择' + sourceText(card.documentKind)
+      const confirm = wantsTax ? '确认税务资料' : '确认公司资料'
+      const prefilledText = documentPreview?.held.length
+        ? '保留了原先填写的' + documentPreview.held.join('、') + '。请对照资料核对后确认。'
+        : '请核对预填内容，补齐缺项后确认。'
       body = [
-        jsx('div', { style: actions, children: [
+        jsx('div', { style: { ...actions, padding: '10px 12px', border: '1px dashed color-mix(in srgb, currentColor 24%, transparent)', borderRadius: 8 }, children: [
           button(label, () => documentInput.current?.click(), saving, 'button', true),
-          card.kind === 'source' ? button('自己填写', () => void submit({ choice: 'manual' }), saving) : null,
+          jsx('span', { style: secondary, children: '也可拖一份文件到此卡片，或直接填写。' }),
           jsx('input', {
             ref: documentInput, type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp',
             hidden: true, disabled: saving, onChange: selectDocument,
           }),
         ] }),
         jsx('p', {
-          role: readingDocument ? 'status' : undefined, style: { ...secondary, margin: '8px 0 0' },
-          children: readingDocument ? '正在识别并保存…' : 'PDF 或图片，单份不超过 8 MB。',
+          role: readingDocument || documentPreview || Object.keys(prefilled).length ? 'status' : undefined,
+          style: { ...secondary, margin: '8px 0 0', overflowWrap: 'anywhere' },
+          children: readingDocument ? '正在识别「' + readingDocument + '」…' : documentPreview || Object.keys(prefilled).length
+            ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
         }),
+        form({ fields: card.fields.map(field => ({ ...field, required: false })), values: { ...documentPreview?.fields, ...prefilled, ...values },
+          change, saving, label: confirm, onSubmit: input => void submit({ values: Object.fromEntries(
+            card.fields.filter(({ key }) => typeof input[key] === 'string' && input[key].trim()).map(({ key }) => [key, input[key]]),
+          ) }) }),
       ]
+    } else if (documentCard) {
+      body = jsx('div', { style: actions, children: button('继续建档', () => void sendReply('请按最新资料继续建档。'), saving) })
     } else if (card.kind === 'region') {
       const options = values => values.map(value => ({ value, label: value }))
       const fields = [
@@ -550,7 +600,13 @@ export function registerOnboardingChat(ctx, {
     }
 
     return jsx('section', {
-      'aria-label': title, 'data-qianlai-onboarding-card': cardId, style: cardStyle,
+      'aria-label': title, 'data-qianlai-onboarding-card': cardId,
+      style: documentForm && dropActive ? { ...cardStyle, outline: '2px solid ' + accent, outlineOffset: 2 } : cardStyle,
+      ...(documentForm ? {
+        onDragOver: handleDocumentDrag,
+        onDragLeave: () => setDropActive(false),
+        onDrop: event => handleDocumentDrag(event, true),
+      } : {}),
       children: [
         jsx('h3', { style: { fontSize: '1em', lineHeight: 1.45, fontWeight: 650, margin: 0 }, children: title }),
         card.message ? jsx('p', { style: secondary, children: card.message }) : null, body,

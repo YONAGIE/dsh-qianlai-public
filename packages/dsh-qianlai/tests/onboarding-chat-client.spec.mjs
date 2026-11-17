@@ -112,7 +112,11 @@ const info = node => node.type === 'p' && node.props.role === 'status'
 const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve() }
 const next = (index, data) => ({ id: 'e8e802ae-6616-45b5-98b4-1b487cc03c1' + index, draftId, revision: 5 + index, ...data })
 const section = (tree, card) => find(tree, node => node.props['data-qianlai-onboarding-card'] === card.id)
-const companyChoice = next(2, { kind: 'source', documentKind: 'license' })
+const companyChoice = next(2, { kind: 'document', documentKind: 'license', fields: [
+  { key: 'companyName', type: 'text', label: '企业全称' },
+  { key: 'taxId', type: 'text', label: '统一社会信用代码' },
+  { key: 'establishedOn', type: 'date', label: '成立日期' },
+] })
 const companyUpload = next(3, { kind: 'upload', documentKind: 'license' })
 const recognizedView = { revision: 9, enterprise: { companyName: '示例服务有限公司', taxId: '111111111111111111' } }
 
@@ -190,15 +194,17 @@ describe('建档对话卡', () => {
     expect(find(active.render(card), node => node.type === 'input')).toBeUndefined()
   })
 
-  it('在原对话直接在上传按钮选择文件并回填识别资料，再展示缺项', async () => {
+  it('在原对话选择执照，只预填同一张卡并保留手填值，确认后才同步保存', async () => {
     const mode = { ...baseCard, kind: 'mode' }
-    const fields = next(4, { kind: 'fields', title: '补充公司资料', fields: [{ key: 'establishedOn', type: 'date', label: '成立日期' }] })
     const persisted = new Map()
     const request = vi.fn(async (_session, action, { cardId, ...input }) => {
       if (action === 'card-status') return persisted.get(cardId) ?? { accepted: true }
+      if (action === 'recognize') return { accepted: true, fields: { ...recognizedView.enterprise,
+        ...(input.file.name === '更清晰的合成执照.png' ? { taxId: '111111111111111122' } : {}),
+      } }
       const result = {
-        [mode.id]: { receipt: { mode: input.mode }, nextCard: companyChoice },
-        [companyChoice.id]: { receipt: { labels: ['识别公司资料'] }, nextCard: fields, view: recognizedView },
+        [mode.id]: { receipt: { mode: input.mode } },
+        [companyChoice.id]: { receipt: { labels: ['企业全称', '统一社会信用代码'] }, view: recognizedView },
       }[cardId]
       persisted.set(cardId, { accepted: true, ...result })
       return persisted.get(cardId)
@@ -219,67 +225,88 @@ describe('建档对话卡', () => {
     active.render(companyChoice)
     await settle()
     const nativeInput = find(active.render(companyChoice), node => node.type === 'input' && node.props.type === 'file')
+    const pick = files => find(active.render(companyChoice), node => node.type === 'input' && node.props.type === 'file')
+      .props.onChange({ target: { files } })
     const openPicker = vi.fn()
     nativeInput.props.ref.current = { click: openPicker }
-    await choose(companyChoice, '上传营业执照')
+    await choose(companyChoice, '选择营业执照')
     expect(openPicker).toHaveBeenCalled()
     expect(request.mock.calls.filter(([, action]) => action === 'submit-card')).toHaveLength(1)
     expect(active.sendOnboardingReply).toHaveBeenCalledTimes(1)
-    nativeInput.props.onChange({ target: { files: [] } })
+    pick([])
     expect(readOnboardingFile).not.toHaveBeenCalled()
     expect(section(active.render(companyChoice), companyUpload)).toBeUndefined()
+    find(active.render(companyChoice), node => node.props.name === 'companyName').props.onChange({ target: { value: '已经手填的合成企业' } })
     const file = { name: '示例营业执照.png', type: 'image/png', size: 4 }
-    nativeInput.props.onChange({ target: { files: [file] } })
-    expect(find(active.render(companyChoice), info).props.children).toBe('正在识别并保存…')
-    expect(find(active.render(companyChoice), named('上传营业执照')).props.disabled).toBe(true)
+    pick([file])
+    expect(find(active.render(companyChoice), info).props.children).toBe('正在识别「示例营业执照.png」…')
+    expect(find(active.render(companyChoice), named('选择营业执照')).props.disabled).toBe(true)
     await settle()
-    expect(section(active.render(companyChoice), fields)).toBeUndefined()
-    expect(find(active.render(companyChoice), info).props.children).toBe('营业执照已识别，资料已保存。')
-    active.render(fields)
-    await settle()
+    let preview = active.render(companyChoice)
+    expect(find(preview, info).props.children).toBe('保留了原先填写的企业全称。请对照资料核对后确认。')
+    expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('已经手填的合成企业')
+    expect(find(preview, node => node.props.name === 'taxId').props.value).toBe('111111111111111111')
+    expect(find(preview, node => node.props.name === 'establishedOn').props.value).toBe('')
+    expect(active.refreshOnboarding).not.toHaveBeenCalled()
+    expect(active.sendOnboardingReply).toHaveBeenCalledTimes(1)
 
     expect(readOnboardingFile).toHaveBeenCalledExactlyOnceWith(file)
+    expect(request).toHaveBeenCalledWith(sessionId, 'recognize', {
+      cardId: companyChoice.id, draftId, revision: companyChoice.revision,
+      file: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
+    })
+    pick([{ ...file, name: '更清晰的合成执照.png' }])
+    await settle()
+    preview = active.render(companyChoice)
+    expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('已经手填的合成企业')
+    expect(find(preview, node => node.props.name === 'taxId').props.value).toBe('111111111111111122')
+    expect(find(preview, named('确认公司资料'))).toBeDefined()
+    find(preview, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    await settle()
     expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
       cardId: companyChoice.id, draftId, revision: companyChoice.revision,
-      document: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
-    }, expect.any(AbortSignal))
+      values: { companyName: '已经手填的合成企业', taxId: '111111111111111122' },
+    })
     expect(active.refreshOnboarding).toHaveBeenCalledWith(sessionId, recognizedView)
     expect(active.sendOnboardingReply.mock.calls).toEqual([
       [sessionId, '我选择手动填写。'],
-      [sessionId, '我已上传营业执照，请继续。'],
+      [sessionId, '我已核对并确认公司资料，请继续建档。'],
     ])
-    const visibleFields = section(active.render(fields), fields)
-    expect(find(visibleFields, node => node.type === 'input').props.type).toBe('date')
-    expect(find(visibleFields, node => node.type === 'label' && node.props.children[0] === '企业全称')).toBeUndefined()
-
     active.remount()
-    active.render(fields)
+    active.render(companyChoice)
     await settle()
-    expect(find(section(active.render(fields), fields), node => node.type === 'input').props.type).toBe('date')
-    expect(readOnboardingFile).toHaveBeenCalledTimes(1)
+    expect(find(active.render(companyChoice), info).props.children).toBe('已保存 企业全称、统一社会信用代码')
+    expect(readOnboardingFile).toHaveBeenCalledTimes(2)
     expect(active.sendOnboardingReply).toHaveBeenCalledTimes(2)
   })
 
-  it('旧上传卡仍可选择文件，识别失败时保留重试入口', async () => {
+  it('拖到卡片只走识别，不触发原聊天上传，失败时保留手填与选文件', async () => {
     const request = vi.fn(async (_session, action) => {
-      if (action === 'submit-card') throw Error('没有识别到公司资料，请换一份更清晰的营业执照。')
+      if (action === 'recognize') throw Error('没有识别到公司资料，请换一份更清晰的营业执照。')
       return { accepted: true }
     })
     const readOnboardingFile = vi.fn(async () => 'dGVzdA==')
     const active = client(request, undefined, { readOnboardingFile })
-    active.render(companyUpload)
+    active.render(companyChoice)
     await settle()
-    const input = find(active.render(companyUpload), node => node.type === 'input' && node.props.type === 'file')
     const file = { name: '合成营业执照.pdf', type: 'application/pdf', size: 4 }
-    input.props.onChange({ target: { files: [file] } })
+    const drop = active.render(companyChoice).props.onDrop
+    const event = { dataTransfer: { types: ['Files'], files: [file, file] }, preventDefault: vi.fn(), stopPropagation: vi.fn() }
+    drop(event)
+    expect(find(active.render(companyChoice), node => node.props.role === 'alert').props.children).toContain('一次只能识别一份资料')
+    expect(readOnboardingFile).not.toHaveBeenCalled()
+    event.dataTransfer.files = [file]
+    drop(event)
     await settle()
-    expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
-      cardId: companyUpload.id, draftId, revision: companyUpload.revision,
-      document: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
-    }, expect.any(AbortSignal))
-    expect(find(active.render(companyUpload), node => node.props.role === 'alert').props.children)
+    expect(event.preventDefault).toHaveBeenCalledTimes(2)
+    expect(event.stopPropagation).toHaveBeenCalledTimes(2)
+    expect(request).toHaveBeenCalledWith(sessionId, 'recognize', {
+      cardId: companyChoice.id, draftId, revision: companyChoice.revision,
+      file: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
+    })
+    expect(find(active.render(companyChoice), node => node.props.role === 'alert').props.children)
       .toBe('没有识别到公司资料，请换一份更清晰的营业执照。')
-    expect(find(active.render(companyUpload), named('上传营业执照')).props.disabled).toBe(false)
+    expect(find(active.render(companyChoice), named('选择营业执照')).props.disabled).toBe(false)
     expect(active.refreshOnboarding).not.toHaveBeenCalled()
     expect(active.sendOnboardingReply).not.toHaveBeenCalled()
   })
@@ -290,9 +317,9 @@ describe('建档对话卡', () => {
     const active = client(request, undefined, { subscribeOnboarding: listener => { update = listener } })
     active.render(companyChoice)
     await settle()
-    expect(find(active.render(companyChoice), named('上传营业执照'))).toBeDefined()
+    expect(find(active.render(companyChoice), named('选择营业执照'))).toBeDefined()
     update(sessionId, { view: { draftId, revision: companyChoice.revision + 1 } })
-    expect(find(active.render(companyChoice), named('上传营业执照'))).toBeUndefined()
+    expect(find(active.render(companyChoice), named('选择营业执照'))).toBeUndefined()
     expect(active.sendOnboardingReply).not.toHaveBeenCalled()
     find(active.render(companyChoice), named('继续建档')).props.onClick()
     await settle()

@@ -131,38 +131,28 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
         if (action === 'set-mode' && (payload.mode === 'scan' || payload.mode === 'manual'))
           return reply(onboarding.setMode(revision, payload.mode))
         if (action === 'submit-card' && typeof sessionId === 'string' && typeof payload.cardId === 'string') {
-          const choice = payload.mode ?? payload.choice
-          if (payload.document !== undefined) {
-            const current = onboarding.cardStatus(sessionId, payload.cardId)
-            if ('receipt' in current && current.receipt)
-              return reply(onboarding.submitCard(sessionId, payload.cardId, revision, undefined, undefined))
-            const kind = onboarding.uploadKind(sessionId, payload.cardId, revision)
-            if (!kind) return reply(refuse('CARD_UNAVAILABLE', '请用当前上传卡片继续。'))
-            if (recognizing) return reply(refuse('DOCUMENT_IN_PROGRESS', '上一份资料还在识别，请稍候。'))
-            recognizing = true
-            try {
-              const services = getServices()
-              const result = await recognizeCompanyDocument(services, sessionId, modelOf(session, services), kind, payload.document, signal)
-              signal.throwIfAborted()
-              if (!result.accepted) return reply(result)
-              return reply(onboarding.submitCard(sessionId, payload.cardId, revision, undefined, undefined, false, result.fields))
-            } finally { recognizing = false }
-          }
-          return reply(onboarding.submitCard(sessionId, payload.cardId, revision, choice, payload.values, payload.replaceSampleBook === true))
+          if (payload.document !== undefined)
+            return reply(refuse('CARD_UNAVAILABLE', '请通过当前资料卡识别并核对文件。'))
+          return reply(onboarding.submitCard(sessionId, payload.cardId, revision, payload.mode ?? payload.choice, payload.values, payload.replaceSampleBook === true))
         }
         if (action === 'confirm') return reply(onboarding.confirm(revision, payload.replaceSampleBook === true))
         if (action === 'recognize' && typeof sessionId === 'string') {
           if (view.completed || revision !== view.revision) return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请核对后再上传。'))
+          const cardId = typeof payload.cardId === 'string' ? payload.cardId : undefined
+          const kind = cardId ? onboarding.documentKindForCard(sessionId, cardId, revision) : payload.kind
+          if (cardId && !kind) return reply(refuse('CARD_UNAVAILABLE', '请用当前资料卡识别文件。'))
           if (recognizing) return reply(refuse('DOCUMENT_IN_PROGRESS', '上一份资料还在识别，请稍候。'))
           recognizing = true
           try {
             const services = getServices()
-            const result = await recognizeCompanyDocument(services, sessionId, modelOf(session, services), payload.kind, payload.file, signal)
+            const result = await recognizeCompanyDocument(services, sessionId, modelOf(session, services), kind, payload.file, signal)
             signal.throwIfAborted()
             const updated = onboarding.status()
             if (updated.revision !== revision || updated.draftId !== draftId)
               return reply(refuse('ONBOARDING_CHANGED', '识别期间建档资料已变化，请核对后再上传。'))
-            return reply(result)
+            if (!result.accepted || !cardId) return reply(result)
+            const reviewed = onboarding.previewDocumentCard(sessionId, cardId, revision, result.fields)
+            return reply(reviewed.accepted ? { ...result, fields: reviewed.fields } : reviewed)
           } finally { recognizing = false }
         }
         return reply(refuse('ONBOARDING_ACTION', '请选择有效的建档操作。'))
