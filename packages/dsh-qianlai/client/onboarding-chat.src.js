@@ -96,14 +96,28 @@ export function registerOnboardingChat(ctx, {
         'tool/result': event => cardOf(event) && typeof event.data.message.source.callId === 'string'
           ? { id: event.data.message.source.callId, role: 'update' } : null,
       },
-      start: () => null,
+      start: (_context, { location }, reader) => {
+        const turn = location.turn
+        const previous = reader?.previous(kind)?.state
+        if (turn === undefined || previous?.turn !== turn) return { turn, earlierCardIds: [] }
+        const { earlierCardIds, card } = previous
+        // Distinct tool calls can return the same active card. DSH replays this
+        // dependency when an earlier call's result arrives or history is paged in.
+        return {
+          turn,
+          earlierCardIds: card && !earlierCardIds.includes(card.id) ? [...earlierCardIds, card.id] : earlierCardIds,
+        }
+      },
       update: ({ state }, { event }) => {
         const card = cardOf(event)
-        return card ? { card, anchorSeq: event.seq } : state
+        return card ? { ...state, card, anchorSeq: event.seq } : state
       },
       buildViewNode: ({ key, id, state, start }) => state?.card ? {
         key, id, kind, target: 'chat', anchorSeq: state.anchorSeq,
-        location: start.location, groupTree: 'turn', visibility: 'visible', data: state.card,
+        location: start.location, groupTree: 'turn',
+        // A materialized node can become a duplicate on replay and must keep its key.
+        visibility: state.earlierCardIds?.includes(state.card.id) ? 'hidden' : 'visible',
+        data: state.card,
       } : null,
     }
   }
