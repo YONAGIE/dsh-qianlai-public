@@ -8,6 +8,8 @@
 
 - Continue company setup in a new reply after each chat card submission. Show the method picker at the start and accept later switches by chat while preserving the draft. Open the official QR page automatically after confirming a supported region.
 
+- Show the same onboarding card only once per reply, including when multiple tool calls return the same tax scan or a document step.
+
 - Use DSH’s right-hand tool panel for the onboarding draft, updating it after chat-form submissions and showing tax scan results for review.
 
 - Offer license or tax-document upload and short forms in chat. Show only the fields needed for the current step and save submissions to the current draft with a chat receipt.
