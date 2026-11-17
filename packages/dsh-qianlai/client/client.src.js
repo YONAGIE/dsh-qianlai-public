@@ -120,6 +120,20 @@ window.__ModuleLoader__.load({
     }
     const muted = 'var(--dsw-alias-label-secondary, #616b65)'
     const readoutBorder = '1px solid color-mix(in srgb, currentColor 16%, transparent)'
+    const panelAction = {
+      background: 'transparent', color: 'inherit', border: readoutBorder, borderRadius: 8,
+      minHeight: 34, padding: '5px 12px', font: 'inherit', cursor: 'pointer',
+    }
+    const panelInput = {
+      background: 'var(--dsw-alias-fill-primary, transparent)', color: 'inherit', border: readoutBorder,
+      borderRadius: 8, width: '100%', boxSizing: 'border-box', minWidth: 0, minHeight: 36,
+      padding: '5px 8px', font: 'inherit',
+    }
+    const sectionLabels = {
+      company: '公司资料', tax: '税务资料', bank: '银行账户', accounting: '记账准备', payroll: '工资社保',
+    }
+    const paydays = Object.fromEntries(Array.from({ length: 31 }, (_, index) => [index + 1, (index + 1) + ' 日']))
+    const blankAccount = () => ({ holder: '', number: '', bank: '', currency: 'CNY', openedOn: '' })
 
     function refreshOnboarding(sessionId, view) {
       if (!view) return
@@ -187,19 +201,163 @@ window.__ModuleLoader__.load({
       ] }, label)
     }
 
-    function readoutGroup(title, rows) {
+    function readoutGroup(title, rows, edit) {
       return jsx('section', { style: { borderTop: readoutBorder, padding: '12px 0' }, children: [
-        jsx('h3', { style: { margin: '0 0 8px', fontSize: 14, fontWeight: 650 }, children: title }),
+        jsx('header', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 8 },
+          children: [
+            jsx('h3', { style: { margin: 0, fontSize: 14, fontWeight: 650 }, children: title }),
+            edit ? jsx('button', { type: 'button', 'aria-label': '编辑' + title, style: panelAction, onClick: edit, children: '编辑' }) : null,
+          ],
+        }),
         jsx('dl', { style: readoutGrid, children: rows }),
       ] })
+    }
+
+    function sectionValues(view, section) {
+      const { enterprise, accounting, payroll } = view
+      const accountValues = account => ({ ...blankAccount(), ...account, number: '' })
+      switch (section) {
+        case 'company':
+          return { companyName: enterprise?.companyName ?? '', taxId: enterprise?.taxId ?? '',
+            establishedOn: enterprise?.establishedOn ?? '', business: enterprise?.business ?? [] }
+        case 'tax':
+          return { province: enterprise?.province ?? '', city: enterprise?.city ?? '', taxAuthority: enterprise?.taxAuthority ?? '',
+            taxStatus: enterprise?.taxStatus ?? '', taxpayerIdentity: enterprise?.taxpayerIdentity ?? '' }
+        case 'bank':
+          return { bankStatus: enterprise?.bankStatus ?? '', accounts: (enterprise?.accounts ?? []).map(accountValues) }
+        case 'accounting':
+          return { history: accounting?.history ?? '', lastMonth: accounting?.lastMonth ?? '', startMonth: accounting?.startMonth ?? '' }
+        case 'payroll':
+          return { payroll: payroll?.payroll ?? '', payday: payroll?.payday ?? '', social: payroll?.social ?? '' }
+        default:
+          return {}
+      }
+    }
+
+    function changedValues(editor) {
+      const { input, initial } = editor
+      const changed = Object.fromEntries(Object.entries(input).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(initial[key])))
+      if (changed.accounts) changed.accounts = changed.accounts.map(({ id, holder, bank, currency, openedOn, number }) => ({
+        ...(id ? { id } : {}), holder, bank, currency, openedOn, ...(number ? { number } : {}),
+      }))
+      return changed
+    }
+
+    function OnboardingEditor({ editor, change, cancel, save, saving, error }) {
+      const { section, input, officialTax } = editor
+      const title = sectionLabels[section]
+      const field = (label, name, options = {}) => {
+        const { type = 'text', list, locked, placeholder, maxLength, value = input[name], set = next => change(name, next) } = options
+        const props = { name, value: value ?? '', disabled: saving, onChange: event => set(event.target.value), style: panelInput }
+        return jsx('label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0 }, children: [
+          jsx('span', { style: { color: muted, fontSize: 12 }, children: label }),
+          locked ? jsx('span', { title: '来自已核对的税务资料', children: value || '待补' }) : list ? jsx('select', { ...props, children: [
+            jsx('option', { value: '', children: '请选择' }),
+            ...Object.entries(list).map(([key, text]) => jsx('option', { value: key, children: text }, key)),
+          ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off' }),
+        ] }, name)
+      }
+
+      const updateAccount = (index, key, value) =>
+        change('accounts', input.accounts.map((account, row) => row === index ? { ...account, [key]: value } : account))
+      let fields
+      switch (section) {
+        case 'company':
+          fields = [
+            field('企业全称', 'companyName', { maxLength: 200, locked: Boolean(officialTax) }),
+            field('统一社会信用代码', 'taxId', { maxLength: 18, locked: Boolean(officialTax) }),
+            field('成立日期', 'establishedOn', { type: 'date' }),
+            jsx('fieldset', { style: { gridColumn: '1 / -1', border: 0, margin: 0, padding: 0 }, children: [
+              jsx('legend', { style: { color: muted, fontSize: 12, marginBottom: 6 }, children: '实际经营' }),
+              ...Object.entries(businessTypes).map(([key, label]) => jsx('label', {
+                style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30 },
+                children: [jsx('input', {
+                  type: 'checkbox', checked: input.business.includes(key), disabled: saving,
+                  onChange: event => {
+                    const business = input.business.filter(item => item !== key && item !== 'none')
+                    change('business', event.target.checked ? key === 'none' ? ['none'] : [...business, key] : input.business.filter(item => item !== key))
+                  },
+                }), label],
+              }, key)),
+            ] }),
+          ]
+          break
+        case 'tax': {
+          const options = values => Object.fromEntries(values.map(value => [value, value]))
+          fields = [
+            field('省份', 'province', { list: options(Object.keys(TAX_REGION_CITIES)), locked: Boolean(officialTax),
+              set: value => change({ province: value, city: '' }) }),
+            field('城市或地区', 'city', { list: options(TAX_REGION_CITIES[input.province] ?? []), locked: Boolean(officialTax) }),
+            field('主管税务机关', 'taxAuthority', { maxLength: 200, locked: Boolean(officialTax) }),
+            field('纳税人类型', 'taxpayerIdentity', { list: taxpayerTypes, value: officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown'
+              ? taxpayerTypes[input.taxpayerIdentity] : input.taxpayerIdentity, locked: Boolean(officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown') }),
+            field('税务状态', 'taxStatus', { maxLength: 60, locked: Boolean(officialTax?.taxStatus) }),
+          ]
+          break
+        }
+        case 'bank':
+          fields = [
+            field('账户情况', 'bankStatus', { list: bankStates }),
+            ...(input.bankStatus === 'provided' ? [
+              ...input.accounts.map((account, index) => jsx('fieldset', {
+                style: { gridColumn: '1 / -1', border: readoutBorder, borderRadius: 10, margin: 0, padding: '10px 12px', minWidth: 0 },
+                children: [
+                  jsx('legend', { style: { fontSize: 12, color: muted }, children: account.maskedNumber || '银行账户 ' + (index + 1) }),
+                  jsx('div', { style: readoutGrid, children: [
+                    ['账户户名', 'holder', { maxLength: 200 }], ['开户行', 'bank', { maxLength: 200 }],
+                    ['银行账号', 'number', { maxLength: 48, placeholder: account.maskedNumber ? '留空保留 ' + account.maskedNumber : undefined }],
+                    ['币种', 'currency', { maxLength: 3 }], ['开户日期', 'openedOn', { type: 'date' }],
+                  ].map(([label, key, options]) => field(label, 'account-' + index + '-' + key,
+                    { ...options, value: account[key], set: value => updateAccount(index, key, value) })) }),
+                  jsx('button', { type: 'button', style: { ...panelAction, marginTop: 8 }, disabled: saving,
+                    onClick: () => change('accounts', input.accounts.filter((_, row) => row !== index)), children: '移除账户' }),
+                ],
+              }, account.id ?? index)),
+              jsx('div', { style: { gridColumn: '1 / -1' }, children: jsx('button', {
+                type: 'button', style: panelAction, disabled: saving || input.accounts.length >= 20,
+                onClick: () => change('accounts', [...input.accounts, blankAccount()]), children: '新增账户',
+              }) }),
+            ] : []),
+          ]
+          break
+        case 'accounting':
+          fields = [
+            field('旧账情况', 'history', { list: histories }),
+            input.history === 'previous' ? field('旧账做到的月份', 'lastMonth', { type: 'month' }) : null,
+            field('开始记账的月份', 'startMonth', { type: 'month' }),
+          ]
+          break
+        case 'payroll':
+          fields = [field('发薪安排', 'payroll', { list: payrollStates }),
+            input.payroll === 'scheduled' ? field('每月发薪日', 'payday', { list: paydays }) : null,
+            field('社保情况', 'social', { list: socialStates })]
+          break
+      }
+      return jsx('form', {
+        'aria-label': '编辑' + title, style: { borderTop: readoutBorder, padding: '12px 0' },
+        onSubmit: event => { event.preventDefault(); void save() },
+        children: [
+          jsx('h3', { style: { margin: '0 0 12px', fontSize: 14, fontWeight: 650 }, children: title }),
+          jsx('div', { style: { ...readoutGrid, gap: '12px 16px' }, children: fields }),
+          error ? jsx('p', { role: 'alert', style: { margin: '10px 0 0', color: 'var(--dsw-alias-label-danger, #ad3939)' }, children: error }) : null,
+          jsx('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }, children: [
+            jsx('button', { type: 'button', style: panelAction, disabled: saving, onClick: cancel, children: '取消' }),
+            jsx('button', { type: 'submit', style: { ...panelAction, background: 'var(--dsw-static-deepseek-600, #1b6f4a)', color: '#fff' },
+              disabled: saving || !Object.keys(changedValues(editor)).length, children: saving ? '保存中…' : '保存' }),
+          ] }),
+        ],
+      })
     }
 
     function summarizeObligations(items) {
       return items?.map(item => [item.taxItem, item.filingCycle].filter(Boolean).join(' · ')).filter(Boolean).join('；')
     }
 
-    function OnboardingReadout({ view, profile }) {
+    function OnboardingReadout({ view, profile, editor, startEdit, change, cancel, save, saving, error }) {
       const { enterprise, accounting, payroll } = view
+      const section = (name, rows) => !view.completed && editor?.section === name
+        ? jsx(OnboardingEditor, { editor, change, cancel, save, saving, error }, name)
+        : readoutGroup(sectionLabels[name], rows, view.completed || editor ? undefined : () => startEdit(name))
       const accountText = enterprise?.accounts?.map(account =>
         [account.holder, account.bank, account.maskedNumber, currencies[account.currency] ?? account.currency, account.openedOn]
           .filter(Boolean).join(' · '),
@@ -215,29 +373,29 @@ window.__ModuleLoader__.load({
           ...(profile.taxpayerStatus ? [readoutRow('纳税人状态', profile.taxpayerStatus)] : []),
           readoutRow('当前页税费种', summarizeObligations(profile.obligations) || '本次未读取到'),
         ]) : null,
-        readoutGroup('公司资料', [
+        section('company', [
           readoutRow('企业全称', enterprise?.companyName),
           readoutRow('统一社会信用代码', enterprise?.taxId),
           readoutRow('成立日期', enterprise?.establishedOn),
           readoutRow('实际经营', (enterprise?.business ?? []).map(key => businessTypes[key]).filter(Boolean).join('、')),
         ]),
-        readoutGroup('税务资料', [
+        section('tax', [
           readoutRow('税务地区', [enterprise?.province, enterprise?.city].filter(Boolean).join(' ')),
           readoutRow('主管税务机关', enterprise?.taxAuthority),
           readoutRow('纳税人类型', taxpayerTypes[enterprise?.taxpayerIdentity]),
           readoutRow('税务状态', enterprise?.taxStatus),
           ...(enterprise?.officialTax ? [readoutRow('当前页税费种', summarizeObligations(enterprise.officialTax.obligations) || '本次未读取到')] : []),
         ]),
-        readoutGroup('银行账户', [
+        section('bank', [
           readoutRow('账户情况', bankStates[enterprise?.bankStatus]),
           ...(enterprise?.bankStatus === 'provided' ? [readoutRow('账户资料', accountText)] : []),
         ]),
-        readoutGroup('记账准备', [
+        section('accounting', [
           readoutRow('旧账情况', histories[accounting?.history]),
           ...(accounting?.history === 'previous' ? [readoutRow('旧账做到', accounting.lastMonth)] : []),
           readoutRow('开始记账', accounting?.startMonth),
         ]),
-        readoutGroup('工资社保', [
+        section('payroll', [
           readoutRow('发薪安排', payrollStates[payroll?.payroll]),
           ...(payroll?.payroll === 'scheduled' ? [readoutRow('发薪日', payroll.payday ? '每月 ' + payroll.payday + ' 日' : '')] : []),
           readoutRow('社保情况', socialStates[payroll?.social]),
@@ -249,6 +407,11 @@ window.__ModuleLoader__.load({
       const [view, setView] = useState(null)
       const [preview, setPreview] = useState(() => onboardingTaxPreviews.get(sessionId))
       const [message, setMessage] = useState('')
+      const [editor, setEditor] = useState(null)
+      const [notice, setNotice] = useState('')
+      const [editError, setEditError] = useState('')
+      const pendingSave = useRef(false)
+      const [saving, setSaving] = useState(false)
       useEffect(() => {
         const abort = new AbortController()
         let changed = false
@@ -270,6 +433,44 @@ window.__ModuleLoader__.load({
           unsubscribe()
         }
       }, [sessionId])
+      function startEdit(section) {
+        const input = sectionValues(view, section)
+        setNotice('')
+        setEditError('')
+        setEditor({ section, draftId: view.draftId, revision: view.revision, officialTax: view.enterprise?.officialTax, initial: input, input })
+      }
+      function change(key, value) {
+        const patch = typeof key === 'string' ? { [key]: value } : key
+        setEditor(current => ({ ...current, input: { ...current.input, ...patch } }))
+      }
+      async function save() {
+        if (pendingSave.current || !editor) return
+        const { draftId, revision, section } = editor
+        if (view.completed || view.draftId !== draftId || view.revision !== revision) {
+          setEditError('建档资料已更新。请重新编辑这组资料。')
+          return
+        }
+        const input = changedValues(editor)
+        if (!Object.keys(input).length) return
+        pendingSave.current = true
+        setSaving(true)
+        setEditError('')
+        try {
+          const draft = await onboardingRequest(sessionId, 'edit-section', { draftId, revision, section, input })
+          onboardingTaxPreviews.delete(sessionId)
+          refreshOnboarding(sessionId, draft)
+          setEditor(null)
+          setNotice(sectionLabels[section] + '已保存')
+        } catch (error) {
+          setEditError(error.message)
+          if (['DRAFT_STALE', 'ONBOARDING_CHANGED'].includes(error.code)) {
+            try { refreshOnboarding(sessionId, await onboardingRequest(sessionId, 'status')) } catch { /* Keep the current error and input. */ }
+          }
+        } finally {
+          pendingSave.current = false
+          setSaving(false)
+        }
+      }
       const profile = !preview?.draftId || preview.draftId === view?.draftId ? preview?.profile : undefined
       return jsx('section', { 'aria-label': '建档资料', 'data-qianlai-onboarding': true, style: {
         height: '100%', minHeight: 0, overflowY: 'auto', padding: '16px 20px',
@@ -279,8 +480,9 @@ window.__ModuleLoader__.load({
         jsx('p', { role: 'status', style: { margin: '0 0 12px', color: muted },
           children: view?.completed ? '建档完成' : view ? view.step + '/4 · ' + steps[view.step - 1] : message || '正在读取建档进度…',
         }),
+        notice ? jsx('p', { role: 'status', style: { color: 'var(--dsw-alias-label-accent, #1b6f4a)', margin: '0 0 10px' }, children: notice }) : null,
         view?.handoffWarning ? jsx('p', { children: view.handoffWarning }) : null,
-        view ? jsx(OnboardingReadout, { view, profile }) : null,
+        view ? jsx(OnboardingReadout, { view, profile, editor, startEdit, change, cancel: () => setEditor(null), save, saving, error: editError }) : null,
       ] })
     }
 

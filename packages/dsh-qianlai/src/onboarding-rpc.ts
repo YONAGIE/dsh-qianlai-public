@@ -124,6 +124,8 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
           return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请重新打开建档。'))
         if (action === 'claim-tax-auto-start' && typeof sessionId === 'string' && typeof payload.cardId === 'string')
           return reply(onboarding.claimTaxAutoStart(sessionId, payload.cardId, revision))
+        if (action === 'edit-section')
+          return reply(onboarding.editSection(revision, payload.section, payload.input))
         if (action === 'save' && (step === 1 || step === 2 || step === 3) && (payload.advance === undefined || typeof payload.advance === 'boolean'))
           return reply(onboarding.save(step, revision, payload.input, payload.advance !== false))
         if (action === 'set-mode' && (payload.mode === 'scan' || payload.mode === 'manual'))
@@ -132,7 +134,8 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
           const choice = payload.mode ?? payload.choice
           if (payload.document !== undefined) {
             const current = onboarding.cardStatus(sessionId, payload.cardId)
-            if ('receipt' in current && current.receipt) return reply(current)
+            if ('receipt' in current && current.receipt)
+              return reply(onboarding.submitCard(sessionId, payload.cardId, revision, undefined, undefined))
             const kind = onboarding.uploadKind(sessionId, payload.cardId, revision)
             if (!kind) return reply(refuse('CARD_UNAVAILABLE', '请用当前上传卡片继续。'))
             if (recognizing) return reply(refuse('DOCUMENT_IN_PROGRESS', '上一份资料还在识别，请稍候。'))

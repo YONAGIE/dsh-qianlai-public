@@ -7,6 +7,7 @@ import type { RpcConnection } from '../src/wechat/control.js'
 
 const stores: BookStore[] = []
 afterEach(() => { for (const store of stores.splice(0)) store.close() })
+const document = { name: 'synthetic.png', mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axouYQAAAAASUVORK5CYII=' }
 
 function setup(services: OnboardingHostServices = {}) {
   const store = new BookStore(':memory:')
@@ -100,25 +101,71 @@ describe('company onboarding RPC', () => {
     expect(store.company()).toBeUndefined()
   })
 
-  it('uses the upload card to recognize directly and asks only for remaining company fields', async () => {
+  it('reads a document directly from the source choice and asks only for missing fields', async () => {
     const prepareCall = vi.fn(async () => ({
       config: {}, inputModalities: ['text', 'image'],
-      async *stream() {
+      async *stream(options: Readonly<Record<string, unknown>>) {
+        expect(options).toMatchObject({ messages: [{ content: [expect.objectContaining({ text: '读取这份营业执照。' }), expect.any(Object)] }] })
         yield { type: 'block-end', index: 0, block: { type: 'text', text: '{"companyName":"合成执照企业","taxId":"000000000000000077"}' } }
         yield { type: 'finish', reason: { kind: 'stop' } }
       },
     }))
-    const { card, submit } = setup({ llm: { prepareCall }, attachments: { async saveImage() { return {} } } })
+    const { request, card, submit, onboarding } = setup({ llm: { prepareCall }, attachments: { async saveImage() { return {} } } })
     await submit(card('start'), { mode: 'manual' })
-    await submit(card(), { choice: 'license' })
-    const file = card()
-    expect(file).toMatchObject({ kind: 'upload', documentKind: 'license' })
-    const document = { name: 'synthetic.png', mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axouYQAAAAASUVORK5CYII=' }
-    const read = await submit(file, { document })
+    const source = card()
+    expect(source).toMatchObject({ kind: 'source', documentKind: 'license' })
+    await expect(submit(source, { document, sessionId: 'test-zhangjie-other' }))
+      .resolves.toMatchObject({ accepted: false, code: 'CARD_UNAVAILABLE' })
+    expect(prepareCall).not.toHaveBeenCalled()
+    const read = await submit(source, { document, kind: 'tax' })
     expect(read).toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成执照企业' } } })
-    expect(card()).toMatchObject({ fields: [expect.objectContaining({ key: 'establishedOn' })] })
-    await submit(file, { document })
+    const missing = card()
+    expect(missing).toMatchObject({ fields: [expect.objectContaining({ key: 'establishedOn' })] })
+    await expect(submit(source, { document })).resolves.toMatchObject({ accepted: true, receipt: { labels: ['已识别并保存资料'] } })
+    await expect(submit(source, { document, revision: source.revision + 1 }))
+      .resolves.toMatchObject({ accepted: false, code: 'CARD_UNAVAILABLE' })
     expect(prepareCall).toHaveBeenCalledTimes(1)
+    const edited = await request('edit-section', {
+      draftId: read.view.draftId, revision: read.view.revision, section: 'company', input: { companyName: '更正后的合成企业' },
+    })
+    expect(edited).toMatchObject({
+      accepted: true, enterprise: { companyName: '更正后的合成企业', taxId: '000000000000000077' },
+    })
+    await expect(request('card-status', { cardId: missing.id })).resolves.toMatchObject({ stale: true })
+    const continued = onboarding.guide('test-zhangjie', 'continue')
+    expect(continued).toMatchObject({
+      accepted: true, card: { draftId: read.view.draftId, revision: edited.revision },
+      draftSummary: { enterprise: { companyName: '更正后的合成企业' } },
+    })
+    expect(JSON.stringify(continued)).not.toContain('000000000000000077')
+  })
+
+  it('does not overwrite a sidebar edit when document recognition returns late', async () => {
+    let notifyStarted!: () => void
+    let resumeRecognition!: () => void
+    const started = new Promise<void>(resolve => { notifyStarted = resolve })
+    const released = new Promise<void>(resolve => { resumeRecognition = resolve })
+    const prepareCall = vi.fn(async () => ({
+      config: {}, inputModalities: ['text', 'image'],
+      async *stream() {
+        notifyStarted()
+        await released
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: '{"companyName":"过期识别结果"}' } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      },
+    }))
+    const { request, card, submit } = setup({ llm: { prepareCall }, attachments: { async saveImage() { return {} } } })
+    await submit(card('start'), { mode: 'manual' })
+    const source = card()
+    const pending = submit(source, { document })
+    await started
+    try {
+      await expect(request('edit-section', {
+        draftId: source.draftId, revision: source.revision, section: 'company', input: { companyName: '手工核对企业' },
+      })).resolves.toMatchObject({ accepted: true })
+    } finally { resumeRecognition() }
+    await expect(pending).resolves.toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    await expect(request('status')).resolves.toMatchObject({ enterprise: { companyName: '手工核对企业' } })
   })
 
   it('starts Beijing scanning with only province and city and continues after the verified profile is applied', async () => {

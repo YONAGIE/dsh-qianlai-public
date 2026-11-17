@@ -32,7 +32,7 @@ dsh --profile web
 
 Open the printed URL and pick **钱来张姐** in the mode picker. A fresh data directory starts with an empty book. On the first greeting, Zhangjie introduces her capabilities and invites you to set up the company. Send **我要建档** (Set up my company), then choose tax QR login or manual entry in the conversation. The right-hand **企业建档** tab shows company details, the bookkeeping month, payroll and social insurance, and final review.
 
-With manual entry, your choice appears in the original conversation. Zhangjie asks in a new reply whether to upload a business license or enter company details. After an upload, recognized fields appear in the draft on the right, and Zhangjie asks for any missing details in the next turn. Submitting a form updates the draft and continues the conversation.
+With manual entry, click the business-license upload button in Zhangjie's reply to choose a file directly. Recognized fields appear in the draft on the right. Zhangjie asks for missing details or continues to the next step in a new reply. You can also enter details in chat, or edit and save a section in the right panel. Zhangjie uses the latest saved draft when you continue.
 
 Choose a setup method at the start. To switch later, ask Zhangjie in chat to use manual entry or tax QR login. Your draft carries over. Company setup opens the real book when you confirm. Existing sample books from older versions still require your consent before replacement. If you have prior books, continue with the opening balances after setup.
 

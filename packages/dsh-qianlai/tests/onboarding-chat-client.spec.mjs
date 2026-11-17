@@ -190,7 +190,7 @@ describe('建档对话卡', () => {
     expect(find(active.render(card), node => node.type === 'input')).toBeUndefined()
   })
 
-  it('在原对话通过独立的新工具轮次选手动、上传执照，并只展示识别后的缺项', async () => {
+  it('在原对话直接在上传按钮选择文件并回填识别资料，再展示缺项', async () => {
     const mode = { ...baseCard, kind: 'mode' }
     const fields = next(4, { kind: 'fields', title: '补充公司资料', fields: [{ key: 'establishedOn', type: 'date', label: '成立日期' }] })
     const persisted = new Map()
@@ -198,8 +198,7 @@ describe('建档对话卡', () => {
       if (action === 'card-status') return persisted.get(cardId) ?? { accepted: true }
       const result = {
         [mode.id]: { receipt: { mode: input.mode }, nextCard: companyChoice },
-        [companyChoice.id]: { receipt: { choice: input.choice }, nextCard: companyUpload },
-        [companyUpload.id]: { receipt: { labels: ['识别公司资料'] }, nextCard: fields, view: recognizedView },
+        [companyChoice.id]: { receipt: { labels: ['识别公司资料'] }, nextCard: fields, view: recognizedView },
       }[cardId]
       persisted.set(cardId, { accepted: true, ...result })
       return persisted.get(cardId)
@@ -219,27 +218,34 @@ describe('建档对话卡', () => {
     expect(active.sendOnboardingReply).toHaveBeenCalledExactlyOnceWith(sessionId, '我选择手动填写。')
     active.render(companyChoice)
     await settle()
+    const nativeInput = find(active.render(companyChoice), node => node.type === 'input' && node.props.type === 'file')
+    const openPicker = vi.fn()
+    nativeInput.props.ref.current = { click: openPicker }
     await choose(companyChoice, '上传营业执照')
+    expect(openPicker).toHaveBeenCalled()
+    expect(request.mock.calls.filter(([, action]) => action === 'submit-card')).toHaveLength(1)
+    expect(active.sendOnboardingReply).toHaveBeenCalledTimes(1)
+    nativeInput.props.onChange({ target: { files: [] } })
+    expect(readOnboardingFile).not.toHaveBeenCalled()
     expect(section(active.render(companyChoice), companyUpload)).toBeUndefined()
     const file = { name: '示例营业执照.png', type: 'image/png', size: 4 }
-    active.render(companyUpload)
+    nativeInput.props.onChange({ target: { files: [file] } })
+    expect(find(active.render(companyChoice), info).props.children).toBe('正在识别并保存…')
+    expect(find(active.render(companyChoice), named('上传营业执照')).props.disabled).toBe(true)
     await settle()
-    find(active.render(companyUpload), node => node.type === 'input' && node.props.type === 'file')
-      .props.onChange({ target: { files: [file] } })
-    await settle()
-    expect(section(active.render(companyUpload), fields)).toBeUndefined()
+    expect(section(active.render(companyChoice), fields)).toBeUndefined()
+    expect(find(active.render(companyChoice), info).props.children).toBe('营业执照已识别，资料已保存。')
     active.render(fields)
     await settle()
 
     expect(readOnboardingFile).toHaveBeenCalledExactlyOnceWith(file)
     expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
-      cardId: companyUpload.id, draftId, revision: companyUpload.revision,
+      cardId: companyChoice.id, draftId, revision: companyChoice.revision,
       document: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
     }, expect.any(AbortSignal))
     expect(active.refreshOnboarding).toHaveBeenCalledWith(sessionId, recognizedView)
     expect(active.sendOnboardingReply.mock.calls).toEqual([
       [sessionId, '我选择手动填写。'],
-      [sessionId, '我想上传营业执照。'],
       [sessionId, '我已上传营业执照，请继续。'],
     ])
     const visibleFields = section(active.render(fields), fields)
@@ -251,7 +257,47 @@ describe('建档对话卡', () => {
     await settle()
     expect(find(section(active.render(fields), fields), node => node.type === 'input').props.type).toBe('date')
     expect(readOnboardingFile).toHaveBeenCalledTimes(1)
-    expect(active.sendOnboardingReply).toHaveBeenCalledTimes(3)
+    expect(active.sendOnboardingReply).toHaveBeenCalledTimes(2)
+  })
+
+  it('旧上传卡仍可选择文件，识别失败时保留重试入口', async () => {
+    const request = vi.fn(async (_session, action) => {
+      if (action === 'submit-card') throw Error('没有识别到公司资料，请换一份更清晰的营业执照。')
+      return { accepted: true }
+    })
+    const readOnboardingFile = vi.fn(async () => 'dGVzdA==')
+    const active = client(request, undefined, { readOnboardingFile })
+    active.render(companyUpload)
+    await settle()
+    const input = find(active.render(companyUpload), node => node.type === 'input' && node.props.type === 'file')
+    const file = { name: '合成营业执照.pdf', type: 'application/pdf', size: 4 }
+    input.props.onChange({ target: { files: [file] } })
+    await settle()
+    expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
+      cardId: companyUpload.id, draftId, revision: companyUpload.revision,
+      document: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
+    }, expect.any(AbortSignal))
+    expect(find(active.render(companyUpload), node => node.props.role === 'alert').props.children)
+      .toBe('没有识别到公司资料，请换一份更清晰的营业执照。')
+    expect(find(active.render(companyUpload), named('上传营业执照')).props.disabled).toBe(false)
+    expect(active.refreshOnboarding).not.toHaveBeenCalled()
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
+  })
+
+  it('侧栏保存后阻止旧聊天卡继续提交，用户可以按最新草稿开启下一轮', async () => {
+    let update
+    const request = vi.fn(async () => ({ accepted: true }))
+    const active = client(request, undefined, { subscribeOnboarding: listener => { update = listener } })
+    active.render(companyChoice)
+    await settle()
+    expect(find(active.render(companyChoice), named('上传营业执照'))).toBeDefined()
+    update(sessionId, { view: { draftId, revision: companyChoice.revision + 1 } })
+    expect(find(active.render(companyChoice), named('上传营业执照'))).toBeUndefined()
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
+    find(active.render(companyChoice), named('继续建档')).props.onClick()
+    await settle()
+    expect(request).toHaveBeenCalledExactlyOnceWith(sessionId, 'card-status', { cardId: companyChoice.id })
+    expect(active.sendOnboardingReply).toHaveBeenCalledExactlyOnceWith(sessionId, '请按最新资料继续建档。')
   })
 
   it('选择地区后立刻打开官方扫码，重开对话只恢复状态，用户核对后再回填', async () => {
