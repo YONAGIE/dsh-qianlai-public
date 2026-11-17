@@ -124,6 +124,19 @@ const businessLabels = {
 } as const
 const choices = Object.keys(businessLabels) as Business[]
 const normalizeCompanyName = (name: string) => name.normalize('NFKC').replace(/\s+/g, '')
+const editableSections = {
+  company: { step: 1, keys: ['companyName', 'taxId', 'establishedOn', 'business'] },
+  tax: { step: 1, keys: ['province', 'city', 'taxAuthority', 'taxStatus', 'taxpayerIdentity'] },
+  bank: { step: 1, keys: ['bankStatus', 'accounts'] },
+  accounting: { step: 2, keys: ['history', 'lastMonth', 'startMonth'] },
+  payroll: { step: 3, keys: ['payroll', 'payday', 'social'] },
+} satisfies Record<string, { step: EditableStep; keys: string[] }>
+
+function isOfficialField(key: string, profile?: OfficialTax) {
+  return !!profile && (['companyName', 'taxId', 'province', 'city', 'taxAuthority'].includes(key) ||
+    (key === 'taxStatus' && !!profile.taxStatus) ||
+    (key === 'taxpayerIdentity' && profile.taxpayerIdentity !== 'unknown'))
+}
 
 function isBlockedStatus(value: string) {
   return blockedStatuses.some(status => status === value.trim())
@@ -240,12 +253,16 @@ function validateEnterprise(data: Enterprise | undefined, today: string): Refusa
   if (!data.bankStatus) return refuse('BANK_STATUS_REQUIRED', '请确认银行账户情况，资料未齐可以选待补。')
   if (data.bankStatus === 'provided' && (!data.accounts.length || data.accounts.some(account => !account.holder || !account.number || !account.bank || !account.currency)))
     return refuse('BANK_ACCOUNT_REQUIRED', '请补齐账户户名、账号、开户行和币种，资料未齐可以选待补。')
-  const numbers = data.accounts.map(account => account.number).filter(Boolean)
+  return validateAccountValues(data.accounts, today)
+}
+
+function validateAccountValues(accounts: readonly Account[], today: string): Refusal | undefined {
+  const numbers = accounts.map(account => account.number).filter(Boolean)
   if (numbers.some(number => !/^\d{4,34}$/.test(number)) || numbers.length !== new Set(numbers).size)
     return refuse('BANK_NUMBER_INVALID', '请检查银行账号格式，并去掉重复的账户。')
-  if (data.accounts.some(account => account.currency && !/^[A-Z]{3}$/.test(account.currency)))
+  if (accounts.some(account => account.currency && !/^[A-Z]{3}$/.test(account.currency)))
     return refuse('BANK_CURRENCY_INVALID', '请选择账户币种。')
-  if (data.accounts.some(account => account.openedOn && (!isCalendarDate(account.openedOn) || account.openedOn > today)))
+  if (accounts.some(account => account.openedOn && (!isCalendarDate(account.openedOn) || account.openedOn > today)))
     return refuse('BANK_DATE_INVALID', '请核对账户开户日期。')
 }
 
@@ -386,6 +403,64 @@ export class CompanyOnboarding {
     return { ...({ 1: record.enterprise, 2: record.accounting, 3: record.payroll, 4: undefined }[step]) }
   }
 
+  editSection(revision: number, section: unknown, input: unknown): OnboardingView | Refusal {
+    return this.store.transaction(() => {
+      const record = this.record()
+      if (revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请核对当前版本后重试。')
+      if (record.completedAt) return refuse('ONBOARDING_COMPLETE', '企业已经完成建档。')
+      if (typeof section !== 'string' || !Object.hasOwn(editableSections, section))
+        return refuse('DRAFT_INPUT_INVALID', '请选择需要修改的资料。')
+      const { step, keys } = editableSections[section as keyof typeof editableSections]
+      const current = this.stepValues(record, step)
+      const today = todayInChina(this.now())
+      const patch: Record<string, unknown> = {}
+      try {
+        for (const [key, value] of Object.entries(object(input))) {
+          if (!keys.includes(key)) throw new InputError('请按当前分组修改资料。')
+          if (current[key] === value) continue
+          if (isOfficialField(key, record.enterprise?.officialTax))
+            throw new InputError('这是从税务机关读取的资料。如需更正，请核对税务资料。')
+          if (key === 'province' || key === 'city') {
+            patch[key] = text(value, key === 'province' ? '省份' : '城市或地区', key === 'province' ? 30 : 50)
+          } else if (key === 'accounts') {
+            if (!Array.isArray(value) || value.some(account => Object.keys(object(account))
+              .some(field => !['id', 'holder', 'number', 'bank', 'currency', 'openedOn'].includes(field))))
+              throw new InputError('请核对银行账户资料。')
+            const accounts = parseAccounts(value, record.enterprise?.accounts ?? [])
+            if (accounts.some(account => !account.holder || !account.number || !account.bank || !account.currency))
+              throw new InputError('请补齐账户户名、账号、开户行和币种。')
+            const invalid = validateAccountValues(accounts, today)
+            if (invalid) return invalid
+            // The original input preserves which IDs were supplied by the caller.
+            patch[key] = value
+          } else if (value === '' || (key === 'business' && Array.isArray(value) && !value.length)) {
+            patch[key] = value
+          } else {
+            Object.assign(patch, fieldPatch(onboardingFields[step], {
+              [key]: key === 'payday' && typeof value === 'number' ? String(value) : value,
+            }, today))
+          }
+        }
+        if (Object.hasOwn(patch, 'province') || Object.hasOwn(patch, 'city')) {
+          const { province = '', city = '' } = { ...current, ...patch }
+          if ((province || city) && (typeof province !== 'string' || typeof city !== 'string' ||
+              !Object.hasOwn(cities, province) || !cities[province]?.includes(city)))
+            throw new InputError('请选择有效的省份和城市或地区。')
+        }
+      } catch (error) {
+        return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
+      }
+      if (!Object.keys(patch).length) return this.view(record)
+      const previous = record.enterprise
+      const changesCompany = previous?.taxId && typeof patch.taxId === 'string' &&
+        previous.taxId !== patch.taxId.toUpperCase()
+      if (changesCompany && previous.accounts.length)
+        return refuse('COMPANY_ACCOUNT_MISMATCH', '请先核对并移除已有银行账户，再更正信用代码。')
+      const tax = changesCompany ? { province: '', city: '', taxAuthority: '', taxStatus: '', taxpayerIdentity: '' } : {}
+      return this.save(step, revision, { ...current, ...tax, ...patch }, false, true)
+    })
+  }
+
   /** Save only missing fields. Existing data, including account details, stays in the draft. */
   private saveFields(record: OnboardingRecord, fields: readonly FormField[], values: unknown, step = record.step): OnboardingView | Refusal {
     if (step === 4) return refuse('STEP_UNAVAILABLE', '请通过对话里的确认卡继续。')
@@ -402,7 +477,7 @@ export class CompanyOnboarding {
   private editCard(record: OnboardingRecord, step: EditableStep): CardContent {
     const current = this.stepValues(record, step)
     const fields = onboardingFields[step].filter(({ key }) => key !== 'taxRegion' &&
-      (!record.enterprise?.officialTax || !['companyName', 'taxId', 'taxAuthority', 'taxStatus', 'taxpayerIdentity'].includes(key)) &&
+      !isOfficialField(key, record.enterprise?.officialTax) &&
       (key !== 'lastMonth' || current.history === 'previous') &&
       (key !== 'payday' || current.payroll === 'scheduled'))
     const initialValues = Object.fromEntries(fields.filter(field => current[field.key] !== undefined)
@@ -559,7 +634,18 @@ export class CompanyOnboarding {
       if (!active) content ??= this.nextCard(record)
       const card = content ? this.issueCard(sessionId, content) : active
       const latest = this.record()
-      return { accepted: true as const, step: latest.step, ...(latest.mode ? { mode: latest.mode } : {}), ...(card ? { card } : {}) }
+      const { enterprise, accounting, payroll } = latest
+      const draftSummary = {
+        ...(enterprise ? { enterprise: {
+          companyName: enterprise.companyName, establishedOn: enterprise.establishedOn,
+          province: enterprise.province, city: enterprise.city, taxAuthority: enterprise.taxAuthority,
+          taxStatus: enterprise.taxStatus, taxpayerIdentity: enterprise.taxpayerIdentity,
+          business: enterprise.business, bankStatus: enterprise.bankStatus,
+        } } : {}),
+        ...(accounting ? { accounting } : {}),
+        ...(payroll ? { payroll } : {}),
+      }
+      return { accepted: true as const, step: latest.step, ...(latest.mode ? { mode: latest.mode } : {}), draftSummary, ...(card ? { card } : {}) }
     })
   }
 
@@ -600,7 +686,7 @@ export class CompanyOnboarding {
   uploadKind(sessionId: string, cardId: string, revision: number) {
     const record = this.store.companyOnboarding()
     const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
-    return record && item?.card.kind === 'upload' && !record.completedAt && item.card.revision === revision &&
+    return record && item && (item.card.kind === 'source' || item.card.kind === 'upload') && !record.completedAt && item.card.revision === revision &&
       this.activeCard(record, sessionId)?.card.id === cardId ? item.card.documentKind : undefined
   }
 
@@ -693,12 +779,12 @@ export class CompanyOnboarding {
     })
   }
 
-  save(step: EditableStep, revision: number, input: unknown, advance = true): OnboardingView | Refusal {
+  save(step: EditableStep, revision: number, input: unknown, advance = true, editingDraft = false): OnboardingView | Refusal {
     return this.store.transaction(() => {
       const record = this.record()
       if (revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请刷新后继续。')
       if (record.completedAt) return refuse('ONBOARDING_COMPLETE', '企业已经完成建档。')
-      if (![1, 2, 3].includes(step) || step > record.step) return refuse('STEP_UNAVAILABLE', '请先完成前面的步骤。')
+      if (![1, 2, 3].includes(step) || (step > record.step && !editingDraft)) return refuse('STEP_UNAVAILABLE', '请先完成前面的步骤。')
       const today = todayInChina(this.now())
       let error: Refusal | undefined
       try {
@@ -706,7 +792,8 @@ export class CompanyOnboarding {
           const previous = record.enterprise
           record.enterprise = parseEnterprise(input, previous)
           error = validateEnterprise(record.enterprise, today)
-          if (previous && ((previous.taxId && previous.taxId !== record.enterprise.taxId)
+          const sameIdentity = editingDraft && previous && TAX_ID.test(previous.taxId) && previous.taxId === record.enterprise.taxId
+          if (previous && !sameIdentity && ((previous.taxId && previous.taxId !== record.enterprise.taxId)
               || (previous.companyName && previous.companyName !== record.enterprise.companyName))) {
             delete record.accounting
             delete record.payroll
@@ -724,7 +811,7 @@ export class CompanyOnboarding {
         throw error
       }
       if (error && advance) return error
-      if (error) {
+      if (error && step <= record.step) {
         record.step = step
       } else if (step === 1 && record.step > 2 && validateAccounting(record.accounting, record.enterprise, today)) {
         record.step = 2

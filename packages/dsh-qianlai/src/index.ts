@@ -254,7 +254,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 在收到建档卡回话后取得已保存的下一步。老板用自然语言明确要求切换方式时用 switch-mode 和 mode，保留同一份草稿。fill 只保存从老板本轮明确提供的内容或实际读到的材料中确认的缺项。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧显示资料和进度。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和下一步卡片，按本轮结果继续。资料来源卡的上传按钮在当前聊天，点击直接选文件。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。fill 只保存从老板本轮明确提供的内容或实际读到的材料中确认的缺项。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
         {
           action: { type: 'string', enum: ['start', 'continue', 'fill', 'switch-mode'] },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },

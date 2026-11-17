@@ -162,6 +162,7 @@ function makeClient() {
     sessions,
     sendOnboardingReply: (id, text) => window.onboardingClient.sendOnboardingReply(id, text),
     openOnboarding() { window.onboardingClient.openOnboarding(sessionId) },
+    subscribeOnboarding(listener) { return window.onboardingClient.subscribeOnboarding(listener) },
     closeOnboarding() { tabOpen = false; render() },
     refreshOnboarding(view) { window.onboardingClient.refreshOnboarding(sessionId, view) },
     previewOnboardingTax(profile, draftId) { window.onboardingClient.previewOnboardingTax(sessionId, profile, draftId) },
@@ -172,6 +173,13 @@ function makeClient() {
     setOnboarding(respond) { onboarding = respond },
     text() { return getText(render()) },
     controls() { return ['input', 'select', 'button'].flatMap(type => findNodes(render()[1], type)) },
+    editSection(label) {
+      const button = findButtons(render()[1]).find(node => node.props['aria-label'] === '编辑' + label)
+      if (!button) throw Error('edit button unavailable: ' + label)
+      button.props.onClick()
+    },
+    input(name) { return this.controls().find(node => node.props.name === name)?.props },
+    submitForm() { findNodes(render()[1], 'form')[0].props.onSubmit({ preventDefault() {} }) },
     buttonText() { return findButtons(render())[0]?.props.children },
     buttons() { return findButtons(render()).map(node => node.props.children) },
     click(text) {
@@ -253,7 +261,7 @@ describe('Zhangjie onboarding sidebar', () => {
     expect(client.send).toHaveBeenCalledTimes(1)
   })
 
-  it('shows saved chat changes, preserves masked account numbers and keeps actions in the conversation', async () => {
+  it('shows saved chat changes and only masked account numbers in the sidebar', async () => {
     const client = makeClient()
     let draft = sampleDraft
     const respond = vi.fn(() => draft)
@@ -281,7 +289,8 @@ describe('Zhangjie onboarding sidebar', () => {
       expect(client.text()).not.toContain('000000654321')
       expect(client.text()).toContain('2025-08')
       expect(client.text()).toContain('每月 25 日')
-      expect(client.controls()).toEqual([])
+      expect(client.controls()).toHaveLength(5)
+      expect(client.controls().every(node => node.type === 'button' && node.props.children === '编辑')).toBe(true)
 
       client.closeOnboarding()
       client.openOnboarding()
@@ -289,6 +298,86 @@ describe('Zhangjie onboarding sidebar', () => {
       await settle()
       expect(client.text()).toContain('合成小店')
       expect(respond.mock.calls).toEqual(Array.from({ length: 2 }, () => [{ action: 'status', sessionId: 'synthetic-session' }]))
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it('uses the saved revision and broadcasts a sidebar correction to the active chat', async () => {
+    const client = makeClient()
+    const draft = { ...sampleDraft, revision: 2, enterprise: { companyName: '合成企业', taxId: '000000000000000123' } }
+    const saved = { ...draft, revision: 3, enterprise: { ...draft.enterprise, companyName: '合成公司' } }
+    const respond = vi.fn(payload => payload.action === 'edit-section' ? saved : draft)
+    client.setOnboarding(respond)
+    const listener = vi.fn()
+    const unsubscribe = client.subscribeOnboarding(listener)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      listener.mockClear()
+      client.editSection('公司资料')
+      expect(client.input('companyName').value).toBe('合成企业')
+      client.input('companyName').onChange({ target: { value: '合成公司' } })
+      client.submitForm()
+      client.submitForm()
+      await settle()
+      expect(respond.mock.calls.filter(([payload]) => payload.action === 'edit-section')).toEqual([[{
+        action: 'edit-section', sessionId: 'synthetic-session', draftId: 'synthetic-draft', revision: 2,
+        section: 'company', input: { companyName: '合成公司' },
+      }]])
+      expect(listener).toHaveBeenCalledExactlyOnceWith('synthetic-session', { view: saved })
+      expect(client.text()).toContain('合成公司')
+      expect(client.text()).toContain('公司资料已保存')
+      expect(client.input('companyName')).toBeUndefined()
+    } finally {
+      unsubscribe()
+      client.dispose()
+    }
+  })
+
+  it('keeps an existing account number private when saving another bank field', async () => {
+    const client = makeClient()
+    const draft = { ...sampleDraft, revision: 4, enterprise: { bankStatus: 'provided', accounts: [
+      { id: 'synthetic-account', holder: '合成公司', bank: '合成银行', maskedNumber: '尾号 4321', currency: 'CNY', openedOn: '' },
+    ] } }
+    const respond = vi.fn(payload => payload.action === 'status' ? draft : { ...draft, revision: 5 })
+    client.setOnboarding(respond)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      client.editSection('银行账户')
+      expect(client.input('account-0-number')).toMatchObject({ value: '', placeholder: '留空保留 尾号 4321' })
+      client.input('account-0-bank').onChange({ target: { value: '合成另一银行' } })
+      client.submitForm()
+      await settle()
+      expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { accounts: [{
+        id: 'synthetic-account', holder: '合成公司', bank: '合成另一银行', currency: 'CNY', openedOn: '',
+      }] } }))
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it('prevents stale edits from overwriting newer chat changes', async () => {
+    const client = makeClient()
+    const draft = { ...sampleDraft, revision: 1, enterprise: { companyName: '合成草稿' } }
+    const respond = vi.fn(() => draft)
+    client.setOnboarding(respond)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      client.editSection('公司资料')
+      client.input('companyName').onChange({ target: { value: '合成侧栏编辑' } })
+      client.refreshOnboarding({ ...draft, revision: 2, enterprise: { companyName: '合成对话更新' } })
+      client.submitForm()
+      expect(client.text()).toContain('建档资料已更新。请重新编辑这组资料。')
+      expect(client.input('companyName').value).toBe('合成侧栏编辑')
+      expect(respond).toHaveBeenCalledTimes(1)
+      client.click('取消')
+      expect(client.text()).toContain('合成对话更新')
     } finally {
       client.dispose()
     }

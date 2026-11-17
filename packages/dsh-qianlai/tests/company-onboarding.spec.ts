@@ -95,6 +95,39 @@ describe('企业建档', () => {
       .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
   })
 
+  it('侧栏修改同一企业时，保留其他分组并防止旧编辑覆盖', () => {
+    const { store, wizard } = setup()
+    const review = ready(wizard)
+    const account = review.enterprise!.accounts[0]!
+    const { maskedNumber, ...editable } = account
+    expect(maskedNumber).toBe('尾号 0002')
+    const name = '样例软件服务（更正版）有限公司'
+    const renamed = accepted(wizard.editSection(review.revision, 'company', { companyName: name }))
+    const bank = accepted(wizard.editSection(renamed.revision, 'bank', { accounts: [{ ...editable, bank: '更正后的银行' }] }))
+    expect(bank).toMatchObject({
+      step: 4, accounting, payroll,
+      enterprise: { companyName: name, taxId: enterprise.taxId, accounts: [expect.objectContaining({ maskedNumber, bank: '更正后的银行' })] },
+    })
+    expect(store.companyOnboarding()?.enterprise?.accounts[0]?.number).toBe(enterprise.accounts[0]!.number)
+    expect(wizard.editSection(review.revision, 'company', { establishedOn: '2024-01-03' })).toMatchObject({ code: 'DRAFT_STALE' })
+    expect(wizard.editSection(bank.revision, 'company', { accounts: [] })).toMatchObject({ code: 'DRAFT_INPUT_INVALID' })
+    expect(wizard.editSection(bank.revision, 'bank', { accounts: [{ ...editable, number: maskedNumber }] })).toMatchObject({ code: 'BANK_NUMBER_INVALID' })
+    expect(wizard.editSection(bank.revision, 'company', { taxId: '000000000000000003' })).toMatchObject({ code: 'COMPANY_ACCOUNT_MISMATCH' })
+    expect(wizard.status()).toEqual(bank)
+  })
+
+  it('侧栏可补后续分组，保存后仍从最早缺项继续，更换信用代码时重新核对税务', () => {
+    const { wizard } = setup()
+    const draft = accepted(wizard.editSection(0, 'payroll', payroll))
+    expect(draft).toMatchObject({ step: 1, payroll, completed: false })
+    const entered = accepted(wizard.save(1, draft.revision, { ...enterprise, bankStatus: 'none', accounts: [] }))
+    const changed = accepted(wizard.editSection(entered.revision, 'company', { taxId: '000000000000000003' }))
+    expect(changed).toMatchObject({
+      step: 1, enterprise: { taxId: '000000000000000003', province: '', city: '', taxStatus: '', taxpayerIdentity: '' },
+    })
+    expect(changed).not.toHaveProperty('payroll')
+  })
+
   it.each([
     [{ taxpayerIdentity: 'general' }, 'ENTERPRISE_UNSUPPORTED'],
     [{ taxStatus: '非正常' }, 'ENTERPRISE_UNSUPPORTED'],
@@ -134,6 +167,11 @@ describe('企业建档', () => {
     expect(fetched.enterprise?.officialTax).toMatchObject({
       taxpayerIdentity: 'general', taxStatus: '', sourceUrl: profile.sourceUrl, observedAt: profile.observedAt,
     })
+    expect(wizard.editSection(fetched.revision, 'tax', { province: '北京市', city: '北京市' }))
+      .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    expect(wizard.editSection(fetched.revision, 'tax', { taxAuthority: '人工替换的机构' }))
+      .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    expect(wizard.status()).toEqual(fetched)
     expect(wizard.save(1, fetched.revision, { ...enterprise, city: '嘉兴市' }))
       .toMatchObject({ accepted: false, code: 'ENTERPRISE_UNSUPPORTED' })
   })
