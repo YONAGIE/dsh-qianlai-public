@@ -530,7 +530,7 @@ export function registerOnboardingChat(ctx, {
         : '请核对预填内容，补齐缺项后确认。'
       body = [
         jsx('div', { style: { ...actions, padding: '10px 12px', border: '1px dashed color-mix(in srgb, currentColor 24%, transparent)', borderRadius: 8 }, children: [
-          button(label, () => documentInput.current?.click(), saving, 'button', true),
+          button(label, () => documentInput.current?.click(), saving),
           jsx('span', { style: secondary, children: '也可拖一份文件到此卡片，或直接填写。' }),
           jsx('input', {
             ref: documentInput, type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp',
