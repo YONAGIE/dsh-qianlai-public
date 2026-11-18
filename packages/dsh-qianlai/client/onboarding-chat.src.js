@@ -175,6 +175,7 @@ export function registerOnboardingChat(ctx, {
       case 'blocked':
         return '我想重新核对企业情况。'
       default: {
+        if (card.correction) return '我已核对并保存更正，请继续建档。'
         const labels = card.fields.filter(field => Object.hasOwn(input.values ?? {}, field.key) &&
           input.values[field.key]?.length).map(field => field.label)
         return labels.length ? '我已填写' + labels.join('、') + '，请继续建档。' : '资料已填写，请继续建档。'
@@ -627,6 +628,7 @@ export function registerOnboardingChat(ctx, {
         : { ...prefilled, ...values }
       body = form({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
+        ...(card.correction ? { label: '保存更正' } : {}),
         secondaryAction: card.kind === 'bank'
           ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
       })
