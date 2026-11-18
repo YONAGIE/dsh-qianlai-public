@@ -14,6 +14,8 @@
 
 - Read and correct one field of a completed company profile in chat. Keep bank numbers masked and preserve leading zeros when correcting a registered tail. Show the saved value in the profile without reopening setup.
 
+- Open a fresh form when a company profile correction is requested again. Reopen saved or expired correction cards using the latest profile values.
+
 - Introduce Zhangjie when first-time users greet her and let them choose tax QR login or manual company setup in chat.
 
 - Start new data directories with an empty book. Present first greetings as an introduction, a short list of capabilities, and the next action. Use the current onboarding card and its status to guide each step. Place the current setup card after the reply text and wait for a clarification answer before offering a later action.

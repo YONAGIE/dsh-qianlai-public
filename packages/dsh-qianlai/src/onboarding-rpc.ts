@@ -120,6 +120,8 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
         if (action === 'status') return reply(view)
         if (action === 'card-status' && typeof sessionId === 'string' && typeof payload.cardId === 'string')
           return reply(onboarding.cardStatus(sessionId, payload.cardId))
+        if (action === 'reopen-profile-card' && typeof sessionId === 'string' && typeof payload.cardId === 'string')
+          return reply(onboarding.reopenProfileCard(sessionId, payload.cardId))
         if (draftId !== view.draftId || typeof revision !== 'number' || !Number.isSafeInteger(revision))
           return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请重新打开建档。'))
         if (action === 'claim-tax-auto-start' && typeof sessionId === 'string' && typeof payload.cardId === 'string')

@@ -726,10 +726,10 @@ export class CompanyOnboarding {
     }
   }
 
-  private issueCard(sessionId: string, content: CardContent) {
+  private issueCard(sessionId: string, content: CardContent, { reissue = false } = {}) {
     const record = this.record()
     const current = this.activeCard(record, sessionId)
-    if (current && JSON.stringify(this.cardContent(current.card)) === JSON.stringify(content)) return current.card
+    if (!reissue && current && JSON.stringify(this.cardContent(current.card)) === JSON.stringify(content)) return current.card
     const card: OnboardingCard = { id: randomUUID(), draftId: record.draftId, revision: record.revision, ...content }
     record.cards = [...(record.cards ?? []), { sessionId, card }]
     this.store.saveCompanyOnboarding(record)
@@ -745,8 +745,10 @@ export class CompanyOnboarding {
   }
 
   private cardResult(record: OnboardingRecord, item: StoredCard) {
+    const profile = item.card.kind === 'fields' && item.card.maintenance
     return {
       accepted: true as const, view: this.view(record), stale: false,
+      ...(profile ? { cardState: item.receipt ? 'saved' as const : 'active' as const } : {}),
       ...(item.receipt ? { receipt: item.receipt } : { card: item.card }),
     }
   }
@@ -800,7 +802,7 @@ export class CompanyOnboarding {
     return { ...record, enterprise: record.enterprise }
   }
 
-  private maintainProfile(sessionId: string, edit: boolean, fields: unknown, values: unknown, currentAccountTail: unknown) {
+  private maintainProfile(sessionId: string, edit: boolean, fields: unknown, values: unknown, currentAccountTail: unknown, accountId?: string) {
     const record = this.activeProfile()
     if (!record) return refuse('PROFILE_UNAVAILABLE', '当前账本没有已完成建档的企业档案。')
     const key = Array.isArray(fields) && fields.length === 1 ? fields[0] : undefined
@@ -811,7 +813,8 @@ export class CompanyOnboarding {
       return refuse('PROFILE_FIELD_REQUIRED', '请指定要查阅或更正的那一项企业档案资料。')
     if (currentAccountTail !== undefined && (typeof currentAccountTail !== 'string' || !/^\d{4}$/.test(currentAccountTail)))
       return refuse('PROFILE_ACCOUNT_TAIL_INVALID', '请用四位数字指定现有账户的尾号。')
-    const accounts = enterprise.accounts.filter(account => currentAccountTail === undefined || accountTail(account) === currentAccountTail)
+    const accounts = enterprise.accounts.filter(account => accountId !== undefined
+      ? account.id === accountId : currentAccountTail === undefined || accountTail(account) === currentAccountTail)
     if ((accountField || key === 'bankAccounts') && currentAccountTail !== undefined && !accounts.length)
       return refuse('PROFILE_ACCOUNT_NOT_FOUND', '企业档案中没有这个尾号的银行账户。')
     const current: Record<string, unknown> = { ...enterprise, ...accounting, ...payroll }
@@ -842,7 +845,8 @@ export class CompanyOnboarding {
     const proposed = values && typeof values === 'object' && !Array.isArray(values) ? { ...values } as Record<string, unknown> : {}
     let content: FieldsCard & { title: string; message?: string }
     if (accountField) {
-      if (!accounts.length) return refuse('PROFILE_ACCOUNT_NOT_FOUND', '企业档案还没有登记银行账户。')
+      if (!accounts.length) return refuse('PROFILE_ACCOUNT_NOT_FOUND', accountId
+        ? '这张卡对应的账户已不在企业档案里。' : '企业档案还没有登记银行账户。')
       content = accounts.length === 1 ? this.profileAccountCard(accountField, accounts[0]!, proposed)
         : {
           kind: 'fields', title: '选择要更正的银行账户', message: '请先确认要改哪一个账户。',
@@ -864,7 +868,23 @@ export class CompanyOnboarding {
       }
       content = this.profileFieldCard(form, current, proposed, { field: field.key })
     }
-    return { accepted: true as const, completed: true, card: this.issueCard(sessionId, content) }
+    // A previously shown card belongs to its original reply. Each new request gets
+    // a fresh ID, even when the current values and requested field are identical.
+    return {
+      accepted: true as const, completed: true, cardState: 'active' as const,
+      card: this.issueCard(sessionId, content, { reissue: true }),
+    }
+  }
+
+  reopenProfileCard(sessionId: string, cardId: string) {
+    return this.store.transaction(() => {
+      const record = this.activeProfile()
+      const previous = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)?.card
+      if (previous?.kind !== 'fields' || !previous.maintenance)
+        return refuse('CARD_UNAVAILABLE', '这张卡无法重新打开企业档案更正。')
+      const { field, accountId } = previous.maintenance
+      return this.maintainProfile(sessionId, true, [field], undefined, undefined, accountId)
+    })
   }
 
   private validProfileProposal(field: FormField, value: unknown) {
@@ -1104,7 +1124,7 @@ export class CompanyOnboarding {
       const maintenance = item.card.kind === 'fields' && item.card.maintenance
       if (Boolean(record.completedAt) !== Boolean(maintenance) || item.card.kind === 'source' ||
         item.card.kind === 'upload' || this.activeCard(record, sessionId)?.card.id !== cardId)
-        return { accepted: true as const, stale: true }
+        return { accepted: true as const, stale: true, ...(maintenance ? { cardState: 'stale' as const } : {}) }
       return this.cardResult(record, item)
     })
   }
