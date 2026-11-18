@@ -1,0 +1,77 @@
+name: Cross-platform verification for a30af68
+
+on:
+  push:
+    branches:
+      - validation/cross-platform-a30af68
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 24
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+        node: ['22.19', '24']
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: a30af684a37eacf791c3d944e9736da9d43ad80c
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@v6.1.1
+      - name: Show runtime and exact source
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          node -p 'JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version })'
+          pnpm --version
+      - name: Frozen lockfile install
+        id: install
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm build
+      - name: Type check
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: pnpm typecheck
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm lint
+      - name: Unit and integration suite
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: pnpm test
+      - name: Q-008 offline materials
+        if: ${{ !cancelled() }}
+        run: node packages/dsh-qianlai/e2e/q008/run.mjs --validate
+      - name: Synthetic accounting flow
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node packages/dsh-qianlai/e2e/check-accounting-flow.mjs
+      - name: Compiled WeChat runtime
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node --test packages/dsh-qianlai/tests/wechat-runtime.test.mjs
+      - name: Pack and install into a clean consumer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          pnpm pack:all
+          pnpm test:packages
+      - name: Install the isolated DSH CLI host
+        id: host
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          DSH_TEST_VERSION: ${{ matrix.node == '24' && '0.2.2-rc.1' || '0.2.1-rc.3' }}
+        shell: bash
+        run: npm install --prefix "$RUNNER_TEMP/qianlai-dsh" --no-save --no-audit --no-fund "@deepseek-ai/dsh@$DSH_TEST_VERSION"
+      - name: DSH plugin install and simulated WeChat QR/restart
+        if: ${{ !cancelled() && steps.host.outcome == 'success' }}
+        shell: bash
+        run: node packages/dsh-qianlai/scripts/check-dsh-wechat.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
