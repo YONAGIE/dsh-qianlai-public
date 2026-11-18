@@ -429,7 +429,7 @@ export function registerOnboardingChat(ctx, {
       submitting.current = true
       setError('')
       setSaving(true)
-      setReadingDocument(file.name.slice(0, 120))
+      setReadingDocument(file.name.slice(0, 120) || '所选文件')
       try {
         if (!file.size || file.size > 8 * 1024 * 1024) throw Error('请选择不超过 8 MB 的 PDF 或图片。')
         const result = await onboardingRequest(sessionId, 'recognize', {
@@ -455,19 +455,31 @@ export function registerOnboardingChat(ctx, {
       void loadDocument(file)
     }
 
-    function handleDocumentDrag(event, drop = false) {
-      if (!event.dataTransfer?.types?.includes('Files') && !event.dataTransfer?.files?.length) return
-      event.preventDefault()
+    function handleDocumentDrag(event, phase) {
+      const transfer = event.dataTransfer
+      if (!transfer?.types?.includes('Files') && !transfer?.files?.length) return
       event.stopPropagation()
-      if (drop) {
+      if (phase === 'leave') {
+        if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget)) setDropActive(false)
+        return
+      }
+      event.preventDefault()
+      if (phase !== 'over') {
+        // DSH's composer resets its drag overlay on window dragend. A card
+        // intercepts the document drop, and dragging a file from the OS may
+        // not emit its own dragend on this page.
+        const view = event.currentTarget?.ownerDocument?.defaultView
+        if (view) view.dispatchEvent(new view.Event('dragend'))
+      }
+      if (phase === 'drop') {
         setDropActive(false)
-        const files = event.dataTransfer.files
+        const files = transfer.files
         if (files.length === 1) void loadDocument(files[0])
         else if (files.length > 1) setError('一次只能识别一份资料。请选择其中一份。')
         return
       }
-      event.dataTransfer.dropEffect = saving ? 'none' : 'copy'
-      if (!saving) setDropActive(true)
+      transfer.dropEffect = saving ? 'none' : 'copy'
+      setDropActive(!saving)
     }
 
     function change(key, value) {
@@ -537,12 +549,15 @@ export function registerOnboardingChat(ctx, {
             hidden: true, disabled: saving, onChange: selectDocument,
           }),
         ] }),
-        jsx('p', {
-          role: readingDocument || documentPreview || Object.keys(prefilled).length ? 'status' : undefined,
-          style: { ...secondary, margin: '8px 0 0', overflowWrap: 'anywhere' },
-          children: readingDocument ? '正在识别「' + readingDocument + '」…' : documentPreview || Object.keys(prefilled).length
-            ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
-        }),
+        jsx('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }, children: [
+          readingDocument ? jsx('progress', { 'aria-hidden': true, style: { width: '3rem', height: 8, accentColor: accent, flex: 'none' } }) : null,
+          jsx('p', {
+            role: readingDocument || documentPreview || Object.keys(prefilled).length ? 'status' : undefined,
+            style: { ...secondary, margin: 0, overflowWrap: 'anywhere' },
+            children: readingDocument ? '正在识别「' + readingDocument + '」…' : documentPreview || Object.keys(prefilled).length
+              ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
+          }),
+        ] }),
         form({ fields: card.fields.map(field => ({ ...field, required: false })), values: { ...documentPreview?.fields, ...prefilled, ...values },
           change, saving, label: confirm, onSubmit: input => void submit({ values: Object.fromEntries(
             card.fields.filter(({ key }) => typeof input[key] === 'string' && input[key].trim()).map(({ key }) => [key, input[key]]),
@@ -603,9 +618,10 @@ export function registerOnboardingChat(ctx, {
       'aria-label': title, 'data-qianlai-onboarding-card': cardId,
       style: documentForm && dropActive ? { ...cardStyle, outline: '2px solid ' + accent, outlineOffset: 2 } : cardStyle,
       ...(documentForm ? {
-        onDragOver: handleDocumentDrag,
-        onDragLeave: () => setDropActive(false),
-        onDrop: event => handleDocumentDrag(event, true),
+        onDragEnter: event => handleDocumentDrag(event, 'enter'),
+        onDragOver: event => handleDocumentDrag(event, 'over'),
+        onDragLeave: event => handleDocumentDrag(event, 'leave'),
+        onDrop: event => handleDocumentDrag(event, 'drop'),
       } : {}),
       children: [
         jsx('h3', { style: { fontSize: '1em', lineHeight: 1.45, fontWeight: 650, margin: 0 }, children: title }),
