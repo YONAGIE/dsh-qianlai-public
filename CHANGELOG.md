@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Let a submitted native question free the current confirmation slot, so the next business fact can be reviewed after a valid answer. Keep deferred or unanswered items pending.
+
 - Offer the native approval card for a ready-to-post voucher after reviewing uploaded materials. The card shows the entry and waits for one confirmation, including in full-access conversations when a confirmation is needed.
 
 - Use a native business choice for an unconfirmed voucher in full-access conversations. Bind the choice and save to that exact voucher and current ledger.
