@@ -47,7 +47,7 @@
 
 - Honor DSH Full access for confirmed ledger writes. Workspace-write uses one-time DSH approval, and WeChat uses owner confirmation.
 
-- Ask one unresolved fact at a time and use DSH's native question card for choices in Zhangjie conversations. WeChat uses text choices.
+- Ask one unresolved fact at a time. Use the current setup form for structured onboarding fields. In other Zhangjie conversations, allow one native DSH question per turn. WeChat uses text choices.
 - Show submitted question-card answers in the original Zhangjie conversation on older DSH clients, including answers submitted before the plugin update.
 
 - Read multiple PDFs referenced in the same Zhangjie message through the DSH Desktop file picker or chat composer drop. Each file is read and authorized separately.

@@ -107,7 +107,18 @@ export function defaultBookPath(): string {
 const str = (description: string) => ({ type: 'string', description })
 const periodKey = { periodKey: str('会计期间，YYYY-MM') }
 const stringMap = (description: string) => ({ type: 'object', additionalProperties: { type: 'string' }, description })
-const onboardingCardQuestion = /企业实际开展|实际经营|以上都没有|(?:旧账|代账公司).{0,25}(?:做到|记到|哪[个一]?月)|起账月份?|开始记账的月份/u
+const onboardingCardQuestion = new RegExp([
+  '建档|重新核对(?:企业)?(?:情况|资料)|企业(?:全称|名称|实际开展)|统一社会信用代码|成立日期',
+  '纳税人(?:身份|类型|资格|状态)|税务(?:登记的?)?状态|主管税务机关|企业所得税征收方式|会计制度',
+  '实际经营|以上都没有|银行账户情况|银行账号|开户(?:行|日期)',
+  '(?:旧账|代账公司).{0,25}(?:做到|记到|哪[个一]?月)|起账月份?|开始记账的月份|发薪(?:安排|日)|社保情况',
+].join('|'), 'u')
+
+function asksSeveralFacts(question: string): boolean {
+  const marks = question.match(/[?？]/gu)?.length ?? 0
+  const items = question.match(/(?:^|\n)\s*(?:[-*]|[1-9]\d*[、.)）])\s*\S/gu)?.length ?? 0
+  return marks > 1 || items > 1
+}
 
 export function apply(ctx: Context, config: Config = {}): void {
   if (config.mode === 'ui') {
@@ -133,7 +144,12 @@ export function apply(ctx: Context, config: Config = {}): void {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
-    const stopObserving = ctx.on?.('session/event', (session, event) => pdfReferences.observe(session, event))
+    const questionTurns = new WeakMap<PdfReferenceSession, { asked: boolean; guiding: boolean }>()
+    const stopObserving = ctx.on?.('session/event', (session, event) => {
+      pdfReferences.observe(session, event)
+      if (event.type === 'turn/start') questionTurns.set(session, { asked: false, guiding: false })
+      if (event.type === 'turn/end') questionTurns.delete(session)
+    })
     const onboarding = new CompanyOnboarding(store)
     const currentGuide = (sessionId: string) => {
       if (!onboarding.hasGuide(sessionId)) return
@@ -142,13 +158,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     const stopQuestionGuard = ctx.tools.guard?.((execution) => {
       if (execution.name !== 'ask_user_question') return
-      const questions = execution.arguments?.questions
-      const sessionId = execution.agent?.session.id
-      if (sessionId && Array.isArray(questions) && onboardingCardQuestion.test(JSON.stringify(questions))) {
-        const card = currentGuide(sessionId)
+      const questions: unknown[] = Array.isArray(execution.arguments?.questions) ? execution.arguments.questions : []
+      const session = execution.agent?.session
+      const turn = session && questionTurns.get(session)
+
+      if (session && (turn?.guiding || onboardingCardQuestion.test(JSON.stringify(questions)))) {
+        const card = currentGuide(session.id)
         if (card) return '请用下方钱来建档表单完成当前步骤。当前建档卡：' + JSON.stringify(card)
       }
-      if (Array.isArray(questions) && questions.length > 1) return '每次只确认一个事实，请只问当前阻塞的一项。'
+
+      if (turn?.asked) return '本轮已提出一个问题。请在用户回复后的下一轮确认其他事项。'
+      const question = (questions[0] as { question?: unknown } | null | undefined)?.question
+      if (questions.length > 1 || (typeof question === 'string' && asksSeveralFacts(question)))
+        return '每次只确认一个事实，请只问当前阻塞的一项。'
+      if (turn && typeof question === 'string' && question.trim()) turn.asked = true
     })
     let disposed = false
     const attachPageImages = async ({ images = [], ...result }: UploadResult, page: number, signal?: AbortSignal): Promise<UploadResult> => {
@@ -287,7 +310,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前需处理的卡片。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新草稿，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前需处理的卡片。当前只有一个明确卡点时，直接展示返回的表单。枚举字段用表单上的完整选项，用户在表单选择并保存一次即可。真实不支持的状态保留，不能为了继续而改成正常。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新草稿，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
         {
           action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct'] },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
@@ -305,12 +328,14 @@ export function apply(ctx: Context, config: Config = {}): void {
         },
         ['action'],
         (args, _signal, execution) => {
-          const sessionId = execution?.agent?.session.id
-          if (!sessionId || isWechatSession(sessionId) || isIntroductionSession(sessionId))
+          const session = execution?.agent?.session
+          if (!session?.id || isWechatSession(session.id) || isIntroductionSession(session.id))
             return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
-          const result = onboarding.guide(sessionId, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind)
+          const result = onboarding.guide(session.id, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind)
+          const turn = questionTurns.get(session)
+          if (turn && onboarding.hasGuide(session.id)) turn.guiding = true
           if (result.accepted) return result
-          const card = currentGuide(sessionId)
+          const card = currentGuide(session.id)
           return card ? { ...result, card } : result
         },
       ),
