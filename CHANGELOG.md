@@ -4,6 +4,8 @@
 
 - Offer the native approval card for a ready-to-post voucher after reviewing uploaded materials. The card shows the entry and waits for one confirmation, including in full-access conversations when a confirmation is needed.
 
+- Use a native business choice for an unconfirmed voucher in full-access conversations. Bind the choice and save to that exact voucher and current ledger.
+
 - Select, drop or paste bank account documents on the setup chat card. Review extracted account details before saving them to the company draft.
 
 - Format WeChat replies as readable paragraphs. Expand each Markdown table row into a labeled record and split long replies at paragraph or line boundaries where possible.

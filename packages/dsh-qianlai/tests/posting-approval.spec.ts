@@ -13,6 +13,11 @@ import { registerLoginControl } from '../src/wechat/control.js'
 
 interface Execution { signal: AbortSignal; callId: string; agent: { session: { id: string } } }
 interface Tool { execute(args: Record<string, unknown>, exec?: Execution): Promise<unknown> }
+interface QuestionRequest {
+  agent: Execution['agent']
+  signal: AbortSignal
+  questions: readonly { id: string; detail: string; options: readonly { label: string }[] }[]
+}
 const roots: string[] = []
 const disposers: (() => void)[] = []
 afterEach(() => {
@@ -34,6 +39,7 @@ function fixture(
   decide: (request: unknown) => Promise<string> = async () => 'allowed-once',
   existingPath?: string,
   presets?: typeof fullAccess,
+  answer?: (request: QuestionRequest) => Promise<unknown>,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'qianlai-approval-'))
   roots.push(root)
@@ -44,13 +50,14 @@ function fixture(
     seed.close()
   }
   const request = vi.fn(decide)
+  const ask = answer && vi.fn(answer)
   const tools = new Map<string, Tool>()
   apply({ effect: fn => { disposers.push(fn()) }, tools: { register: tool => { tools.set(tool.name, tool as Tool); return () => {} } },
-    get: name => name === 'approval' ? { request } : name === 'permissionPresets' ? presets : undefined,
+    get: name => name === 'approval' ? { request } : name === 'permissionPresets' ? presets : name === 'userQuestions' && ask ? { ask } : undefined,
   }, { bookPath })
   const call = (args: Record<string, unknown>, exec?: Execution) => tools.get('moneycome_record_entry')!.execute(args, exec)
   const count = () => { const store = new BookStore(bookPath); try { return store.vouchers({ periodKey: '2026-01' }).length } finally { store.close() } }
-  return { bookPath, call, request, count, tools }
+  return { bookPath, call, request, ask, count, tools }
 }
 describe('记账的可信批准与调用重试', () => {
   it('正式记账审批显示预演核出的借贷分录、日期及批准后的动作', async () => {
@@ -88,32 +95,95 @@ describe('记账的可信批准与调用重试', () => {
     expect(test.request).toHaveBeenCalledTimes(1)
     expect(test.count()).toBe(1)
   })
-  it('待记凭证可直接请求审批卡，即使当前会话有完全权限', async () => {
-    let decide!: (outcome: string) => void
-    const test = fixture(() => new Promise(resolve => { decide = resolve }), undefined, fullAccess)
+  it('完全权限的本笔确认使用原生选择，等待期间重试不会重复出卡或写入', async () => {
+    let choose!: (result: unknown) => void
+    const test = fixture(async () => 'rejected', undefined, fullAccess, () => new Promise(resolve => { choose = resolve }))
     const proposed = await test.call({ ...entry, preview: true }, execution())
     expect(proposed).toMatchObject({ accepted: true, preview: true, reviewAction: expect.stringContaining('requestApproval') })
     expect(test.request).not.toHaveBeenCalled()
     const args = { ...entry, requestApproval: true }
     const exec = execution()
     const pending = test.call(args, exec)
-    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.request).not.toHaveBeenCalled()
+    const { agent, signal, questions: [question] } = test.ask!.mock.calls[0]![0]
+    expect(agent).toBe(exec.agent)
+    expect(signal).toBe(exec.signal)
+    expect(question).toMatchObject({ options: [{ label: '确认记账' }, { label: '暂缓记账' }] })
+    expect(question!.detail).toContain('借　财务费用（6603）　10\\.00 元')
+    expect(question!.detail).toContain('贷　银行存款（1002）　10\\.00 元')
     expect(test.count()).toBe(0)
-    decide('allowed-once')
+    expect(await test.call(args, exec)).toMatchObject({ code: 'ENTRY_CONFIRMATION_PENDING' })
+    expect(await test.call(args, execution())).toMatchObject({ code: 'ENTRY_CONFIRMATION_PENDING' })
+    expect(await test.call(entry, exec)).toMatchObject({ code: 'CALL_ID_CONFLICT' })
+    choose({ answers: [{ id: question!.id, selected: ['确认记账'] }] })
     const posted = await pending
     expect(posted).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-001' })
     expect(await test.call(args, exec)).toEqual(posted)
-    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.ask).toHaveBeenCalledTimes(1)
     expect(test.count()).toBe(1)
   })
 
-  it('完全权限下拒绝卡片仍保留预演状态，互斥动作也不会记账', async () => {
-    const test = fixture(async () => 'rejected', undefined, fullAccess)
+  it('完全权限下暂缓保留待记，互斥动作也不会记账', async () => {
+    const test = fixture(async () => 'rejected', undefined, fullAccess, async ({ questions: [question] }) =>
+      ({ answers: [{ id: question!.id, selected: ['暂缓记账'] }] }))
     expect(await test.call({ ...entry, preview: true, requestApproval: true }, execution()))
       .toMatchObject({ code: 'ENTRY_MODE_CONFLICT' })
     expect(test.request).not.toHaveBeenCalled()
-    expect(await test.call({ ...entry, requestApproval: true }, execution())).toMatchObject({ code: 'APPROVAL_REQUIRED' })
-    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.ask).not.toHaveBeenCalled()
+    expect(await test.call({ ...entry, requestApproval: true }, execution())).toMatchObject({ code: 'ENTRY_CONFIRMATION_DEFERRED' })
+    expect(test.request).not.toHaveBeenCalled()
+    expect(test.ask).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(0)
+  })
+
+  it.each([
+    { selected: [] },
+    { selected: ['确认记账'], custom: '确认记账' },
+    { selected: [], custom: '确认记账' },
+    { selected: ['确认记账', '暂缓记账'] },
+    { id: 'another-question', selected: ['确认记账'] },
+  ])('仅当前凭证的明确点击可以记账（%j）', async answer => {
+    const test = fixture(async () => 'allowed-once', undefined, fullAccess, async ({ questions: [question] }) =>
+      ({ answers: [{ id: question!.id, ...answer }] }))
+    expect(await test.call({ ...entry, requestApproval: true }, execution())).toMatchObject({ code: 'ENTRY_CONFIRMATION_DEFERRED' })
+    expect(test.request).not.toHaveBeenCalled()
+    expect(test.count()).toBe(0)
+  })
+
+  it('选择服务缺失、断开或等待期间取消时保留待记', async () => {
+    const args = { ...entry, requestApproval: true }
+    const missing = fixture(async () => 'allowed-once', undefined, fullAccess)
+    const lost = fixture(async () => 'allowed-once', undefined, fullAccess, async () => { throw Error('NO_PROVIDER') })
+    for (const test of [missing, lost]) {
+      expect(await test.call(args, execution())).toMatchObject({ code: 'ENTRY_CONFIRMATION_UNAVAILABLE' })
+      expect(test.request).not.toHaveBeenCalled()
+      expect(test.count()).toBe(0)
+    }
+    const cancel = new AbortController()
+    const cancelled = fixture(async () => 'allowed-once', undefined, fullAccess, async ({ questions: [question] }) => {
+      cancel.abort()
+      return { answers: [{ id: question!.id, selected: ['确认记账'] }] }
+    })
+    expect(await cancelled.call(args, { ...execution(), signal: cancel.signal })).toMatchObject({ code: 'TOOL_CANCELLED' })
+    expect(cancelled.count()).toBe(0)
+  })
+
+  it.each(['permission', 'ledger'])('等待点选时 %s 变化需要重新核对', async reason => {
+    let preset = 'danger-full-access'
+    let path = ''
+    const test = fixture(async () => 'allowed-once', undefined, { ...fullAccess, current: () => preset },
+      async ({ questions: [question] }) => {
+        if (reason === 'permission') preset = 'workspace-write'
+        else {
+          const other = new BookStore(path)
+          try { other.recordWork('note', { note: '合成并发变更' }, { verified: false }) } finally { other.close() }
+        }
+        return { answers: [{ id: question!.id, selected: ['确认记账'] }] }
+      })
+    path = test.bookPath
+    expect(await test.call({ ...entry, requestApproval: true }, execution()))
+      .toMatchObject({ code: reason === 'permission' ? 'ENTRY_PERMISSION_CHANGED' : 'BOOK_CHANGED' })
+    expect(test.request).not.toHaveBeenCalled()
     expect(test.count()).toBe(0)
   })
   it.each([
