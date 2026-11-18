@@ -251,6 +251,26 @@ describe('WeChat header status', () => {
 const sampleDraft = { accepted: true, draftId: 'synthetic-draft', revision: 0, step: 1, completed: false, replacesSampleBook: true }
 
 describe('Zhangjie onboarding sidebar', () => {
+  it('clears other business selections when selecting "none", and clears "none" when selecting an activity', async () => {
+    const client = makeClient()
+    client.setOnboarding(() => ({ ...sampleDraft, enterprise: { business: ['goods', 'production'] } }))
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      const business = () => client.controls().filter(node => node.props.name === 'business')
+      const pick = value => business().find(node => node.props.value === value).props.onChange({ target: { checked: true } })
+      const selected = () => business().filter(node => node.props.checked).map(node => node.props.value)
+      expect(selected()).toEqual(['goods', 'production'])
+      pick('none')
+      expect(selected()).toEqual(['none'])
+      pick('production')
+      expect(selected()).toEqual(['production'])
+    } finally {
+      client.dispose()
+    }
+  })
+
   it('shows the original tax status alongside selectable options and permits clearing it', async () => {
     const client = makeClient()
     let draft = { ...sampleDraft, enterprise: { taxStatus: '合成旧状态' } }

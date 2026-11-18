@@ -131,7 +131,7 @@ describe('企业建档', () => {
   it.each([
     [{ taxpayerIdentity: 'general' }, 'ENTERPRISE_UNSUPPORTED'],
     [{ taxStatus: '非正常' }, 'ENTERPRISE_UNSUPPORTED'],
-    [{ business: ['cross-border', 'none'] }, 'ENTERPRISE_UNSUPPORTED'],
+    [{ business: ['cross-border'] }, 'ENTERPRISE_UNSUPPORTED'],
     [{ business: [] }, 'BUSINESS_REQUIRED'],
     [{ bankStatus: 'provided', accounts: [] }, 'BANK_ACCOUNT_REQUIRED'],
   ])('明确判断企业是否能承接（%j）', (patch, code) => {
@@ -139,6 +139,19 @@ describe('企业建档', () => {
     expect(wizard.save(1, 0, { ...enterprise, ...patch })).toMatchObject({ accepted: false, code })
     const draft = accepted(wizard.save(1, 0, { ...enterprise, ...patch }, false))
     expect(draft.step).toBe(1)
+  })
+
+  it('拒绝新增互斥的实际经营选项，同时保留旧草稿的具体经营项供更正', () => {
+    const { store, wizard } = setup()
+    expect(wizard.save(1, 0, { ...enterprise, business: ['goods', 'none'] }, false))
+      .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    const draft = accepted(wizard.save(1, 0, enterprise, false))
+    const stored = store.companyOnboarding()!
+    stored.enterprise!.business = ['goods', 'none']
+    store.saveCompanyOnboarding(stored)
+    expect(wizard.status()).toMatchObject({ revision: draft.revision, enterprise: { business: ['goods'] } })
+    const updated = accepted(wizard.editSection(draft.revision, 'company', { business: ['none'] }))
+    expect(updated.enterprise?.business).toEqual(['none'])
   })
 
   it('待核实税务身份保存资料，完成建档前须补足身份', () => {
