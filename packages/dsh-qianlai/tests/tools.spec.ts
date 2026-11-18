@@ -14,6 +14,7 @@ import { apply } from '../src/index.js'
 // Worker URLs resolve relative to the shipped JS entry, so this integration uses the built plugin.
 import { apply as applyBuilt } from '../lib/index.js'
 import { loadPack } from '../src/pack.js'
+import type { PdfReferenceEvent, PdfReferenceSession } from '../src/referenced-pdf.js'
 import { seedSampleBook } from '../src/sample-book.js'
 import { BookStore } from '../src/store.js'
 
@@ -31,16 +32,29 @@ function plugin() {
   const tools = new Map<string, Tool>()
   type Guard = Parameters<NonNullable<Parameters<typeof apply>[0]['tools']['guard']>>[0]
   let guard: Guard | undefined
+  let observe: ((session: PdfReferenceSession, event: PdfReferenceEvent) => void) | undefined
   apply({ effect: (fn) => void fn(), tools: {
     register: (t) => (tools.set(t.name, t), () => {}),
     guard: check => { guard = check; return () => {} },
   },
     get: name => name === 'approval' ? { request: async () => 'allowed-once' } : undefined,
+    on: (_event, listener) => { observe = listener; return () => {} },
   }, { bookPath })
-  const call = (name: string, args: unknown) => tools.get(name)!.execute(args, approvedCall()) as Promise<Record<string, unknown>>
-  const ask = (questions: unknown, sessionId = approvedCall().agent.session.id) =>
-    guard?.({ name: 'ask_user_question', arguments: { questions }, agent: { session: { id: sessionId } } })
-  return { bookPath, call, ask }
+  const sessions = new Map<string, PdfReferenceSession>()
+  const defaultSession = approvedCall().agent.session.id
+  const session = (id: string) => {
+    const current = sessions.get(id) ?? { id }
+    sessions.set(id, current)
+    return current
+  }
+  const call = (name: string, args: unknown) => tools.get(name)!.execute(args, {
+    ...approvedCall(), agent: { session: session(defaultSession) },
+  }) as Promise<Record<string, unknown>>
+  const ask = (questions: unknown, sessionId = defaultSession) =>
+    guard?.({ name: 'ask_user_question', arguments: { questions }, agent: { session: session(sessionId) } })
+  const turn = (type: 'turn/start' | 'turn/end', number: number, sessionId = defaultSession) =>
+    observe?.(session(sessionId), { type, seq: number * 2 + (type === 'turn/start' ? 0 : 1), data: { turn: number } })
+  return { bookPath, call, ask, turn }
 }
 
 async function ownBook() {
@@ -101,6 +115,56 @@ describe('工具入口', () => {
     expect(await call('moneycome_read_referenced_pdf', { fileIndex: '2' })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
     expect(await call('moneycome_read_referenced_pdf', { page: 0 })).toMatchObject({ accepted: false, code: 'POSITION_INVALID' })
     expect(await call('moneycome_record_entry', { ...ENTRY, facts: undefined })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
+  })
+
+  it('对同一个会话每轮只打开一道原生问题，拒绝合并或重复追问', () => {
+    const { ask, turn } = plugin()
+    const question = (text: string) => [{ question: text }]
+    turn('turn/start', 1)
+    expect(ask([...question('这笔款怎么付？'), ...question('哪天付的？')])).toContain('只确认一个事实')
+    expect(ask(question('这笔款怎么付？哪天付的？'))).toContain('只确认一个事实')
+    expect(ask(question('请确认\n1. 支付方式\n2. 支付日期'))).toContain('只确认一个事实')
+    expect(ask(question('您指一月份，还是下一个月？'))).toBeUndefined()
+    expect(ask(question('您说的是哪一年？'))).toContain('本轮已提出一个问题')
+    turn('turn/start', 1, 'synthetic-other-session')
+    expect(ask(question('您说的是哪一年？'), 'synthetic-other-session')).toBeUndefined()
+    turn('turn/end', 1)
+    turn('turn/start', 2)
+    expect(ask(question('您说的是哪一年？'))).toBeUndefined()
+  })
+
+  it('建档中的通用选择题切回当前税务专用表单，并让其他轮次继续正常提问', async () => {
+    const { ask, bookPath, call, turn } = plugin()
+    turn('turn/start', 1)
+    expect(ask([{ question: '这笔账款是如何支付的？' }])).toBeUndefined()
+    await call('moneycome_onboarding', { action: 'start' })
+    const ambiguousQuestion = [{ question: '您需要先核对哪一项？' }]
+    const mode = ask(ambiguousQuestion)
+    expect(JSON.parse(mode!.split('当前建档卡：')[1]!)).toMatchObject({ kind: 'mode' })
+    turn('turn/end', 1)
+    const store = new BookStore(bookPath)
+    try {
+      const onboarding = new CompanyOnboarding(store)
+      const manual = onboarding.setMode(onboarding.status().revision, 'manual')
+      if (!manual.accepted) throw Error('Could not choose manual onboarding')
+      expect(onboarding.save(1, manual.revision, {
+        companyName: '合成税务资料企业', taxId: '000000000000000096', establishedOn: '2026-01-01',
+        taxpayerIdentity: 'small-scale', taxAuthority: '合成主管机关', incomeMethod: '查账征收',
+        accountingSystem: '小企业会计准则',
+      }, false)).toMatchObject({ accepted: true })
+
+      turn('turn/start', 2)
+      const taxStatus = ask([{ question: '税务登记上的纳税人状态实际是什么？',
+        options: [{ label: '正常' }, { label: '其他状态（请说明）' }] }])
+      const card = JSON.parse(taxStatus!.split('当前建档卡：')[1]!)
+      expect(card).toMatchObject({
+        kind: 'document', documentKind: 'tax',
+        fields: expect.arrayContaining([expect.objectContaining({ key: 'taxStatus', type: 'select',
+          options: ['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'].map(value => ({ value, label: value })),
+        })]),
+      })
+      expect(ask([{ question: '这笔账款是如何支付的？' }])).toBeUndefined()
+    } finally { store.close() }
   })
 
   it('建档中的实际经营使用专用卡，明确说以上都没有时直接保存并继续', async () => {
