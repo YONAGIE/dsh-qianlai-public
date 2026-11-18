@@ -70,6 +70,33 @@ const CRITICAL_WRITES = new Set([
   'moneycome_open_book', 'moneycome_set_opening_balances', 'moneycome_record_entry',
   'moneycome_void_voucher', 'moneycome_reverse_voucher', 'moneycome_close_period',
 ])
+const POST_ENTRY = '确认记账'
+const DEFER_ENTRY = '暂缓记账'
+
+interface UserQuestionAnswer {
+  id: string
+  selected: readonly string[]
+  custom?: string
+}
+
+interface UserQuestions {
+  ask(request: {
+    agent: NonNullable<Execution['agent']>
+    signal: AbortSignal
+    questions: readonly {
+      id: string
+      header: string
+      question: string
+      detail: string
+      options: readonly { label: string }[]
+    }[]
+  }): Promise<{ answers: readonly UserQuestionAnswer[] }>
+}
+
+// The host renders plain review details through a Markdown component.
+const questionDetail = (text: string): string =>
+  text.split('\n').map(line => line.replace(/[!-/:-@\x5b-\x60{-~]/g, '\\$&')).join('  \n')
+
 // Canonical JSON binds an exact, normalized action to its host-owned identity.
 const canonical = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) =>
   item && typeof item === 'object' && !Array.isArray(item)
@@ -143,6 +170,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   ctx.effect(() => {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())
+    const entryQuestions = new Map<string, { receiptKey: string; argsHash: string }>()
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
     const questionTurns = new WeakMap<PdfReferenceSession, { asked: boolean; guiding: boolean; profileCard?: true }>()
     const stopObserving = ctx.on?.('session/event', (session, event) => {
@@ -231,12 +259,20 @@ export function apply(ctx: Context, config: Config = {}): void {
               argsHash = createHash('sha256').update(canonical(args)).digest('hex')
               const cached = previous()
               if (cached !== undefined) return cached
+              const pendingEntry = entryQuestions.get(session.id)
+              if (pendingEntry?.receiptKey === receiptKey && pendingEntry.argsHash !== argsHash)
+                return refuse('CALL_ID_CONFLICT', '同一次确认的参数已变化。这次没有记账。')
+              if (pendingEntry && name === 'moneycome_record_entry')
+                return refuse('ENTRY_CONFIRMATION_PENDING', '当前凭证的确认卡正在等待选择。')
               const conflict = openingConflict()
               if (conflict) return conflict
               const presets = ctx.get?.('permissionPresets') as PermissionPresets | undefined
-              if (confirmEntry || isWechatSession(session.id) || !hasFullAccess(session, presets)) {
+              const wechat = isWechatSession(session.id)
+              const fullAccess = hasFullAccess(session, presets)
+              const entryQuestion = confirmEntry && fullAccess && !wechat
+              if (confirmEntry || wechat || !fullAccess) {
                 const approval = ctx.get?.('approval') as Approval | undefined
-                if (!approval?.request)
+                if (!entryQuestion && !approval?.request)
                   return refuse('APPROVAL_UNAVAILABLE', '当前宿主无法确认这项账务操作，没有改动账本。请使用支持批准交互的 DSH 会话。')
                 approvedRevision = store.approvalRevision()
                 const preview = name === 'moneycome_record_entry'
@@ -256,12 +292,40 @@ export function apply(ctx: Context, config: Config = {}): void {
                       ...(args.invoiceNumber ? [`发票号码：${line(args.invoiceNumber)}`] : []),
                       ...(Array.isArray(args.statementLineIds) && args.statementLineIds.length ? [`关联流水：${args.statementLineIds.length} 笔`] : []),
                       '',
-                      '允许一次后将正式生成凭证。拒绝或取消时，本次操作不入账。',
+                    entryQuestion ? '确认后将生成本笔凭证。' : '允许一次后将正式生成凭证。拒绝或取消时，本次操作不入账。',
                     ].join('\n')
                   : `账本：${book}\n操作：${name}\n参数：${canonical(args)}\n只批准本次操作；拒绝或取消不会执行。`
-                const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
-                if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
-                if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
+                if (entryQuestion) {
+                  const unavailable = () => refuse('ENTRY_CONFIRMATION_UNAVAILABLE', '当前未能显示记账确认卡。这笔凭证仍待记。')
+                  // Business confirmation uses the host's independent question channel.
+                  // It grants no sandbox privileges and binds the click to this live call.
+                  const userQuestions = ctx.get?.('userQuestions') as UserQuestions | undefined
+                  if (!userQuestions?.ask) return unavailable()
+                  entryQuestions.set(session.id, { receiptKey, argsHash })
+                  let result: Awaited<ReturnType<UserQuestions['ask']>> | undefined
+                  try {
+                    result = await userQuestions.ask({ agent, signal: exec.signal, questions: [{
+                      id: receiptKey, header: '凭证确认', question: '这笔凭证要现在记账吗？', detail: questionDetail(reason),
+                      options: [{ label: POST_ENTRY }, { label: DEFER_ENTRY }],
+                    }] })
+                  } catch {
+                    // A closed or disconnected question is never a positive decision.
+                  } finally {
+                    entryQuestions.delete(session.id)
+                  }
+                  if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
+                  if (!result) return unavailable()
+                  const answer = Array.isArray(result.answers) && result.answers.length === 1 ? result.answers[0] as UserQuestionAnswer : undefined
+                  if (answer?.id !== receiptKey || !Array.isArray(answer.selected) || answer.selected.length !== 1
+                    || answer.selected[0] !== POST_ENTRY || answer.custom !== undefined)
+                    return refuse('ENTRY_CONFIRMATION_DEFERRED', '这笔凭证仍待记。')
+                  if (!hasFullAccess(session, presets) || isWechatSession(session.id))
+                    return refuse('ENTRY_PERMISSION_CHANGED', '确认期间会话权限已变化。这笔凭证仍待记，需按当前会话权限重新核对。')
+                } else if (approval) {
+                  const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
+                  if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
+                  if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
+                }
               }
             }
             // 整个工具调用放在一个写事务里：另一个进程开着同一本账时，两边的检查和写入不会交错。
@@ -484,7 +548,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_record_entry',
-        '记一笔业务凭证。先用 moneycome_posting_guide 查到 eventKind、facts、amounts 的代号再填。先用 preview: true 核对日期、摘要和分录。老板只要求看预演时停在预演。待记业务资料齐全且需要老板确认时，用预演通过的同一笔资料调用 requestApproval: true，在 DSH 当轮打开正式记账审批，卡片会显示本次分录。等用户点一次「允许一次」才写入。拒绝或取消后停在该笔。不要在发卡前另问「回复确定」，也不要在同一笔上再开一张选择卡。未解决的业务事实仍用原生问题卡。老板已明确按已核对的方案记账时直接正式调用，沿用当前会话权限。有发票的带 invoiceNumber（要先用 moneycome_check_invoice 核过，金额和票面一致）。钱走银行、流水已经导入的，带上对应流水的 statementLineIds（流水日期要和这笔账在同一个月）。evidenceRoles 只填实际有的凭据，发票和流水无需重复填。已经记过凭证的后来流水用 moneycome_link_statement。损益结转由 moneycome_close_period 做。',
+        '记一笔业务凭证。先用 moneycome_posting_guide 查到 eventKind、facts、amounts 的代号再填。先用 preview: true 核对日期、摘要和分录。老板只要求看预演时停在预演。待记业务资料齐全且需要老板确认时，用预演通过的同一笔资料调用 requestApproval: true，显示本笔凭证与分录。桌面或网页的完全权限会话显示「确认记账」或「暂缓记账」，需要宿主批准的会话显示审批。等本笔卡片确认后才写入。暂缓、拒绝、取消或控件不可用时保留待记，停止当前写入。用这一张卡收集本笔决定。未解决的业务事实仍用原生问题卡。老板已明确按已核对的方案记账时直接正式调用，沿用当前会话权限。有发票的带 invoiceNumber（要先用 moneycome_check_invoice 核过，金额和票面一致）。钱走银行、流水已经导入的，带上对应流水的 statementLineIds（流水日期要和这笔账在同一个月）。evidenceRoles 只填实际有的凭据，发票和流水无需重复填。已经记过凭证的后来流水用 moneycome_link_statement。损益结转由 moneycome_close_period 做。',
         {
           date: str('业务日期，YYYY-MM-DD'),
           summary: str('摘要，一句话说清这笔是什么'),
@@ -495,14 +559,14 @@ export function apply(ctx: Context, config: Config = {}): void {
           invoiceNumber: str('核过的发票号码'),
           statementLineIds: { type: 'array', items: { type: 'integer' }, description: '对应的流水行 lineId' },
           preview: { type: 'boolean', description: 'true 时只推分录不落账' },
-          requestApproval: { type: 'boolean', description: 'true 时用本次待记分录发起一次确认，允许一次后才记账。与 preview: true 互斥。' },
+          requestApproval: { type: 'boolean', description: 'true 时用本次待记分录发起一次卡片确认，用户确认后才记账。与 preview: true 互斥。' },
           correctsVoucherNo: str('更正已结账月份的哪张凭证；那张要先用 moneycome_reverse_voucher 冲销。原凭证的发票号可以再带上，凭据照算'),
         },
         ['date', 'summary', 'eventKind', 'facts', 'amounts'],
         (a) => {
           const result = recordEntry(store, pack, a as unknown as RecordEntryInput, new Date())
           return result.accepted && a.preview === true ? {
-            ...result, reviewAction: '待记且需老板确认时，按本次预演资料用 requestApproval: true 打开审批卡。只看预演时到此为止。',
+            ...result, reviewAction: '待记且需老板确认时，按本次预演资料用 requestApproval: true 打开本笔确认卡。只看预演时到此为止。',
           } : result
         },
       ),
