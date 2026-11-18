@@ -204,7 +204,7 @@ describe('建档对话卡', () => {
       } }
       const result = {
         [mode.id]: { receipt: { mode: input.mode } },
-        [companyChoice.id]: { receipt: { labels: ['企业全称', '统一社会信用代码'] }, view: recognizedView },
+        [companyChoice.id]: { receipt: { labels: ['企业全称', '统一社会信用代码', '成立日期'] }, view: recognizedView },
       }[cardId]
       persisted.set(cardId, { accepted: true, ...result })
       return persisted.get(cardId)
@@ -260,12 +260,15 @@ describe('建档对话卡', () => {
     preview = active.render(companyChoice)
     expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('已经手填的合成企业')
     expect(find(preview, node => node.props.name === 'taxId').props.value).toBe('111111111111111122')
+    expect(find(preview, named('保存到草稿'))).toBeDefined()
+    find(preview, node => node.props.name === 'establishedOn').props.onChange({ target: { value: '2026-01-01' } })
+    preview = active.render(companyChoice)
     expect(find(preview, named('确认公司资料'))).toBeDefined()
     find(preview, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
     await settle()
     expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
       cardId: companyChoice.id, draftId, revision: companyChoice.revision,
-      values: { companyName: '已经手填的合成企业', taxId: '111111111111111122' },
+      values: { companyName: '已经手填的合成企业', taxId: '111111111111111122', establishedOn: '2026-01-01' },
     })
     expect(active.refreshOnboarding).toHaveBeenCalledWith(sessionId, recognizedView)
     expect(active.sendOnboardingReply.mock.calls).toEqual([
@@ -275,9 +278,35 @@ describe('建档对话卡', () => {
     active.remount()
     active.render(companyChoice)
     await settle()
-    expect(find(active.render(companyChoice), info).props.children).toBe('已保存 企业全称、统一社会信用代码')
+    expect(find(active.render(companyChoice), info).props.children).toBe('已保存 企业全称、统一社会信用代码、成立日期')
     expect(readOnboardingFile).toHaveBeenCalledTimes(2)
     expect(active.sendOnboardingReply).toHaveBeenCalledTimes(2)
+  })
+
+  it('只保存成立日期后原卡继续补充两项，不向对话发送确认', async () => {
+    const pending = {
+      ...companyChoice, revision: companyChoice.revision + 1,
+      fields: companyChoice.fields.filter(field => field.key !== 'establishedOn'),
+    }
+    const view = { draftId, revision: pending.revision, enterprise: { establishedOn: '2026-01-01' } }
+    const request = vi.fn(async (_session, action) => action === 'card-status'
+      ? { accepted: true } : { accepted: true, incomplete: true, card: pending, view })
+    const active = client(request)
+    active.render(companyChoice)
+    await settle()
+    find(active.render(companyChoice), node => node.props.name === 'establishedOn').props.onChange({ target: { value: '2026-01-01' } })
+    const filling = active.render(companyChoice)
+    expect(find(filling, named('保存到草稿'))).toBeDefined()
+    find(filling, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    await settle()
+    expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
+      cardId: companyChoice.id, draftId, revision: companyChoice.revision, values: { establishedOn: '2026-01-01' },
+    })
+    const updated = active.render(companyChoice)
+    expect(find(updated, node => node.props.name === 'establishedOn')).toBeUndefined()
+    expect(find(updated, node => node.props.name === 'companyName')).toBeDefined()
+    expect(active.refreshOnboarding).toHaveBeenCalledExactlyOnceWith(sessionId, view)
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
   })
 
   it('拖到卡片收起宿主遮罩并显示识别进度，失败后可重新选文件', async () => {
