@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { registerOnboardingChat } from '../client/onboarding-chat.src.js'
+import { taxStatusChoices } from '../src/onboarding-fields.js'
 
 const sessionId = 'synthetic-zhangjie'
 const cardId = 'e8e802ae-6616-45b5-98b4-1b487cc03c11'
@@ -126,6 +127,24 @@ const companyUpload = next(3, { kind: 'upload', documentKind: 'license' })
 const recognizedView = { revision: 9, enterprise: { companyName: '示例服务有限公司', taxId: '111111111111111111' } }
 
 describe('建档对话卡', () => {
+  it('resumes an older tax card with a blankable status selector and preserves its pending recognized value', async () => {
+    const card = { ...baseCard, kind: 'document', documentKind: 'tax', fields: [
+      { key: 'taxStatus', type: 'text', label: '税务状态' },
+      { key: 'taxAuthority', type: 'text', label: '主管税务机关' },
+    ], initialValues: { taxStatus: '合成识别状态', taxAuthority: '合成税务机关' } }
+    const request = vi.fn(async (_session, action) => action === 'card-status' ? { accepted: true, card }
+      : { accepted: true, receipt: { labels: ['主管税务机关'] } })
+    const active = client(request, 'moneycome-zhangjie', { taxStatusChoices })
+    active.render(card)
+    await settle()
+    const select = find(active.render(card), node => node.type === 'select' && node.props.name === 'taxStatus')
+    expect(select.props).toMatchObject({ required: false, value: '合成识别状态' })
+    expect(select.props.children.flat().map(node => node.props.value))
+      .toEqual(['', '正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他', '合成识别状态'])
+    select.props.onChange({ target: { value: '' } })
+    expect(find(active.render(card), node => node.type === 'select').props.value).toBe('')
+  })
+
   it('仅将张姐工具的有效卡片投影到普通聊天，并允许打开右侧当前表单', async () => {
     const view = { revision: 5 }
     const request = vi.fn(async () => ({ accepted: true, view }))

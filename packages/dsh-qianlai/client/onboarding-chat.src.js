@@ -3,7 +3,7 @@
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset,
   openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, subscribeOnboarding,
-  readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
+  readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {}, taxStatusChoices = {},
 }) {
   const kind = 'moneycome-onboarding-card'
   const toolName = 'moneycome_onboarding'
@@ -240,19 +240,25 @@ export function registerOnboardingChat(ctx, {
             })],
           }, field.key)
         }
+        const isTaxStatus = field.key === 'taxStatus'
+        const value = values[field.key] ?? ''
+        const choices = isTaxStatus && field.type !== 'select'
+          ? Object.entries(taxStatusChoices).map(([value, label]) => ({ value, label })) : field.options
+        const options = isTaxStatus && value && !choices.some(option => option.value === value)
+          ? [...choices, { value, label: value }] : choices
         const input = {
-          name: field.key, required: field.required !== false, disabled: saving, value: values[field.key] ?? '',
+          name: field.key, required: !isTaxStatus && field.required !== false, disabled: saving, value,
           onChange: event => change(field.key, event.target.value),
           style: inputStyle,
         }
         return jsx('label', {
           style: { display: 'grid', alignContent: 'start', gap: 5, minWidth: 0,
             ...(['companyName', 'taxAuthority'].includes(field.key) ? { gridColumn: '1 / -1' } : {}) }, children: [
-            field.label,
-            field.type === 'select'
-              ? jsx('select', { ...input, disabled: saving || !field.options.length, children: [
-                jsx('option', { value: '', children: '请选择' }),
-                ...field.options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
+            field.label + (isTaxStatus ? '（选填）' : ''),
+            field.type === 'select' || isTaxStatus
+              ? jsx('select', { ...input, disabled: saving || !options.length, children: [
+                jsx('option', { value: '', children: isTaxStatus ? '不确定可留空' : '请选择' }),
+                ...options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
               ] })
               : jsx('input', { ...input, type: field.type, maxLength: field.maxLength }),
           ],

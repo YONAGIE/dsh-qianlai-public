@@ -823,7 +823,7 @@ export class CompanyOnboarding {
         let patch: Record<string, unknown>
         try {
           patch = fieldPatch(card.fields, object(values), todayInChina(this.now()))
-          if (!patch[key]) throw Error('请填写要核对的资料。')
+          if (!Object.hasOwn(patch, key)) throw Error('请填写要核对的资料。')
         } catch (error) {
           return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
         }
