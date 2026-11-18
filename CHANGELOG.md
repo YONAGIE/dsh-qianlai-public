@@ -16,7 +16,7 @@
 
 - Improve the visual hierarchy of company setup cards and sidebar forms. Emphasize the current action and give confirmation and field errors clear treatment.
 
-- Combine typing, file selection, and dropping a license or tax document on one chat card. Preview extracted fields on the card and update the draft after confirmation. Documents sent in chat also get a review card. Close the host drag overlay when a file reaches the card, and show recognition progress inside the card.
+- Combine typing, file selection, dropping, and pasting a license or tax document on one chat card. Preview extracted fields on the card and update the draft after confirmation. Documents sent in chat also get a review card. Close the host drag overlay when a file reaches the card, and show recognition progress inside the card.
 
 - Keep the “none of the above” business choice mutually exclusive in company setup and reject conflicting values before saving.
 
