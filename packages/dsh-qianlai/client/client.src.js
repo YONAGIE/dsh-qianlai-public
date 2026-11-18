@@ -1,4 +1,4 @@
-/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat */
+/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -207,7 +207,9 @@ window.__ModuleLoader__.load({
       if (!connection) throw Error('建档服务还没就绪，请稍后重试。')
       const result = await connection.rpc.call('/api', 'qianlai/company-onboarding', { action, sessionId, ...extra }, signal)
       if (!result.ok) throw Error(result.error.message)
-      if (result.value?.accepted !== true) throw Object.assign(Error(result.value?.message || '建档操作未完成，请重试。'), { code: result.value?.code })
+      if (result.value?.accepted !== true) throw Object.assign(Error(result.value?.message || '建档操作未完成，请重试。'), {
+        code: result.value?.code, details: result.value?.details,
+      })
       return result.value
     }
 
@@ -273,8 +275,11 @@ window.__ModuleLoader__.load({
     }
 
     function OnboardingEditor({ sessionId, view, section }) {
+      const errorPrefix = useId()
       const [edits, setEdits] = useState({})
       const [error, setError] = useState('')
+      const [reviewed, setReviewed] = useState({})
+      const [serverIssue, setServerIssue] = useState(null)
       const [notice, setNotice] = useState('')
       const [saving, setSaving] = useState(false)
       const pendingSave = useRef(false)
@@ -286,9 +291,32 @@ window.__ModuleLoader__.load({
       const conflicts = new Set(changed.filter(([key, edit]) => !sameDraftValue(current[key], edit.initial)).map(([key]) => key))
       const title = sectionLabels[section]
 
+      function inputErrors() {
+        const candidates = {}
+        if (section === 'bank' && input.bankStatus === 'provided') {
+          for (const [index, account] of input.accounts.entries()) {
+            for (const key of ['holder', 'bank', 'number', 'currency', 'openedOn']) {
+              const message = onboardingFieldError(key, account[key], { savedNumber: Boolean(account.id && account.maskedNumber) })
+              if (message) candidates['account-' + index + '-' + key] = message
+            }
+          }
+        } else {
+          for (const key of ['taxId', 'establishedOn', 'startMonth']) {
+            const message = onboardingFieldError(key, input[key], {
+              lastMonth: input.history === 'previous' ? input.lastMonth : undefined,
+            })
+            if (message) candidates[key] = message
+          }
+        }
+        return candidates
+      }
+
+      const errors = inputErrors()
+
       function change(key, value) {
         const changes = typeof key === 'string' ? { [key]: value } : key
         setError('')
+        setServerIssue(null)
         setNotice('')
         setEdits(previous => {
           const next = { ...previous }
@@ -300,15 +328,26 @@ window.__ModuleLoader__.load({
         })
       }
 
-      async function save() {
+      async function save(form) {
         if (pendingSave.current || !changed.length) return
         if (section === 'tax') {
           const detail = TAX_FIELDS.find(field => field.requiredWhen && input[field.requiredWhen] === '其他' && !input[field.key]?.trim())
-          if (detail) { setError('请填写' + detail.label + '。'); return }
+          if (detail) {
+            setError('请填写' + detail.label + '。')
+            form?.elements.namedItem(detail.key)?.focus()
+            return
+          }
+        }
+        const invalid = Object.keys(errors).filter(key => !key.startsWith('account-') || Object.hasOwn(patch, 'accounts'))
+        if (invalid.length) {
+          setReviewed(previous => ({ ...previous, ...Object.fromEntries(invalid.map(key => [key, true])) }))
+          form?.elements.namedItem(invalid[0])?.focus()
+          return
         }
         pendingSave.current = true
         setSaving(true)
         setError('')
+        setServerIssue(null)
         setNotice('')
         try {
           const draft = await onboardingRequest(sessionId, 'edit-section', {
@@ -319,7 +358,12 @@ window.__ModuleLoader__.load({
           setEdits({})
           setNotice('已保存到建档草稿')
         } catch (error) {
-          setError(error.message)
+          const { field, index } = error.details ?? {}
+          if (section === 'bank' && Number.isInteger(index) && ['holder', 'number', 'bank', 'currency', 'openedOn'].includes(field)) {
+            const name = 'account-' + index + '-' + field
+            setServerIssue({ name, message: error.message })
+            form?.elements.namedItem(name)?.focus()
+          } else setError(error.message)
           if (['DRAFT_STALE', 'ONBOARDING_CHANGED'].includes(error.code)) {
             try { refreshOnboarding(sessionId, await onboardingRequest(sessionId, 'status')) } catch { /* Keep the input for retry. */ }
           }
@@ -332,16 +376,22 @@ window.__ModuleLoader__.load({
       const field = (label, name, options = {}) => {
         const { type = 'text', list, locked, fullWidth, placeholder, maxLength, required = false,
           value = locked ? current[name] : input[name], set = next => change(name, next) } = options
+        const fieldError = !locked && ((reviewed[name] && errors[name]) || (serverIssue?.name === name && serverIssue.message))
+        const errorId = errorPrefix + '-' + name + '-error'
         const props = { name, value: value ?? '', 'aria-required': required || undefined,
           disabled: saving || Boolean(list && !Object.keys(list).length),
-          onChange: event => set(event.target.value), style: panelInput }
+          onChange: event => set(event.target.value), onBlur: () => setReviewed(previous => ({ ...previous, [name]: true })),
+          'aria-invalid': fieldError ? true : undefined, 'aria-describedby': fieldError ? errorId : undefined,
+          style: fieldError ? { ...panelInput, borderColor: 'var(--dsw-alias-label-danger, #ad3939)' } : panelInput }
         return jsx('label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0,
           ...(fullWidth ? { gridColumn: '1 / -1' } : {}) }, children: [
           jsx('span', { style: { color: muted, fontSize: 12 }, children: label }),
           locked ? jsx('span', { title: '来自已核对的税务资料', style: { overflowWrap: 'anywhere' }, children: value || '待补' }) : list ? jsx('select', { ...props, children: [
             jsx('option', { value: '', disabled: required, children: placeholder || '请选择' }),
             ...Object.entries(list).map(([key, text]) => jsx('option', { value: key, children: text }, key)),
-          ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off' }),
+          ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off',
+            inputMode: name.endsWith('-number') ? 'numeric' : undefined }),
+          fieldError ? jsx('span', { id: errorId, role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #ad3939)', fontSize: 12 }, children: fieldError }) : null,
           !locked && conflicts.has(name) ? jsx('span', { style: { color: muted, fontSize: 12, overflowWrap: 'anywhere' },
             children: '草稿当前值 · ' + (list?.[current[name]] || current[name] || '待补') }) : null,
         ] }, name)
@@ -434,7 +484,7 @@ window.__ModuleLoader__.load({
       }
       return jsx('form', {
         'aria-label': title, style: panelSectionStyle,
-        onSubmit: event => { event.preventDefault(); void save() },
+        onSubmit: event => { event.preventDefault(); void save(event.currentTarget) },
         children: [
           jsx('h3', { style: panelSectionHeading, children: title }),
           jsx('div', { style: { ...readoutGrid, gap: '12px 16px' }, children: fields }),
@@ -443,7 +493,12 @@ window.__ModuleLoader__.load({
           changed.length ? jsx('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }, children: [
             jsx('span', { role: 'status', style: { marginInlineEnd: 'auto', color: muted, fontSize: 12 },
               children: conflicts.size ? '资料有更新，已保留你的输入。保存前请核对。' : '有未保存的修改' }),
-            jsx('button', { type: 'button', style: panelAction, disabled: saving, onClick: () => { setEdits({}); setError('') }, children: '放弃修改' }),
+            jsx('button', { type: 'button', style: panelAction, disabled: saving, onClick: () => {
+              setEdits({})
+              setReviewed({})
+              setServerIssue(null)
+              setError('')
+            }, children: '放弃修改' }),
             jsx('button', { type: 'submit', style: { ...panelAction, background: 'var(--dsw-static-deepseek-600, #1b6f4a)', color: '#fff' },
               disabled: saving, children: saving ? '保存中…' : conflicts.size ? '保存我的修改' : '保存' }),
           ] }) : null,

@@ -364,6 +364,9 @@ describe('company onboarding RPC', () => {
     const bank = card()
     expect(bank.kind).toBe('bank')
     await expect(request('card-status', { cardId: bank.id })).resolves.toMatchObject({ view: { enterprise: { companyName: '合成更正企业' } } })
+    await expect(submit(bank, { values: {
+      holder: '合成账户户名', number: '123', bank: '合成银行', currency: 'CNY',
+    } })).resolves.toMatchObject({ accepted: false, code: 'BANK_NUMBER_INVALID', details: { field: 'number', index: 0 } })
     await submit(bank, { values: { holder: '合成账户户名', number: '0000000102', bank: '合成银行', currency: 'CNY' } })
 
     const finalReview = card('correct', ['companyName'])
