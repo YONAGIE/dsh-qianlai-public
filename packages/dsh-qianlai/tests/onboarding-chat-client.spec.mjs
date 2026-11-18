@@ -490,6 +490,36 @@ describe('建档对话卡', () => {
     })
   })
 
+  it('银行账号离开输入框时提示格式错误，修正后保存，重复账号提示仍归在字段下', async () => {
+    const bank = next(4, { kind: 'bank' })
+    const submit = vi.fn(async () => { throw Object.assign(Error('该银行账号已在账户列表中，请填写另一个账号。'), {
+      details: { field: 'number', index: 1 },
+    }) })
+    const request = vi.fn(async (_session, action, payload) => action === 'card-status'
+      ? { accepted: true, card: bank, view: recognizedView } : submit(payload))
+    const active = client(request)
+    const field = name => find(active.render(bank), node => node.props.name === name).props
+    const form = () => find(active.render(bank), node => node.type === 'form').props
+    active.render(bank)
+    await settle()
+    field('number').onChange({ target: { value: '123' } })
+    field('number').onBlur()
+    expect(field('number')).toMatchObject({ value: '123', 'aria-invalid': true })
+    expect(find(active.render(bank), node => node.props.id === field('number')['aria-describedby']).props.children)
+      .toContain('请输入 4 至 34 位数字')
+    form().onSubmit({ preventDefault() {} })
+    expect(submit).not.toHaveBeenCalled()
+    field('bank').onChange({ target: { value: '合成银行' } })
+    field('number').onChange({ target: { value: '12 34-56' } })
+    expect(field('number')['aria-invalid']).toBeUndefined()
+    form().onSubmit({ preventDefault() {} })
+    await settle()
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ values: expect.objectContaining({ number: '12 34-56' }) }))
+    expect(field('number')).toMatchObject({ value: '12 34-56', 'aria-invalid': true })
+    expect(find(active.render(bank), node => node.props.id === field('number')['aria-describedby']).props.children)
+      .toContain('已在账户列表中')
+  })
+
   it('选择地区后立刻打开官方扫码，重开对话只恢复状态，用户核对后再回填', async () => {
     vi.useFakeTimers()
     try {

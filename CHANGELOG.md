@@ -22,6 +22,8 @@
 
 - Recover the current setup card when a generic question or invalid answer would interrupt onboarding. Accept an explicit business selection in chat and use native month controls for the handoff and opening months.
 
+- Show company setup validation beside the affected field. Catch malformed bank details before submission and keep edited values available for correction.
+
 - Keep an incomplete document on the current card after a partial save. Open a focused correction form for the requested field and resume from the updated draft after saving.
 
 - Cancel obsolete tax scans when switching setup methods. Verify the selected enterprise, source page and current draft before applying reviewed tax details.

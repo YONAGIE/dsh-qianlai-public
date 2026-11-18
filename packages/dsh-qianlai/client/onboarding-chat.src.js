@@ -1,5 +1,26 @@
 /* global FormData, setInterval, clearInterval */
 
+export function onboardingFieldError(key, value, { savedNumber = false, lastMonth } = {}) {
+  const input = String(value ?? '').trim()
+  if (key === 'number' && (!savedNumber || input) && !/^\d{4,34}$/.test(input.replace(/[ -]/g, '')))
+    return '请输入 4 至 34 位数字。账号中的空格和短横线会自动忽略。'
+  if (key === 'holder' && !input) return '请填写账户户名。'
+  if (key === 'bank' && !input) return '请填写开户行。'
+  if (key === 'currency' && !/^[A-Z]{3}$/i.test(input)) return '请输入三位币种代码，如 CNY。'
+  if (key === 'taxId' && input && !/^[A-Z0-9]{18}$/i.test(input)) return '请输入 18 位统一社会信用代码。'
+  if ((key === 'establishedOn' || key === 'openedOn') && input) {
+    const date = new Date(input + 'T00:00:00Z')
+    const today = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date())
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input) || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== input || input > today)
+      return (key === 'openedOn' ? '开户日期' : '成立日期') + '须为有效日期，且不能晚于今天。'
+  }
+  if (key === 'startMonth' && input && lastMonth && input <= lastMonth)
+    return '起账月份须在旧账截止月 ' + lastMonth + ' 之后。'
+  return ''
+}
+
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset,
   openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, subscribeOnboarding,
@@ -222,7 +243,8 @@ export function registerOnboardingChat(ctx, {
     }
   }
 
-  function form({ fields, values, change, saving, onSubmit, label = '保存到草稿', secondaryAction }) {
+  function form({ fields, values, change, saving, onSubmit, label = '保存到草稿', secondaryAction,
+    reviewed, review, serverIssue, errorPrefix }) {
     const inputStyle = {
       ...controlStyle,
       background: 'var(--dsw-alias-fill-primary, transparent)',
@@ -234,11 +256,18 @@ export function registerOnboardingChat(ctx, {
       style: { display: 'grid', gridTemplateColumns: formColumns, gap: '12px 16px', marginTop: 12 },
       onSubmit: event => {
         event.preventDefault()
-        if (!event.currentTarget) { onSubmit(Object.fromEntries(visibleFields.map(({ key }) => [key, values[key]]))); return }
-        const formValues = new FormData(event.currentTarget)
-        onSubmit(Object.fromEntries(visibleFields.map(({ key, type }) => [
-          key, type === 'multi' ? formValues.getAll(key) : formValues.get(key),
-        ])))
+        const target = event.currentTarget
+        const input = target ? new FormData(target) : undefined
+        const submitted = Object.fromEntries(visibleFields.map(({ key, type }) => [
+          key, input ? (type === 'multi' ? input.getAll(key) : input.get(key)) : values[key],
+        ]))
+        const invalid = visibleFields.filter(field => onboardingFieldError(field.key, submitted[field.key], submitted))
+        if (invalid.length) {
+          review(invalid.map(field => field.key))
+          target?.elements.namedItem(invalid[0].key)?.focus()
+          return
+        }
+        onSubmit(submitted)
       },
       children: [...visibleFields.map(field => {
         if (field.type === 'multi') {
@@ -263,10 +292,16 @@ export function registerOnboardingChat(ctx, {
           }, field.key)
         }
         const value = values[field.key] ?? ''
+        const error = (reviewed[field.key] && onboardingFieldError(field.key, value, values)) ||
+          (serverIssue?.field === field.key ? serverIssue.message : '')
+        const errorId = errorPrefix + '-' + field.key + '-error'
         const input = {
           name: field.key, required: Boolean(field.requiredWhen) || field.required !== false, disabled: saving, value,
           onChange: event => change(field.key, event.target.value),
-          style: inputStyle,
+          onBlur: () => review([field.key]),
+          'aria-invalid': error ? true : undefined,
+          'aria-describedby': error ? errorId : undefined,
+          style: error ? { ...inputStyle, borderColor: 'var(--dsw-alias-label-danger, #ad3939)' } : inputStyle,
         }
         return jsx('label', {
           style: { display: 'grid', alignContent: 'start', gap: 5, minWidth: 0,
@@ -278,7 +313,9 @@ export function registerOnboardingChat(ctx, {
                 ...field.options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
               ] })
               : jsx('input', { ...input, type: field.type, maxLength: field.maxLength,
+                inputMode: field.key === 'number' ? 'numeric' : undefined,
                 ...(field.requiredWhen ? { placeholder: '请按税务登记资料填写' } : {}) }),
+            error ? jsx('span', { id: errorId, role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #ad3939)', fontSize: '0.875em' }, children: error }) : null,
           ],
         }, field.key)
       }), jsx('div', {
@@ -386,6 +423,8 @@ export function registerOnboardingChat(ctx, {
 
   function Card({ sessionId, card: projectedCard }) {
     const [values, setValues] = useState({})
+    const [reviewed, setReviewed] = useState({})
+    const [serverIssue, setServerIssue] = useState(null)
     const [status, setStatus] = useState(null)
     const [statusAttempt, setStatusAttempt] = useState(0)
     const [error, setError] = useState('')
@@ -402,6 +441,10 @@ export function registerOnboardingChat(ctx, {
     const card = status?.card ?? projectedCard
     const { id: cardId, draftId, revision } = card
     const viewOnly = card.kind === 'fields' && card.fields.length === 0
+    const buildForm = props => form({
+      ...props, reviewed, serverIssue, errorPrefix: 'onboarding-' + cardId,
+      review: keys => setReviewed(previous => ({ ...previous, ...Object.fromEntries(keys.map(key => [key, true])) })),
+    })
     function applyStatus(result) {
       if (result.card) currentRevision.current = result.card.revision
       setStatus(result)
@@ -466,13 +509,17 @@ export function registerOnboardingChat(ctx, {
       if (submitting.current || !status || status.receipt || status.stale || obsolete) return
       submitting.current = true
       setError('')
+      setServerIssue(null)
       setSaving(true)
       try {
         const payload = { cardId, draftId, revision, ...input }
         const result = await onboardingRequest(sessionId, 'submit-card', payload)
         await finishCard(result, payload)
       } catch (error) {
-        setError(shownError(error, '建档资料暂时无法保存，请重试。'))
+        const message = shownError(error, '建档资料暂时无法保存，请重试。')
+        if (Object.hasOwn(input.values ?? {}, error?.details?.field))
+          setServerIssue({ field: error.details.field, message })
+        else setError(message)
         if (['DRAFT_STALE', 'CARD_UNAVAILABLE', 'ONBOARDING_CHANGED'].includes(error?.code))
           setStatusAttempt(attempt => attempt + 1)
       } finally {
@@ -555,6 +602,7 @@ export function registerOnboardingChat(ctx, {
 
     function change(key, value) {
       setValues(previous => ({ ...previous, [key]: value, ...(key === 'province' ? { city: '' } : {}) }))
+      if (serverIssue?.field === key) setServerIssue(null)
     }
     function saveFields(fields, values) {
       if (fields.some(field => field.type === 'multi' && !values[field.key]?.length)) {
@@ -640,7 +688,7 @@ export function registerOnboardingChat(ctx, {
               ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
           }),
         ] }),
-        form({ fields: card.fields.map(field => ({ ...field, required: false })), values: documentValues,
+        buildForm({ fields: card.fields.map(field => ({ ...field, required: false })), values: documentValues,
           change, saving, label: confirm, onSubmit: input => void submit({ values: Object.fromEntries(
             card.fields.filter(({ key }) => typeof input[key] === 'string' && input[key].trim()).map(({ key }) => [key, input[key]]),
           ) }) }),
@@ -653,7 +701,7 @@ export function registerOnboardingChat(ctx, {
         { key: 'province', label: '省份', type: 'select', options: options(Object.keys(taxRegionCities)) },
         { key: 'city', label: '城市或地区', type: 'select', options: options(taxRegionCities[values.province] ?? []) },
       ]
-      body = form({ fields, values, change, saving, label: '确认地区并继续', onSubmit: input => saveFields(fields, input) })
+      body = buildForm({ fields, values, change, saving, label: '确认地区并继续', onSubmit: input => saveFields(fields, input) })
     } else if (card.kind === 'tax-scan') {
       body = jsx(TaxStep, {
         sessionId, card, enterprise: status.view?.enterprise,
@@ -678,7 +726,7 @@ export function registerOnboardingChat(ctx, {
         ] }),
         jsx('details', { style: { marginTop: 14, borderTop: controlBorder, paddingTop: 10 }, children: [
           jsx('summary', { style: { ...secondary, cursor: 'pointer', paddingBlock: 4, width: 'fit-content' }, children: '更正资料' }),
-          form({
+          buildForm({
             fields: [{ key: 'correction', label: '要更正的资料', type: 'select', options: corrections }],
             values, change, saving, label: '更正选中资料', onSubmit: input => void submit({ choice: input.correction }),
           }),
@@ -689,7 +737,7 @@ export function registerOnboardingChat(ctx, {
       const formValues = card.kind === 'bank'
         ? { currency: 'CNY', holder: status.view?.enterprise?.companyName ?? '', ...prefilled, ...values }
         : { ...prefilled, ...values }
-      body = form({
+      body = buildForm({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
         ...(card.correction ? { label: '保存更正' } : {}),
         secondaryAction: card.kind === 'bank'

@@ -300,14 +300,27 @@ function validateEnterprise(data: Enterprise | undefined, today: string): Refusa
   return validateAccountValues(data.accounts, today)
 }
 
-function validateAccountValues(accounts: readonly Account[], today: string): Refusal | undefined {
-  const numbers = accounts.map(account => account.number).filter(Boolean)
-  if (numbers.some(number => !/^\d{4,34}$/.test(number)) || numbers.length !== new Set(numbers).size)
-    return refuse('BANK_NUMBER_INVALID', '请检查银行账号格式，并去掉重复的账户。')
-  if (accounts.some(account => account.currency && !/^[A-Z]{3}$/.test(account.currency)))
-    return refuse('BANK_CURRENCY_INVALID', '请选择账户币种。')
-  if (accounts.some(account => account.openedOn && (!isCalendarDate(account.openedOn) || account.openedOn > today)))
-    return refuse('BANK_DATE_INVALID', '请核对账户开户日期。')
+const accountRequired = {
+  holder: '请填写账户户名。', number: '请填写银行账号。', bank: '请填写开户行。', currency: '请选择账户币种。',
+} as const
+
+function validateAccountValues(accounts: readonly Account[], today: string, requireComplete = false): Refusal | undefined {
+  const numbers = new Set<string>()
+  for (const [index, account] of accounts.entries()) {
+    if (requireComplete) {
+      const missing = (Object.keys(accountRequired) as (keyof typeof accountRequired)[]).find(key => !account[key])
+      if (missing) return refuse('BANK_ACCOUNT_REQUIRED', accountRequired[missing], { field: missing, index })
+    }
+    if (account.number && !/^\d{4,34}$/.test(account.number))
+      return refuse('BANK_NUMBER_INVALID', '请输入 4 至 34 位数字。账号中的空格和短横线会自动忽略。', { field: 'number', index })
+    if (account.number && numbers.has(account.number))
+      return refuse('BANK_NUMBER_DUPLICATE', '该银行账号已在账户列表中，请填写另一个账号。', { field: 'number', index })
+    if (account.number) numbers.add(account.number)
+    if (account.currency && !/^[A-Z]{3}$/.test(account.currency))
+      return refuse('BANK_CURRENCY_INVALID', '请输入三位币种代码，如 CNY。', { field: 'currency', index })
+    if (account.openedOn && (!isCalendarDate(account.openedOn) || account.openedOn > today))
+      return refuse('BANK_DATE_INVALID', '开户日期须为有效日期，且不能晚于今天。', { field: 'openedOn', index })
+  }
 }
 
 function validateAccounting(data: Accounting | undefined, enterprise: Enterprise | undefined, today: string): Refusal | undefined {
@@ -489,9 +502,7 @@ export class CompanyOnboarding {
               .some(field => !['id', 'holder', 'number', 'bank', 'currency', 'openedOn'].includes(field))))
               throw new InputError('请核对银行账户资料。')
             const accounts = parseAccounts(value, record.enterprise?.accounts ?? [])
-            if (accounts.some(account => !account.holder || !account.number || !account.bank || !account.currency))
-              throw new InputError('请补齐账户户名、账号、开户行和币种。')
-            const invalid = validateAccountValues(accounts, today)
+            const invalid = validateAccountValues(accounts, today, true)
             if (invalid) return invalid
             // The original input preserves which IDs were supplied by the caller.
             patch[key] = value
@@ -930,17 +941,19 @@ export class CompanyOnboarding {
           const saved = this.save(1, revision, { ...record.enterprise, bankStatus: 'pending' }, false)
           return saved.accepted ? next({ labels: ['银行资料待补'] }) : saved
         }
-        if (!record.enterprise || !data.holder || !data.bank || typeof data.number !== 'string' ||
-            !/^\d{4,34}$/.test(data.number.replace(/[ -]/g, '')) ||
-            record.enterprise.accounts.some(account => account.number === (data.number as string).replace(/[ -]/g, '')))
-          return invalid()
-        if (data.currency && (typeof data.currency !== 'string' || !/^[A-Z]{3}$/.test(data.currency)))
-          return refuse('BANK_CURRENCY_INVALID', '请选择账户币种。')
-        if (data.openedOn && (typeof data.openedOn !== 'string' || !isCalendarDate(data.openedOn) || data.openedOn > todayInChina(this.now())))
-          return refuse('BANK_DATE_INVALID', '请核对账户开户日期。')
-        const saved = this.save(1, revision, { ...record.enterprise, accounts: [
-          ...record.enterprise.accounts, { holder: data.holder, number: data.number, bank: data.bank, currency: data.currency || 'CNY', openedOn: data.openedOn },
-        ] }, false)
+        if (!record.enterprise) return invalid()
+        const previous = record.enterprise.accounts
+        const accounts = [...previous, {
+          holder: data.holder, number: data.number, bank: data.bank, currency: data.currency || 'CNY', openedOn: data.openedOn,
+        }]
+        try {
+          const problem = validateAccountValues(parseAccounts(accounts, previous), todayInChina(this.now()), true)
+          if (problem) return problem
+        } catch (error) {
+          if (error instanceof InputError) return refuse('DRAFT_INPUT_INVALID', error.message)
+          throw error
+        }
+        const saved = this.save(1, revision, { ...record.enterprise, accounts }, false)
         return saved.accepted ? next({ labels: ['已保存银行账户'] }, { kind: 'bank-next' }) : saved
       }
       if (card.kind === 'bank-next' && (choice === 'add' || choice === 'continue'))
