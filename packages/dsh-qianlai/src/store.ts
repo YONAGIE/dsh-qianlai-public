@@ -4,6 +4,8 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { parseAmountToCents, type LedgerPosting } from '@moneycome/fintax-core'
 
+import type { OnboardingRecord } from './company-onboarding.js'
+
 /**
  * 本机一本账。一个 SQLite 文件只放一家企业。
  *
@@ -118,6 +120,12 @@ const MIGRATIONS: readonly string[] = [
     operation TEXT NOT NULL,
     args_hash TEXT NOT NULL,
     result_json TEXT NOT NULL
+  );
+  `,
+  `
+  CREATE TABLE company_onboarding (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload_json TEXT NOT NULL
   );
   `,
 ]
@@ -250,6 +258,19 @@ export class BookStore {
     }
   }
 
+  companyOnboarding(): OnboardingRecord | undefined {
+    const row = this.db.prepare('SELECT payload_json FROM company_onboarding WHERE id = 1').get() as
+      { payload_json: string } | undefined
+    return row && JSON.parse(row.payload_json) as OnboardingRecord
+  }
+
+  saveCompanyOnboarding(record: OnboardingRecord): void {
+    this.db.prepare(`
+      INSERT INTO company_onboarding (id, payload_json) VALUES (1, ?)
+      ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
+    `).run(JSON.stringify(record))
+  }
+
   /** Compare on this same connection, including local and other-connection writes. */
   approvalRevision(): string {
     const external = this.db.prepare('PRAGMA data_version').get() as { data_version: number }
@@ -272,6 +293,10 @@ export class BookStore {
     this.db
       .prepare('INSERT INTO company (id, name, tax_id, accounting_start_month, is_sample) VALUES (1, ?, ?, ?, ?)')
       .run(company.name, company.taxId ?? null, company.accountingStartMonth, company.isSample ? 1 : 0)
+  }
+
+  updateCompanyName(name: string): void {
+    this.db.prepare('UPDATE company SET name = ? WHERE id = 1').run(name)
   }
 
   /** 清空整本账，换一家企业重新开。只在把样本账换成老板自己的账时用。 */

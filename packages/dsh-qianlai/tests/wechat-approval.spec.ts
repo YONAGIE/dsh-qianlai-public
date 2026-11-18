@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { RpcConnection } from '../src/wechat/control.js'
 import { apply } from '../src/wechat/index.js'
 
 interface Question { agent: { session: { id: string } }; toolName: string; reason: string; signal: AbortSignal }
@@ -30,6 +31,7 @@ function fixture() {
   const answers: Answer[] = [async (question, next) => question.agent.session.id !== 'synthetic-session' ? next()
     : new Promise(resolve => question.signal.addEventListener('abort', () => resolve('cancelled'), { once: true }))]
   let dispose = () => {}
+  let route!: Parameters<RpcConnection['fetch']['register']>[0]
   let questionGuard: ToolGuard | undefined
   let deliver: ((response: Response) => void) | undefined
   const sent: string[] = []
@@ -58,6 +60,8 @@ function fixture() {
         questionGuard = check
         return () => { questionGuard = undefined }
       },
+    } : name === 'connection' ? {
+      fetch: { register: (value: typeof route) => { route = value; return async () => {} } },
     } : undefined,
     logger: { info() {}, warn() {}, error() {} }, sessionController: { create: async () => ({ sessionId: 'synthetic-session' }), prompt },
   } as never, { stateDir: root })
@@ -74,7 +78,13 @@ function fixture() {
     return dispatch(0)
   }
   const checkTool = (name: string, sessionId = 'synthetic-session') => questionGuard?.({ name, agent: { session: { id: sessionId } } })
-  return { root, sent, prompt, send, ask, checkTool, stop: () => dispose() }
+  const disconnect = async () => {
+    await route.fetch(new Request('http://localhost/api/qianlai/wechat', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'client-request', rpcId: 'synthetic-disconnect', method: 'qianlai/wechat', payload: { action: 'disconnect' } }),
+    }))
+  }
+  return { root, sent, prompt, send, ask, checkTool, disconnect, stop: () => dispose() }
 }
 describe('微信原生批准应答', () => {
   it('微信的事实确认回退到文字，桌面和记账批准仍按原流程', () => {
@@ -129,6 +139,15 @@ describe('微信原生批准应答', () => {
     await until(() => test.sent.length > 0)
     test.stop()
     expect(await decision).toBe('cancelled')
+  })
+  it('手动断开撤销在等的批准，并保留原微信会话的授权边界', async () => {
+    const test = fixture()
+    const decision = test.ask()
+    await until(() => test.sent.length > 0)
+    await test.disconnect()
+    expect(await decision).toBe('cancelled')
+    expect(await test.ask()).toBe('unavailable')
+    expect(await test.ask(undefined, 'synthetic-other-session')).toBe('next-answerer')
   })
   it('五分钟没有有效确认则取消', async () => {
     vi.useFakeTimers()

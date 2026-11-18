@@ -9,9 +9,14 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { PDFDocument } from 'pdf-lib'
 
+import { CompanyOnboarding } from '../src/company-onboarding.js'
 import { apply } from '../src/index.js'
 // Worker URLs resolve relative to the shipped JS entry, so this integration uses the built plugin.
 import { apply as applyBuilt } from '../lib/index.js'
+import { loadPack } from '../src/pack.js'
+import type { PdfReferenceEvent, PdfReferenceSession } from '../src/referenced-pdf.js'
+import { seedSampleBook } from '../src/sample-book.js'
+import { BookStore } from '../src/store.js'
 
 // 企业是编的。这里测的是工具入口：参数校验、出错兜底、和别的进程抢同一本账。
 
@@ -25,16 +30,40 @@ const approvedCall = () => ({ signal: new AbortController().signal, callId: rand
 function plugin() {
   const bookPath = join(mkdtempSync(join(tmpdir(), 'qianlai-tools-')), 'book.sqlite')
   const tools = new Map<string, Tool>()
-  apply({ effect: (fn) => void fn(), tools: { register: (t) => (tools.set(t.name, t), () => {}) },
+  type Guard = Parameters<NonNullable<Parameters<typeof apply>[0]['tools']['guard']>>[0]
+  let guard: Guard | undefined
+  let observe: ((session: PdfReferenceSession, event: PdfReferenceEvent) => void) | undefined
+  apply({ effect: (fn) => void fn(), tools: {
+    register: (t) => (tools.set(t.name, t), () => {}),
+    guard: check => { guard = check; return () => {} },
+  },
     get: name => name === 'approval' ? { request: async () => 'allowed-once' } : undefined,
+    on: (_event, listener) => { observe = listener; return () => {} },
   }, { bookPath })
-  const call = (name: string, args: unknown) => tools.get(name)!.execute(args, approvedCall()) as Promise<Record<string, unknown>>
-  return { bookPath, call }
+  const sessions = new Map<string, PdfReferenceSession>()
+  const defaultSession = approvedCall().agent.session.id
+  const session = (id: string) => {
+    const current = sessions.get(id) ?? { id }
+    sessions.set(id, current)
+    return current
+  }
+  const call = (name: string, args: unknown) => tools.get(name)!.execute(args, {
+    ...approvedCall(), agent: { session: session(defaultSession) },
+  }) as Promise<Record<string, unknown>>
+  const ask = (questions: unknown, sessionId = defaultSession, callId: string = randomUUID()) =>
+    guard?.({ name: 'ask_user_question', callId, arguments: { questions }, agent: { session: session(sessionId) } })
+  const answer = (callId: string, responses: unknown, isError = false) =>
+    observe?.(session(defaultSession), { type: 'tool/result', seq: 100, data: { message: {
+      isError, source: { kind: 'tool', callId }, content: [{ type: 'text', text: JSON.stringify({ answers: responses }) }],
+    } } })
+  const turn = (type: 'turn/start' | 'turn/end', number: number, sessionId = defaultSession) =>
+    observe?.(session(sessionId), { type, seq: number * 2 + (type === 'turn/start' ? 0 : 1), data: { turn: number } })
+  return { bookPath, call, ask, answer, turn }
 }
 
 async function ownBook() {
   const p = plugin()
-  await p.call('moneycome_open_book', { companyName: '杭州青禾数据服务有限公司', accountingStartMonth: '2026-01', replaceSampleBook: true })
+  await p.call('moneycome_open_book', { companyName: '杭州青禾数据服务有限公司', accountingStartMonth: '2026-01' })
   await p.call('moneycome_set_opening_balances', { balances: [] })
   return p
 }
@@ -55,6 +84,8 @@ describe('工具入口', () => {
     const tools = new Map<string, Tool>()
     let dispose = () => {}
     try {
+      const legacy = new BookStore(join(home, 'moneycome', 'book.sqlite'))
+      try { seedSampleBook(legacy, loadPack(), new Date('2026-04-01T00:00:00Z')) } finally { legacy.close() }
       mkdirSync(join(home, 'attachments'))
       const pdf = await PDFDocument.create()
       pdf.addPage([100, 100]).drawText('synthetic')
@@ -88,6 +119,134 @@ describe('工具入口', () => {
     expect(await call('moneycome_read_referenced_pdf', { fileIndex: '2' })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
     expect(await call('moneycome_read_referenced_pdf', { page: 0 })).toMatchObject({ accepted: false, code: 'POSITION_INVALID' })
     expect(await call('moneycome_record_entry', { ...ENTRY, facts: undefined })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
+  })
+
+  it('对同一个会话同时只打开一道原生问题，拒绝合并或重复追问', () => {
+    const { ask, turn } = plugin()
+    const question = (text: string) => [{ question: text }]
+    turn('turn/start', 1)
+    expect(ask([...question('这笔款怎么付？'), ...question('哪天付的？')])).toContain('只确认一个事实')
+    expect(ask(question('这笔款怎么付？哪天付的？'))).toContain('只确认一个事实')
+    expect(ask(question('请确认\n1. 支付方式\n2. 支付日期'))).toContain('只确认一个事实')
+    expect(ask(question('您指一月份，还是下一个月？'))).toBeUndefined()
+    expect(ask(question('您说的是哪一年？'))).toContain('一个待答问题')
+    turn('turn/start', 1, 'synthetic-other-session')
+    expect(ask(question('您说的是哪一年？'), 'synthetic-other-session')).toBeUndefined()
+    turn('turn/end', 1)
+    turn('turn/start', 2)
+    expect(ask(question('您说的是哪一年？'))).toBeUndefined()
+  })
+
+  it('已提交的原生选择或表单释放本轮位置，顺序确认可继续', () => {
+    const { ask, answer, turn } = plugin()
+    const question = [{ question: '请确认这笔款项的支付方式。' }]
+    turn('turn/start', 1)
+    expect(ask(question, undefined, 'first')).toBeUndefined()
+    expect(ask(question, undefined, 'concurrent')).toContain('待答问题')
+    answer('concurrent', [{ selected: ['银行'] }])
+    expect(ask(question)).toContain('待答问题')
+    answer('first', [{ selected: ['银行'] }])
+    expect(ask([{ question: '请填写该笔支付日期。' }], undefined, 'second')).toBeUndefined()
+    answer('second', [{ selected: [], custom: '2026-11-02' }])
+    expect(ask([{ question: '请确认是否收到回单。' }])).toBeUndefined()
+  })
+
+  it('问答尚未完成时保留待记，实际提交后可进入凭证确认', async () => {
+    const { ask, answer, call, turn } = await ownBook()
+    turn('turn/start', 1)
+    expect(ask([{ question: '请选择付款方式。' }], undefined, 'payment')).toBeUndefined()
+    expect(await call('moneycome_record_entry', ENTRY)).toMatchObject({ accepted: false, code: 'ENTRY_DECISION_PENDING' })
+    answer('payment', [{ selected: ['银行'] }])
+    expect(await call('moneycome_record_entry', { ...ENTRY, requestApproval: true })).toMatchObject({ accepted: true, voucherNo: expect.any(String) })
+  })
+
+  it.each([[[], false], [[{ selected: [], custom: ' ' }], false], [[{ selected: ['已确认'] }], true]])(
+    '跳过、空答复或宿主错误时保留等待状态（%j）', (responses, isError) => {
+      const { ask, answer, turn } = plugin()
+      const question = [{ question: '请确认这笔款项的支付方式。' }]
+      turn('turn/start', 1)
+      expect(ask(question, undefined, 'first')).toBeUndefined()
+      answer('first', responses, isError)
+      expect(ask(question)).toContain('保留待确认')
+      turn('turn/end', 1)
+      turn('turn/start', 2)
+      expect(ask(question)).toBeUndefined()
+    },
+  )
+
+  it('建档中的通用选择题切回当前税务专用表单，并让其他轮次继续正常提问', async () => {
+    const { ask, bookPath, call, turn } = plugin()
+    turn('turn/start', 1)
+    expect(ask([{ question: '这笔账款是如何支付的？' }])).toBeUndefined()
+    await call('moneycome_onboarding', { action: 'start' })
+    const ambiguousQuestion = [{ question: '您需要先核对哪一项？' }]
+    const mode = ask(ambiguousQuestion)
+    expect(JSON.parse(mode!.split('当前建档卡：')[1]!)).toMatchObject({ kind: 'mode' })
+    turn('turn/end', 1)
+    const store = new BookStore(bookPath)
+    try {
+      const onboarding = new CompanyOnboarding(store)
+      const manual = onboarding.setMode(onboarding.status().revision, 'manual')
+      if (!manual.accepted) throw Error('Could not choose manual onboarding')
+      expect(onboarding.save(1, manual.revision, {
+        companyName: '合成税务资料企业', taxId: '000000000000000096', establishedOn: '2026-01-01',
+        taxpayerIdentity: 'small-scale', taxAuthority: '合成主管机关', incomeMethod: '查账征收',
+        accountingSystem: '小企业会计准则',
+      }, false)).toMatchObject({ accepted: true })
+
+      turn('turn/start', 2)
+      const taxStatus = ask([{ question: '税务登记上的纳税人状态实际是什么？',
+        options: [{ label: '正常' }, { label: '其他状态（请说明）' }] }])
+      const card = JSON.parse(taxStatus!.split('当前建档卡：')[1]!)
+      expect(card).toMatchObject({
+        kind: 'document', documentKind: 'tax',
+        fields: expect.arrayContaining([expect.objectContaining({ key: 'taxStatus', type: 'select',
+          options: ['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'].map(value => ({ value, label: value })),
+        })]),
+      })
+      expect(ask([{ question: '这笔账款是如何支付的？' }])).toBeUndefined()
+    } finally { store.close() }
+  })
+
+  it('建档中的实际经营使用专用卡，明确说以上都没有时直接保存并继续', async () => {
+    const { call, bookPath, ask } = plugin()
+    const question = [{ id: 'business', header: '实际经营', question: '企业实际开展了哪些业务？' }]
+    expect(ask(question)).toBeUndefined()
+    await call('moneycome_onboarding', { action: 'start' })
+
+    const store = new BookStore(bookPath)
+    try {
+      const onboarding = new CompanyOnboarding(store)
+      const manual = onboarding.setMode(onboarding.status().revision, 'manual')
+      if (!manual.accepted) throw Error('Could not choose manual onboarding')
+      const saved = onboarding.save(1, manual.revision, {
+        companyName: '合成经营资料企业', taxId: '000000000000000094', establishedOn: '2026-01-01',
+        taxpayerIdentity: 'small-scale', taxStatus: '正常', taxAuthority: '合成主管机关',
+        incomeMethod: '查账征收', accountingSystem: '小企业会计准则', business: [],
+      }, false)
+      expect(saved).toMatchObject({ accepted: true })
+      const fallback = ask(question)
+      expect(fallback).toContain('请用下方钱来建档表单完成当前步骤。')
+      expect(JSON.parse(fallback!.split('当前建档卡：')[1]!)).toMatchObject({
+        title: '确认实际经营', fields: [{ key: 'business', type: 'multi' }],
+      })
+      expect(ask(question, 'not-the-setup-session')).toBeUndefined()
+      expect(ask([{ question: '这笔账款是如何支付的？' }])).toBeUndefined()
+
+      // The conflicting legacy input is refused with a usable replacement form.
+      expect(await call('moneycome_onboarding', { action: 'fill', values: { business: ['goods', 'none'] } }))
+        .toMatchObject({ accepted: false, card: { title: '确认实际经营' } })
+      expect(await call('moneycome_onboarding', { action: 'fill', values: { business: ['none'] } }))
+        .toMatchObject({ accepted: true, draftSummary: { enterprise: { business: ['none'] } }, card: { title: '确认账户情况' } })
+      expect(store.company()).toBeUndefined()
+
+      await call('moneycome_onboarding', { action: 'fill', values: { bankStatus: 'none' } })
+      await call('moneycome_onboarding', { action: 'fill', values: { history: 'previous' } })
+      const month = ask([{ question: '旧账（会计或代账公司）已经记到哪个月？请写明年月。' }])
+      expect(JSON.parse(month!.split('当前建档卡：')[1]!)).toMatchObject({
+        title: '确认记账准备', fields: [{ key: 'lastMonth', type: 'month' }, { key: 'startMonth', type: 'month' }],
+      })
+    } finally { store.close() }
   })
 
   it('可选参数给 null 当没给，字符串参数给数字转成字符串', async () => {

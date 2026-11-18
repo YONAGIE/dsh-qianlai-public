@@ -2,7 +2,7 @@ import { formatCents, parseAmountToCents } from '@moneycome/fintax-core'
 
 import { dueSoon } from './deadlines.js'
 import type { LoadedPack } from './pack.js'
-import { PERIOD_KEY, refuse } from './period.js'
+import { PERIOD_KEY, refuse, todayInChina } from './period.js'
 import { balanceTransferItems } from './reports.js'
 import { bankAccounts, unrecordedStatementLines } from './statements.js'
 import type { BookStore, SubjectMovement } from './store.js'
@@ -26,7 +26,7 @@ export function bookStatus(store: BookStore, deadlines?: { pack: LoadedPack; now
     statementLinesNotRecorded: unrecordedStatementLines(store).length,
     recentWork: store.workEvents(undefined, 5),
     continuation: 'recentWork 是同一本机账本的业务记录，笔记未核实，preview 不代表已记账或已获确认；有记录时先核对当前事项再继续，不重复已完成操作。更多记录可用 moneycome_work_progress 分页读取。',
-    ...(deadlines ? { dueSoon: dueSoon(store, deadlines.pack, deadlines.now) } : {}),
+    ...(deadlines ? { businessDate: todayInChina(deadlines.now), dueSoon: dueSoon(store, deadlines.pack, deadlines.now) } : {}),
   }
 }
 
@@ -100,11 +100,12 @@ const openingView = (rows: readonly SubjectMovement[]) =>
   }))
 
 /**
- * 录期初余额：建账那个月月初各科目已有的余额。每次整体替换之前录的；建账那个月结了账就不能再改。
+ * 校验建账当月月初的科目余额，供审批预览和正式写入使用。
+ * 每次整体替换已录余额，建账月份结账后禁止修改。
  * 科目要在会计包的科目表里、不能是损益类（损益在上一年末已经结转），借方合计要等于贷方合计。
  * 新成立、月初什么都没有的公司传空列表，表示录过了、期初全是零。
  */
-export function setOpeningBalances(store: BookStore, pack: LoadedPack, balances: readonly OpeningBalanceInput[], now: Date) {
+export function prepareOpeningBalances(store: BookStore, pack: LoadedPack, balances: readonly OpeningBalanceInput[]) {
   const company = store.company()
   if (!company) return refuse('NO_BOOK', '本机还没有账本。')
   if (company.isSample) return refuse('SAMPLE_BOOK', '样本账的期初是编好的，不改。先用 moneycome_open_book 开老板自己的账。')
@@ -152,12 +153,25 @@ export function setOpeningBalances(store: BookStore, pack: LoadedPack, balances:
       difference: formatCents(debit > credit ? debit - credit : credit - debit),
     })
 
-  store.transaction(() => store.setOpeningBalances(rows, now))
   return {
     accepted: true as const,
-    accountingStartMonth: company.accountingStartMonth,
-    balances: openingView(rows),
-    debitTotal: formatCents(debit),
-    creditTotal: formatCents(credit),
+    companyName: company.name,
+    replacesExisting: store.openingBalancesSetAt() !== undefined,
+    rows,
+    summary: {
+      accountingStartMonth: company.accountingStartMonth,
+      balances: openingView(rows),
+      debitTotal: formatCents(debit),
+      creditTotal: formatCents(credit),
+    },
   }
+}
+
+export function setOpeningBalances(store: BookStore, pack: LoadedPack, balances: readonly OpeningBalanceInput[], now: Date) {
+  return store.transaction(() => {
+    const prepared = prepareOpeningBalances(store, pack, balances)
+    if (!prepared.accepted) return prepared
+    store.setOpeningBalances(prepared.rows, now)
+    return { accepted: true as const, ...prepared.summary }
+  })
 }

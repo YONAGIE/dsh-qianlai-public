@@ -70,6 +70,7 @@
     "@moneycome/fintax-core": "workspace:*",
     "@napi-rs/canvas": "^1.1.0",
     "pdfjs-dist": "^6.4.299",
+    "playwright-core": "1.65.1",
     "qrcode": "1.5.4"
   },
   "peerDependencies": {

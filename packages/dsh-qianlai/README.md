@@ -30,7 +30,17 @@ export DEEPSEEK_API_KEY=your-key
 dsh --profile web
 ```
 
-Open the printed URL, pick **钱来张姐** in the mode picker above the input box, and start a session. The first start creates fictional sample books; ask Zhangjie to open your own company's books when you are ready, and she clears the sample after you agree.
+Open the printed URL and pick **钱来张姐** in the mode picker. A fresh data directory starts with an empty book. On the first greeting, Zhangjie lists what she can do and gives one next action. Send **我要建档** (Set up my company), then choose tax QR login or manual entry in the conversation. The right-hand **企业建档** tab shows company details, the bookkeeping month, payroll and social insurance, and final review.
+
+With manual entry, type into the company details card or drop a business license there. You can also click **选择营业执照** (Choose business license). Check the extracted values, fill in missing details, and click **确认公司资料** (Confirm company details) to update the draft on the right. Tax documents use the same review flow. To correct a saved value, edit the field directly in the right panel and save its section. Zhangjie uses the latest saved draft when you continue.
+
+Choose a setup method at the start. To switch later, ask Zhangjie in chat to use manual entry or tax QR login. Your draft carries over. Company setup opens the real book when you confirm. Existing sample books from older versions still require your consent before replacement. If you have prior books, continue with the opening balances after setup.
+
+After you select tax QR login, Zhangjie asks for the province and city or district in a new reply. Choose **北京市** in both fields for Beijing or a city served by the Zhejiang provincial tax bureau. Confirming the region automatically opens the official QR page. You can supply the company name and unified social credit code through the scan. For Ningbo and other regions, upload an export or screenshot from the local official portal.
+
+Scan on the official page and select the company there. Zhangjie detects the authenticated enterprise page, reads the tax information, and shows it in the right-hand draft panel. Review the results and select **核对无误，回填税务资料** (Apply reviewed tax details) to save them. If reading fails, you can retry, ask Zhangjie to switch to manual entry, or upload official documents.
+
+The scan reads details shown on the official query page, including the company name and unified social credit code, supervising tax authority, tax status, taxpayer classification, visible tax items, and an explicitly listed incorporation date. Use the chat prompts to supply bank accounts, operating details, the bookkeeping start month, and payroll and social insurance arrangements. Check additional pages if the tax item list is paginated. Post-login retrieval and draft entry with real Beijing and Zhejiang enterprise accounts are pending validation.
 
 When Zhangjie needs to confirm a business fact, she asks about one unresolved item at a time. Select an option or enter your own answer on the native DSH question card. The conversation shows the question and submitted answer, including when you reopen it. Full access posts after you confirm the entry in chat. Workspace-write requests DSH approval before posting. WeChat presents the choices in text.
 
