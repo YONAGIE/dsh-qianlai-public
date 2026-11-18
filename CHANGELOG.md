@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Select, drop or paste bank account documents on the setup chat card. Review extracted account details before saving them to the company draft.
+
 - Read and correct one field of a completed company profile in chat. Keep bank numbers masked and preserve leading zeros when correcting a registered tail. Show the saved value in the profile without reopening setup.
 
 - Introduce Zhangjie when first-time users greet her and let them choose tax QR login or manual company setup in chat.

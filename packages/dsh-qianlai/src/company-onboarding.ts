@@ -1109,20 +1109,23 @@ export class CompanyOnboarding {
     })
   }
 
-  private activeDocumentCard(record: OnboardingRecord, sessionId: string, cardId: string, revision: number) {
+  private activeRecognitionCard(record: OnboardingRecord, sessionId: string, cardId: string, revision: number) {
     const card = this.activeCard(record, sessionId)?.card
-    return !record.completedAt && card?.kind === 'document' && card.id === cardId && card.revision === revision ? card : undefined
+    return !record.completedAt && (card?.kind === 'document' || card?.kind === 'bank') &&
+      card.id === cardId && card.revision === revision ? card : undefined
   }
 
   documentKindForCard(sessionId: string, cardId: string, revision: number) {
-    return this.activeDocumentCard(this.record(), sessionId, cardId, revision)?.documentKind
+    const card = this.activeRecognitionCard(this.record(), sessionId, cardId, revision)
+    return card?.kind === 'document' ? card.documentKind : card?.kind === 'bank' ? 'bank' : undefined
   }
 
   previewDocumentCard(sessionId: string, cardId: string, revision: number, fields: Record<string, unknown>) {
     const record = this.record()
-    const card = this.activeDocumentCard(record, sessionId, cardId, revision)
-    return card ? this.documentPreview(record, card, fields)
-      : refuse('CARD_UNAVAILABLE', '建档资料已更新，请继续建档后重新识别。')
+    const card = this.activeRecognitionCard(record, sessionId, cardId, revision)
+    if (card?.kind === 'document') return this.documentPreview(record, card, fields)
+    if (card?.kind === 'bank') return { accepted: true as const, fields }
+    return refuse('CARD_UNAVAILABLE', '建档资料已更新，请继续建档后重新识别。')
   }
 
   submitCard(sessionId: string, cardId: string, revision: number, choice: unknown, values: unknown, replaceSampleBook = false) {

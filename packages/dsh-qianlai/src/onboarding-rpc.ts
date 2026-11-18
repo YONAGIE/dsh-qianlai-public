@@ -140,7 +140,7 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
           if (view.completed || revision !== view.revision) return reply(refuse('ONBOARDING_CHANGED', '建档资料已变化，请核对后再上传。'))
           const cardId = typeof payload.cardId === 'string' ? payload.cardId : undefined
           const kind = cardId ? onboarding.documentKindForCard(sessionId, cardId, revision) : payload.kind
-          if (cardId && !kind) return reply(refuse('CARD_UNAVAILABLE', '请用当前资料卡识别文件。'))
+          if ((cardId && !kind) || (kind === 'bank' && !cardId)) return reply(refuse('CARD_UNAVAILABLE', '请用当前资料卡识别文件。'))
           if (recognizing) return reply(refuse('DOCUMENT_IN_PROGRESS', '上一份资料还在识别，请稍候。'))
           recognizing = true
           try {

@@ -206,7 +206,9 @@ export function registerOnboardingChat(ctx, {
   }
 
   function sourceText(documentKind) {
-    return documentKind === 'tax' ? '税务资料' : '营业执照'
+    if (documentKind === 'tax') return '税务资料'
+    if (documentKind === 'bank') return '银行开户资料'
+    return '营业执照'
   }
 
   function replyFor(card, input, result) {
@@ -544,7 +546,8 @@ export function registerOnboardingChat(ctx, {
           file: { name: file.name, mimeType: file.type, base64: await readOnboardingFile(file) },
         })
         const current = { ...card.initialValues, ...values }
-        const held = card.fields.filter(({ key }) => current[key]?.trim() &&
+        const fields = card.kind === 'bank' ? bankFields : card.fields
+        const held = fields.filter(({ key }) => current[key]?.trim() &&
           Object.hasOwn(result.fields, key) && current[key].trim() !== result.fields[key]).map(({ label }) => label)
         setDocumentPreview({ fields: result.fields, held })
       } catch (error) {
@@ -621,7 +624,8 @@ export function registerOnboardingChat(ctx, {
     const title = viewOnly ? '继续建档' : card.title || (card.kind === 'source' ? sourceTitle : card.kind === 'document' ? documentTitle : titles[card.kind])
     const receipt = status?.receipt
     const documentCard = card.kind === 'source' || card.kind === 'upload'
-    const documentForm = card.kind === 'document' && status && !status.stale && !receipt && !obsolete
+    const bankCard = card.kind === 'bank'
+    const documentForm = (card.kind === 'document' || bankCard) && status && !status.stale && !receipt && !obsolete
     const choices = {
       mode: [
         button(modes.manual, () => void submit({ mode: 'manual' }), saving),
@@ -661,10 +665,16 @@ export function registerOnboardingChat(ctx, {
     } else if (Object.hasOwn(choices, card.kind)) {
       body = jsx('div', { style: footerActions, children: choices[card.kind] })
     } else if (documentForm) {
-      const label = '选择' + sourceText(card.documentKind)
+      const documentName = sourceText(bankCard ? 'bank' : card.documentKind)
+      const label = '选择' + documentName
       const uploadHintId = 'qianlai-document-upload-hint-' + cardId
-      const documentValues = { ...documentPreview?.fields, ...prefilled, ...values }
-      const complete = card.fields.every(field => (field.requiredWhen && documentValues[field.requiredWhen] !== '其他') ||
+      const defaults = bankCard ? { currency: 'CNY', holder: status.view?.enterprise?.companyName ?? '' } : {}
+      const documentValues = { ...defaults, ...documentPreview?.fields, ...prefilled, ...values }
+      const fields = bankCard ? bankFields.map(field => {
+        if (field.key !== 'currency' || field.options.some(option => option.value === documentValues.currency)) return field
+        return { ...field, options: [...field.options, { value: documentValues.currency, label: documentValues.currency }] }
+      }) : card.fields
+      const complete = !bankCard && fields.every(field => (field.requiredWhen && documentValues[field.requiredWhen] !== '其他') ||
         documentValues[field.key]?.trim())
       const confirm = complete ? (wantsTax ? '确认税务资料' : '确认公司资料') : '保存到草稿'
       const prefilledText = documentPreview?.held.length
@@ -672,7 +682,7 @@ export function registerOnboardingChat(ctx, {
         : '请核对预填内容，补齐缺项后确认。'
       body = [
         jsx('div', {
-          role: 'group', tabIndex: 0, 'aria-label': '添加' + sourceText(card.documentKind), 'aria-describedby': uploadHintId,
+          role: 'group', tabIndex: 0, 'aria-label': '添加' + documentName, 'aria-describedby': uploadHintId,
           style: { ...actions, gap: '8px 12px', padding: '12px 14px', background: tintedSurface, border: '1px dashed color-mix(in srgb, ' + accent + ' 42%, transparent)', borderRadius: 10 },
           children: [
             button(label, () => documentInput.current?.click(), saving),
@@ -692,10 +702,16 @@ export function registerOnboardingChat(ctx, {
               ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
           }),
         ] }),
-        buildForm({ fields: card.fields.map(field => ({ ...field, required: false })), values: documentValues,
-          change, saving, label: confirm, onSubmit: input => void submit({ values: Object.fromEntries(
-            card.fields.filter(({ key }) => typeof input[key] === 'string' && input[key].trim()).map(({ key }) => [key, input[key]]),
-          ) }) }),
+        buildForm({ fields: bankCard ? fields : fields.map(field => ({ ...field, required: false })), values: documentValues,
+          change, saving, label: confirm,
+          secondaryAction: bankCard ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
+          onSubmit: input => {
+            if (bankCard) saveFields(fields, input)
+            else void submit({ values: Object.fromEntries(
+              fields.filter(({ key }) => typeof input[key] === 'string' && input[key].trim()).map(({ key }) => [key, input[key]]),
+            ) })
+          },
+        }),
       ]
     } else if (documentCard) {
       body = jsx('div', { style: actions, children: button('继续建档', () => void sendReply('请按最新资料继续建档。'), saving) })
@@ -737,17 +753,13 @@ export function registerOnboardingChat(ctx, {
         ] }),
       ]
     } else {
-      const fields = card.kind === 'bank' ? bankFields : card.fields
-      const formValues = card.kind === 'bank'
-        ? { currency: 'CNY', holder: status.view?.enterprise?.companyName ?? '', ...prefilled, ...values }
-        : { ...prefilled, ...values }
+      const fields = card.fields
+      const formValues = { ...prefilled, ...values }
       body = buildForm({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
         ...(card.maintenance || card.correction ? {
           label: fields[0]?.key === 'accountChoice' ? '确认账户' : '保存更正',
         } : {}),
-        secondaryAction: card.kind === 'bank'
-          ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
       })
     }
 
