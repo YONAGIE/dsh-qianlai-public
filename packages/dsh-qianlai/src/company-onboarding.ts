@@ -73,6 +73,7 @@ export interface OnboardingRecord {
   step: Step
   mode?: OnboardingMode
   taxFlowId?: string
+  correction?: CorrectionField
   cards?: StoredCard[]
   enterprise?: Enterprise
   accounting?: Accounting
@@ -82,7 +83,7 @@ export interface OnboardingRecord {
 
 type NextAction = 'review-book-periods' | 'opening-balances' | 'bookkeeping'
 
-export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'taxFlowId'> {
+export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'taxFlowId' | 'correction'> {
   accepted: true
   completed: boolean
   replacesSampleBook: boolean
@@ -108,7 +109,7 @@ type CardContent = (
   | { kind: 'mode' | 'region' | 'bank' | 'bank-next' }
   | { kind: 'source' | 'upload'; documentKind: 'license' | 'tax' }
   | DocumentCard
-  | { kind: 'fields'; fields: FormField[]; step?: EditableStep; initialValues?: Record<string, unknown> }
+  | { kind: 'fields'; fields: FormField[]; step?: EditableStep; initialValues?: Record<string, unknown>; correction?: true }
   | { kind: 'tax-scan'; province: string; city: string; autoStart?: true }
   | { kind: 'confirm'; replacesSampleBook: boolean }
   | { kind: 'blocked'; message: string }
@@ -116,7 +117,7 @@ type CardContent = (
 type OnboardingCard = CardBase & CardContent
 interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
 interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; autoStartClaimed?: true }
-export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode'
+export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct'
 
 const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
 const taxDocumentKeys = ['taxpayerIdentity', 'taxAuthority', 'taxStatus']
@@ -141,6 +142,20 @@ const editableSections = {
   accounting: { step: 2, keys: ['history', 'lastMonth', 'startMonth'] },
   payroll: { step: 3, keys: ['payroll', 'payday', 'social'] },
 } satisfies Record<string, { step: EditableStep; keys: string[] }>
+
+const correctionSections = {
+  companyName: 'company', establishedOn: 'company',
+  taxAuthority: 'tax', taxStatus: 'tax', taxpayerIdentity: 'tax',
+} as const satisfies Record<string, keyof typeof editableSections>
+type CorrectionField = keyof typeof correctionSections
+
+function isCorrectionField(field: unknown): field is CorrectionField {
+  return typeof field === 'string' && Object.hasOwn(correctionSections, field)
+}
+
+function correctionPending() {
+  return refuse('DRAFT_CORRECTION_PENDING', '请先在当前更正表单里核对并保存，再继续建档。')
+}
 
 function isOfficialField(key: string, profile?: OfficialTax) {
   return !!profile && (['companyName', 'taxId', 'province', 'city', 'taxAuthority'].includes(key) ||
@@ -467,7 +482,13 @@ export class CompanyOnboarding {
       if (changesCompany && previous.accounts.length)
         return refuse('COMPANY_ACCOUNT_MISMATCH', '请先核对并移除已有银行账户，再更正信用代码。')
       const tax = changesCompany ? { province: '', city: '', taxAuthority: '', taxStatus: '', taxpayerIdentity: '' } : {}
-      return this.save(step, revision, { ...current, ...tax, ...patch }, false, true)
+      const saved = this.save(step, revision, { ...current, ...tax, ...patch }, false, true)
+      if (saved.accepted && record.correction && patch[record.correction]) {
+        const updated = this.record()
+        delete updated.correction
+        this.store.saveCompanyOnboarding(updated)
+      }
+      return saved
     })
   }
 
@@ -495,13 +516,48 @@ export class CompanyOnboarding {
     return { kind: 'fields', title: { 1: '更正企业资料', 2: '更正记账准备', 3: '更正工资社保' }[step], step, fields, initialValues }
   }
 
+  private correctionCard(record: OnboardingRecord, key: CorrectionField) {
+    const field = onboardingFields[1].find(field => field.key === key)!
+    return {
+      kind: 'fields' as const, step: 1 as const, correction: true as const,
+      title: '更正' + field.label, fields: [field],
+      initialValues: { [key]: record.enterprise?.[key] ?? '' },
+    }
+  }
+
+  private prepareCorrection(record: OnboardingRecord, key: unknown, values: Record<string, unknown>) {
+    if (!record.mode || !isCorrectionField(key)) return refuse('DRAFT_INPUT_INVALID', '请选择一项要更正的企业或税务资料。')
+    if (isOfficialField(key, record.enterprise?.officialTax))
+      return refuse('DRAFT_INPUT_INVALID', '这是从税务机关读取的资料。如需更正，请核对税务资料。')
+    const card = this.correctionCard(record, key)
+    try {
+      Object.assign(card.initialValues, fieldPatch(card.fields, values, todayInChina(this.now())))
+    } catch (error) {
+      return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
+    }
+    if (record.correction !== key) {
+      record.correction = key
+      record.revision++
+      this.store.saveCompanyOnboarding(record)
+    }
+    return { accepted: true as const, card }
+  }
+
   private documentCard(record: OnboardingRecord): DocumentCard | undefined {
     if (record.step !== 1 || !record.mode || (record.mode === 'scan' && !record.enterprise?.officialTax)) return
-    const fields = availableFields(1, this.stepValues(record))
-    const company = fields.filter(field => companyDocumentKeys.includes(field.key))
+    const { companyName, taxId = '', establishedOn = '' } = record.enterprise ?? {}
+    const missingCompany = {
+      companyName: !companyName,
+      taxId: !TAX_ID.test(taxId),
+      establishedOn: !isCalendarDate(establishedOn) || establishedOn > todayInChina(this.now()),
+    }
+    const company = onboardingFields[1].filter(field =>
+      companyDocumentKeys.includes(field.key) && missingCompany[field.key as keyof typeof missingCompany])
     if (company.length) return { kind: 'document', documentKind: 'license', fields: company }
-    if (!record.enterprise?.taxpayerIdentity)
-      return { kind: 'document', documentKind: 'tax', fields: fields.filter(field => taxDocumentKeys.includes(field.key)) }
+    if (!record.enterprise?.taxpayerIdentity) return {
+      kind: 'document', documentKind: 'tax',
+      fields: availableFields(1, this.stepValues(record)).filter(field => taxDocumentKeys.includes(field.key)),
+    }
   }
 
   private documentPreview(record: OnboardingRecord, card: DocumentCard, values: Record<string, unknown>) {
@@ -530,6 +586,7 @@ export class CompanyOnboarding {
 
   private nextCard(record: OnboardingRecord): CardContent | undefined {
     if (record.completedAt) return undefined
+    if (record.correction) return this.correctionCard(record, record.correction)
     if (!record.mode) return { kind: 'mode' }
     const today = todayInChina(this.now())
     const enterprise = record.enterprise
@@ -593,7 +650,10 @@ export class CompanyOnboarding {
   }
 
   private cardResult(record: OnboardingRecord, item: StoredCard) {
-    return { accepted: true as const, view: this.view(record), ...(item.receipt ? { receipt: item.receipt } : {}), stale: false }
+    return {
+      accepted: true as const, view: this.view(record), stale: false,
+      ...(item.receipt ? { receipt: item.receipt } : { card: item.card }),
+    }
   }
 
   private transition(sessionId: string, cardId: string, receipt: CardReceipt, choose: () => CardContent | undefined) {
@@ -628,49 +688,52 @@ export class CompanyOnboarding {
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
       let content: CardContent | undefined
-      if (action === 'switch-mode') {
+      const supplied = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
+      if (action === 'correct' || (record.correction && action === 'fill')) {
+        const field = action === 'correct' ? (Array.isArray(fields) && fields.length === 1 ? fields[0] : undefined) : record.correction
+        const correction = this.prepareCorrection(record, field, supplied)
+        if (!correction.accepted) return correction
+        content = correction.card
+        record = this.record()
+      } else if (action === 'switch-mode') {
         if (mode !== 'scan' && mode !== 'manual') return refuse('DRAFT_INPUT_INVALID', '请指定改用扫码建档或手动填写。')
         const changed = record.mode !== mode
         const saved = this.setMode(record.revision, mode)
         if (!saved.accepted) return saved
         record = this.record()
-        if (changed && mode === 'scan' && !record.enterprise?.officialTax) content = { kind: 'region' }
+        if (changed && mode === 'scan' && !record.correction && !record.enterprise?.officialTax) content = { kind: 'region' }
+      } else if (record.correction && action === 'review-document') {
+        return correctionPending()
       }
       const before = this.activeCard(record, sessionId)?.card
-      const supplied = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
-      const repeatedRegion = before?.kind === 'tax-scan' && Object.keys(supplied).length === 2 &&
-        supplied.province === before.province && supplied.city === before.city
-      const document = this.documentCard(record)
-      if (action === 'review-document' || (action === 'fill' && document)) {
-        if (!document || (action === 'review-document' && documentKind !== document.documentKind))
-          return refuse('DOCUMENT_STEP', '请先完成当前建档步骤，再核对这份资料。')
-        const reviewed = this.documentPreview(record, document, supplied)
-        if (!reviewed.accepted) return reviewed
-        const earlier = before?.kind === 'document' && before.documentKind === document.documentKind ? before.initialValues : undefined
-        content = { ...document, initialValues: { ...earlier, ...reviewed.fields } }
-      } else if (action === 'fill' && repeatedRegion) {
-        content = this.cardContent(before)
-      } else if (action === 'fill' && record.mode === 'scan' && (before?.kind === 'region' ||
-        (!before && this.nextCard(record)?.kind === 'region'))) {
-        const saved = this.saveTaxRegion(record, values)
-        if (!saved.accepted) return saved
-        record = this.record()
-        content = saved.content
-      } else if (action === 'fill') {
-        if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请通过对话里的确认卡继续。')
-        if (!record.mode || (record.mode === 'scan' && !record.enterprise?.officialTax))
-          return refuse('DOCUMENT_STEP', '请先选择建档方式，或完成当前扫码步骤。')
-        const saved = this.saveFields(record, availableFields(record.step, this.stepValues(record)), values)
-        if (!saved.accepted) return saved
-        record = this.record()
+      if (!record.correction && (action === 'review-document' || action === 'fill')) {
+        const document = this.documentCard(record)
+        if (action === 'review-document' || document) {
+          if (!document || (action === 'review-document' && documentKind !== document.documentKind))
+            return refuse('DOCUMENT_STEP', '请先完成当前建档步骤，再核对这份资料。')
+          const reviewed = this.documentPreview(record, document, supplied)
+          if (!reviewed.accepted) return reviewed
+          const earlier = before?.kind === 'document' && before.documentKind === document.documentKind ? before.initialValues : undefined
+          content = { ...document, initialValues: { ...earlier, ...reviewed.fields } }
+        } else if (before?.kind === 'tax-scan' && Object.keys(supplied).length === 2 &&
+          supplied.province === before.province && supplied.city === before.city) {
+          content = this.cardContent(before)
+        } else if (record.mode === 'scan' && (before?.kind === 'region' || (!before && this.nextCard(record)?.kind === 'region'))) {
+          const saved = this.saveTaxRegion(record, values)
+          if (!saved.accepted) return saved
+          record = this.record()
+          content = saved.content
+        } else {
+          if (record.step === 4) return refuse('STEP_UNAVAILABLE', '请通过对话里的确认卡继续。')
+          if (!record.mode || (record.mode === 'scan' && !record.enterprise?.officialTax))
+            return refuse('DOCUMENT_STEP', '请先选择建档方式，或完成当前扫码步骤。')
+          const saved = this.saveFields(record, availableFields(record.step, this.stepValues(record)), values)
+          if (!saved.accepted) return saved
+          record = this.record()
+        }
       }
-      const requested = Array.isArray(fields) ? fields : []
-      const known = record.step < 4 ? availableFields(record.step as EditableStep, this.stepValues(record))
-        .filter(field => requested.includes(field.key)).slice(0, 3) : []
       const stored = this.activeCard(record, sessionId)?.card
       const active = stored?.kind === 'source' || stored?.kind === 'upload' ? undefined : stored
-      content ??= !active ? this.documentCard(record) : undefined
-      content ??= !active && known.length && record.mode === 'manual' ? { kind: 'fields', fields: known } : undefined
       if (!active) content ??= this.nextCard(record)
       const card = content ? this.issueCard(sessionId, content) : active
       const needsDocumentConfirmation = card?.kind === 'document' && Boolean(card.initialValues)
@@ -687,7 +750,8 @@ export class CompanyOnboarding {
         ...(payroll ? { payroll } : {}),
       }
       return { accepted: true as const, step: latest.step, ...(latest.mode ? { mode: latest.mode } : {}), draftSummary,
-        ...(card ? { card } : {}), ...(needsDocumentConfirmation ? { needsDocumentConfirmation } : {}) }
+        ...(card ? { card } : {}), ...(needsDocumentConfirmation ? { needsDocumentConfirmation } : {}),
+        ...(latest.correction ? { correctionPending: latest.correction } : {}) }
     })
   }
 
@@ -745,14 +809,34 @@ export class CompanyOnboarding {
     return this.store.transaction(() => {
       const record = this.record()
       const item = record.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
-      if (!item || item.card.revision !== revision) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
+      if (!item) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
       if (item.receipt) return this.cardResult(record, item)
-      if (record.completedAt || this.activeCard(record, sessionId)?.card.id !== cardId)
+      if (item.card.revision !== revision || record.completedAt || this.activeCard(record, sessionId)?.card.id !== cardId)
         return refuse('DRAFT_STALE', '资料已更新，请发送「继续建档」刷新当前步骤。')
       const card = item.card
       const invalid = () => refuse('DRAFT_INPUT_INVALID', '请按当前建档卡片继续。')
       const next = (receipt: CardReceipt, content?: CardContent) =>
         this.transition(sessionId, cardId, receipt, () => content ?? this.nextCard(this.record()))
+      if (record.correction) {
+        const key = record.correction
+        if (card.kind !== 'fields' || !card.correction || card.fields[0]?.key !== key) return correctionPending()
+        let patch: Record<string, unknown>
+        try {
+          patch = fieldPatch(card.fields, object(values), todayInChina(this.now()))
+          if (!patch[key]) throw Error('请填写要核对的资料。')
+        } catch (error) {
+          return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
+        }
+        const saved = this.editSection(revision, correctionSections[key], patch)
+        if (!saved.accepted) return saved
+        const updated = this.record()
+        if (updated.correction) {
+          delete updated.correction
+          updated.revision++
+          this.store.saveCompanyOnboarding(updated)
+        }
+        return next({ labels: [card.fields[0].label], notice: '已核对并保存' + card.fields[0].label + '。' })
+      }
       if (card.kind === 'mode') {
         if (choice !== 'scan' && choice !== 'manual') return invalid()
         const saved = this.setMode(revision, choice)
@@ -769,6 +853,21 @@ export class CompanyOnboarding {
       if (card.kind === 'fields' || card.kind === 'document') {
         const saved = this.saveFields(record, card.fields, values, card.kind === 'document' ? 1 : card.step)
         if (!saved.accepted) return saved
+        if (card.kind === 'document') {
+          const latest = this.record()
+          const remaining = this.documentCard(latest)
+          if (remaining?.documentKind === card.documentKind) {
+            const stored = latest.cards!.find(candidate => candidate.card.id === cardId)!
+            stored.card = {
+              ...remaining, id: cardId, draftId: latest.draftId, revision: latest.revision,
+              message: '已保存本次填写。还需补齐' + remaining.fields
+                .filter(field => remaining.documentKind === 'license' || field.key === 'taxpayerIdentity')
+                .map(field => field.label).join('、') + '。',
+            }
+            this.store.saveCompanyOnboarding(latest)
+            return { ...this.cardResult(latest, stored), incomplete: true as const }
+          }
+        }
         return next({ labels: card.fields.filter(field => Object.hasOwn(values as object, field.key)).map(field => field.label) })
       }
       if (card.kind === 'bank') {
@@ -816,6 +915,7 @@ export class CompanyOnboarding {
       const record = this.record()
       if (revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请刷新后继续。')
       if (record.completedAt) return refuse('ONBOARDING_COMPLETE', '企业已经完成建档。')
+      if (advance && record.correction) return correctionPending()
       if (![1, 2, 3].includes(step) || (step > record.step && !editingDraft)) return refuse('STEP_UNAVAILABLE', '请先完成前面的步骤。')
       const today = todayInChina(this.now())
       let error: Refusal | undefined
@@ -899,6 +999,7 @@ export class CompanyOnboarding {
       const record = this.record()
       if (record.completedAt && (revision === record.revision || revision === record.revision - 1)) return this.view(record)
       if (revision !== record.revision) return refuse('DRAFT_STALE', '资料已更新，请刷新后核对。')
+      if (record.correction) return correctionPending()
       if (record.step !== 4) return refuse('STEP_UNAVAILABLE', '请先填写并核对所有步骤。')
       const now = this.now()
       const today = todayInChina(now)

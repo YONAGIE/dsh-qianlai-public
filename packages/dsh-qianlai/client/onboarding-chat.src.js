@@ -175,6 +175,7 @@ export function registerOnboardingChat(ctx, {
       case 'blocked':
         return '我想重新核对企业情况。'
       default: {
+        if (card.correction) return '我已核对并保存更正，请继续建档。'
         const labels = card.fields.filter(field => Object.hasOwn(input.values ?? {}, field.key) &&
           input.values[field.key]?.length).map(field => field.label)
         return labels.length ? '我已填写' + labels.join('、') + '，请继续建档。' : '资料已填写，请继续建档。'
@@ -341,7 +342,7 @@ export function registerOnboardingChat(ctx, {
     ]
   }
 
-  function Card({ sessionId, card }) {
+  function Card({ sessionId, card: projectedCard }) {
     const [values, setValues] = useState({})
     const [status, setStatus] = useState(null)
     const [statusAttempt, setStatusAttempt] = useState(0)
@@ -355,9 +356,12 @@ export function registerOnboardingChat(ctx, {
     const submitting = useRef(false)
     const sending = useRef(false)
     const documentInput = useRef(null)
+    const currentRevision = useRef(projectedCard.revision)
+    const card = status?.card ?? projectedCard
     const { id: cardId, draftId, revision } = card
     const viewOnly = card.kind === 'fields' && card.fields.length === 0
     function applyStatus(result) {
+      if (result.card) currentRevision.current = result.card.revision
       setStatus(result)
       if (result.view) refreshOnboarding(sessionId, result.view)
     }
@@ -373,9 +377,9 @@ export function registerOnboardingChat(ctx, {
     }, [sessionId, cardId, statusAttempt])
     useEffect(() => {
       return subscribeOnboarding?.((source, { view }) => {
-        if (source === sessionId && view?.draftId === draftId && view.revision > revision) setObsolete(true)
+        if (source === sessionId && view?.draftId === draftId && view.revision > currentRevision.current) setObsolete(true)
       })
-    }, [sessionId, draftId, revision])
+    }, [sessionId, draftId])
 
     async function openDraft(options) {
       try {
@@ -405,6 +409,11 @@ export function registerOnboardingChat(ctx, {
 
     async function finishCard(result, input = {}) {
       applyStatus(result)
+      if (result.incomplete && result.card) {
+        setValues({})
+        setDocumentPreview(null)
+        return
+      }
       if (!result.receipt) throw Error('未能确认资料已保存，请重试。')
       setValues({})
       if (card.kind === 'mode') void openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
@@ -422,6 +431,7 @@ export function registerOnboardingChat(ctx, {
         await finishCard(result, payload)
       } catch (error) {
         setError(shownError(error, '建档资料暂时无法保存，请重试。'))
+        if (error?.code === 'DRAFT_STALE') setStatusAttempt(attempt => attempt + 1)
       } finally {
         submitting.current = false
         setSaving(false)
@@ -543,7 +553,9 @@ export function registerOnboardingChat(ctx, {
       body = jsx('div', { style: footerActions, children: choices[card.kind] })
     } else if (documentForm) {
       const label = '选择' + sourceText(card.documentKind)
-      const confirm = wantsTax ? '确认税务资料' : '确认公司资料'
+      const documentValues = { ...documentPreview?.fields, ...prefilled, ...values }
+      const complete = card.fields.every(field => (wantsTax && field.key !== 'taxpayerIdentity') || documentValues[field.key]?.trim())
+      const confirm = complete ? (wantsTax ? '确认税务资料' : '确认公司资料') : '保存到草稿'
       const prefilledText = documentPreview?.held.length
         ? '保留了原先填写的' + documentPreview.held.join('、') + '。请对照资料核对后确认。'
         : '请核对预填内容，补齐缺项后确认。'
@@ -565,7 +577,7 @@ export function registerOnboardingChat(ctx, {
               ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
           }),
         ] }),
-        form({ fields: card.fields.map(field => ({ ...field, required: false })), values: { ...documentPreview?.fields, ...prefilled, ...values },
+        form({ fields: card.fields.map(field => ({ ...field, required: false })), values: documentValues,
           change, saving, label: confirm, onSubmit: input => void submit({ values: Object.fromEntries(
             card.fields.filter(({ key }) => typeof input[key] === 'string' && input[key].trim()).map(({ key }) => [key, input[key]]),
           ) }) }),
@@ -616,6 +628,7 @@ export function registerOnboardingChat(ctx, {
         : { ...prefilled, ...values }
       body = form({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
+        ...(card.correction ? { label: '保存更正' } : {}),
         secondaryAction: card.kind === 'bank'
           ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
       })

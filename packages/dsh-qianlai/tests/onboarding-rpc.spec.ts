@@ -87,12 +87,23 @@ describe('company onboarding RPC', () => {
     ] })
     await expect(submit(company, { values: { startMonth: '2026-11' } }))
       .resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
-    await expect(submit(company, { values: { companyName: '合成资料企业', taxId: '000000000000000033' } }))
+    const partial = await submit(company, { values: { establishedOn: '2026-01-01' } })
+    expect(partial).toMatchObject({
+      accepted: true, incomplete: true, card: { id: company.id, revision: company.revision + 1, fields: [
+        expect.objectContaining({ key: 'companyName' }), expect.objectContaining({ key: 'taxId' }),
+      ] }, view: { step: 1, enterprise: { establishedOn: '2026-01-01' } },
+    })
+    expect(partial).not.toHaveProperty('receipt')
+    expect(card('continue')).toEqual(partial.card)
+    await expect(request('card-status', { cardId: company.id })).resolves.toMatchObject({ card: partial.card })
+    await expect(submit(company, { values: { establishedOn: '2026-02-01' } }))
+      .resolves.toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    await expect(submit(partial.card, { values: { companyName: '合成资料企业', taxId: '000000000000000033' } }))
       .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业' } } })
     const receipt = await request('card-status', { cardId: company.id })
     expect(receipt).toMatchObject({ accepted: true, receipt: { labels: ['企业全称', '统一社会信用代码'] } })
     expect(receipt).not.toHaveProperty('nextCard')
-    expect(card()).toMatchObject({ kind: 'document', fields: [expect.objectContaining({ key: 'establishedOn' })] })
+    expect(card()).toMatchObject({ kind: 'document', documentKind: 'tax' })
     await expect(submit(company, { values: { companyName: '不应覆盖' } }))
       .resolves.toMatchObject({ accepted: true, view: { enterprise: { companyName: '合成资料企业' } } })
     expect(store.company()).toBeUndefined()
@@ -121,10 +132,10 @@ describe('company onboarding RPC', () => {
     expect(await request('status')).toEqual(before)
     await expect(submit(source, { document })).resolves.toMatchObject({ accepted: false, code: 'CARD_UNAVAILABLE' })
     const read = await submit(source, { values: { ...preview.fields, companyName: '用户核对后的合成企业' } })
-    expect(read).toMatchObject({ accepted: true, view: { enterprise: { companyName: '用户核对后的合成企业' } } })
+    expect(read).toMatchObject({ accepted: true, incomplete: true, view: { enterprise: { companyName: '用户核对后的合成企业' } } })
     const missing = card()
-    expect(missing).toMatchObject({ fields: [expect.objectContaining({ key: 'establishedOn' })] })
-    await expect(submit(source, { values: preview.fields })).resolves.toMatchObject({ accepted: true, receipt: { labels: ['企业全称', '统一社会信用代码'] } })
+    expect(missing).toMatchObject({ id: source.id, fields: [expect.objectContaining({ key: 'establishedOn' })] })
+    await expect(submit(source, { values: preview.fields })).resolves.toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
     expect(prepareCall).toHaveBeenCalledTimes(1)
     const edited = await request('edit-section', {
       draftId: read.view.draftId, revision: read.view.revision, section: 'company', input: { companyName: '更正后的合成企业' },
@@ -200,6 +211,8 @@ describe('company onboarding RPC', () => {
       accepted: true, receipt: { labels: ['已回填官方税务资料'] },
       view: { enterprise: { companyName: '合成税务企业', taxId: '000000000000000055' } },
     })
+    expect(onboarding.guide('test-zhangjie', 'correct', ['companyName'], { companyName: '不应覆盖官方企业' }))
+      .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
     expect(card()).toMatchObject({ kind: 'document', fields: [expect.objectContaining({ key: 'establishedOn' })] })
   })
 
@@ -278,6 +291,51 @@ describe('company onboarding RPC', () => {
     expect(store.company()).toBeUndefined()
     expect(await send({ choice: 'confirm' })).toMatchObject({ view: { completed: true, payroll: { social: 'all' } } })
     expect(store.company()).toMatchObject({ name: '合成建档企业', isSample: false })
+  })
+
+  it('finishes the selected correction before issuing or accepting later cards', async () => {
+    const { request, onboarding, card, submit } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { values: { companyName: '合成初始企业', taxId: '000000000000000010', establishedOn: '2026-01-01' } })
+    await submit(card(), { values: { taxpayerIdentity: 'small-scale', taxAuthority: '合成主管机关' } })
+    const business = card()
+    expect(business).toMatchObject({ title: '确认实际经营' })
+
+    const review = card('correct', ['companyName'])
+    expect(review).toMatchObject({
+      title: '更正企业全称', correction: true, fields: [expect.objectContaining({ key: 'companyName' })],
+      initialValues: { companyName: '合成初始企业' },
+    })
+    expect(card('continue', ['business'])).toEqual(review)
+    await expect(submit(business, { values: { business: ['none'] } })).resolves.toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    expect(onboarding.guide('test-zhangjie', 'fill', undefined, { taxAuthority: '不应改动' }))
+      .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    await expect(request('confirm', { draftId: review.draftId, revision: review.revision }))
+      .resolves.toMatchObject({ accepted: false, code: 'DRAFT_CORRECTION_PENDING' })
+    const prefilled = card('fill', undefined, { companyName: '合成更正企业' })
+    expect(prefilled).toMatchObject({ initialValues: { companyName: '合成更正企业' } })
+    expect(await request('status')).toMatchObject({ enterprise: { companyName: '合成初始企业' } })
+    expect(card()).toEqual(prefilled)
+    await expect(submit(prefilled, { values: { companyName: '合成更正企业' } })).resolves.toMatchObject({
+      receipt: { notice: '已核对并保存企业全称。' }, view: { enterprise: { companyName: '合成更正企业' } },
+    })
+    await submit(card(), { values: { business: ['none'] } })
+    await submit(card(), { values: { bankStatus: 'provided' } })
+    const bank = card()
+    expect(bank.kind).toBe('bank')
+    await expect(request('card-status', { cardId: bank.id })).resolves.toMatchObject({ view: { enterprise: { companyName: '合成更正企业' } } })
+    await submit(bank, { values: { holder: '合成账户户名', number: '0000000102', bank: '合成银行', currency: 'CNY' } })
+
+    const finalReview = card('correct', ['companyName'])
+    const saved = await request('edit-section', {
+      draftId: finalReview.draftId, revision: finalReview.revision, section: 'company', input: { companyName: '合成侧栏更正企业' },
+    })
+    expect(saved).toMatchObject({
+      accepted: true, enterprise: { companyName: '合成侧栏更正企业', accounts: [{ holder: '合成账户户名' }] },
+    })
+    expect(onboarding.guide('test-zhangjie', 'continue')).toMatchObject({
+      draftSummary: { enterprise: { companyName: '合成侧栏更正企业' } }, card: { title: '确认记账准备' },
+    })
   })
 
   it('rejects a card issued before a newer draft revision', async () => {
