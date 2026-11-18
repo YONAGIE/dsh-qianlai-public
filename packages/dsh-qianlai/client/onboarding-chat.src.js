@@ -72,20 +72,22 @@ export function registerOnboardingChat(ctx, {
     return card
   }
 
-  function cardOf(event) {
+  function toolResult(event) {
     const message = event.data?.message
     const content = message?.content
     if (event.surfaceOp !== 'append' || message?.isError || message?.source?.kind !== 'tool'
       || !Array.isArray(content) || content.length !== 1) return undefined
     const [part] = content
-    if (part?.type !== 'text' || typeof part.text !== 'string' || part.text.length > 65536
-      || !part.text.includes('"card"')) return undefined
+    if (part?.type !== 'text' || typeof part.text !== 'string' || part.text.length > 65536) return undefined
     try {
-      const result = JSON.parse(part.text)
-      return result?.accepted === true ? validCard(result.card) : undefined
+      return JSON.parse(part.text)
     } catch {
       return undefined
     }
+  }
+
+  function turnMatch(event, role = 'update') {
+    return Number.isSafeInteger(event.data?.turn) ? { id: String(event.data.turn), role } : null
   }
 
   function definition() {
@@ -93,33 +95,49 @@ export function registerOnboardingChat(ctx, {
       kind,
       target: 'chat',
       match: {
-        'tool/call': event => event.data?.name === toolName && typeof event.data.callId === 'string'
-          ? { id: event.data.callId, role: 'start' } : null,
-        'tool/result': event => cardOf(event) && typeof event.data.message.source.callId === 'string'
-          ? { id: event.data.message.source.callId, role: 'update' } : null,
+        'turn/start': event => turnMatch(event, 'start'),
+        'tool/call': event => [toolName, 'ask_user_question'].includes(event.data?.name)
+          && typeof event.data.callId === 'string' ? turnMatch(event) : null,
+        'tool/result': event => typeof event.data?.message?.source?.callId === 'string' ? turnMatch(event) : null,
+        'turn/end': event => turnMatch(event),
       },
-      start: (_context, { location }, reader) => {
-        const turn = location.turn
-        const previous = reader?.previous(kind)?.state
-        if (turn === undefined || previous?.turn !== turn) return { turn, earlierCardIds: [] }
-        const { earlierCardIds, card } = previous
-        // Distinct tool calls can return the same active card. DSH replays this
-        // dependency when an earlier call's result arrives or history is paged in.
-        return {
-          turn,
-          earlierCardIds: card && !earlierCardIds.includes(card.id) ? [...earlierCardIds, card.id] : earlierCardIds,
-        }
+      start: (_context, _match, reader) => {
+        const previousCardId = reader?.previous(kind)?.state.lastShownCardId
+        return { calls: [], previousCardId, lastShownCardId: previousCardId }
       },
       update: ({ state }, { event }) => {
-        const card = cardOf(event)
-        return card ? { ...state, card, anchorSeq: event.seq } : state
+        if (event.type === 'turn/end') {
+          const completed = event.data.reason?.kind === 'completed'
+          const show = completed && state.card && state.card.id !== state.previousCardId
+          return { ...state, anchorSeq: event.seq, show, lastShownCardId: show ? state.card.id : state.previousCardId }
+        }
+        if (event.type === 'tool/call') {
+          if (event.data.name === 'ask_user_question') {
+            // A question invalidates any proposed action from before the question.
+            return { ...state, calls: [], card: undefined, question: event.data.callId }
+          }
+          return state.question ? state : { ...state, calls: [...state.calls, event.data.callId] }
+        }
+        const callId = event.data.message.source.callId
+        if (callId === state.question) {
+          const result = toolResult(event)
+          const answered = !result?.pending && Array.isArray(result?.answers) && result.answers.some(answer =>
+            (Array.isArray(answer?.selected) && answer.selected.some(label => typeof label === 'string' && label.trim())) ||
+            (typeof answer?.custom === 'string' && answer.custom.trim()),
+          )
+          return answered ? { ...state, question: undefined } : state
+        }
+        if (!state.calls.includes(callId)) return state
+        const result = toolResult(event)
+        return { ...state, card: result?.accepted === true ? validCard(result.card) : undefined }
       },
-      buildViewNode: ({ key, id, state, start }) => state?.card ? {
+      publication: ({ event }) => event.type === 'turn/end' ? 'immediate' : 'none',
+      buildViewNode: ({ key, id, state, start }) => state?.anchorSeq !== undefined ? {
         key, id, kind, target: 'chat', anchorSeq: state.anchorSeq,
         location: start.location, groupTree: 'turn',
-        // A materialized node can become a duplicate on replay and must keep its key.
-        visibility: state.earlierCardIds?.includes(state.card.id) ? 'hidden' : 'visible',
-        data: state.card,
+        // Replay can hide a previously shown card while keeping the same node.
+        visibility: state.show ? 'visible' : 'hidden',
+        data: state.show ? state.card : null,
       } : null,
     }
   }
@@ -652,7 +670,7 @@ export function registerOnboardingChat(ctx, {
   }
 
   function ZhangjieOnboardingCard({ node, sessionId, useSessions }) {
-    if (usePreset(sessionId, useSessions) !== 'moneycome-zhangjie') return null
+    if (usePreset(sessionId, useSessions) !== 'moneycome-zhangjie' || !node.data) return null
     return jsx(Card, { card: node.data, sessionId }, sessionId + ':' + node.data.id)
   }
 
