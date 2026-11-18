@@ -5,6 +5,10 @@ import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostSe
 import { BookStore } from '../src/store.js'
 import type { RpcConnection } from '../src/wechat/control.js'
 
+const taxDetails = {
+  taxpayerIdentity: 'small-scale', taxStatus: '正常', taxAuthority: '合成主管机关',
+  incomeMethod: '查账征收', accountingSystem: '小企业会计准则',
+}
 const stores: BookStore[] = []
 afterEach(() => { for (const store of stores.splice(0)) store.close() })
 const document = { name: 'synthetic.png', mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axouYQAAAAASUVORK5CYII=' }
@@ -109,18 +113,38 @@ describe('company onboarding RPC', () => {
     expect(store.company()).toBeUndefined()
   })
 
-  it('advances past the tax card when the optional tax status is left blank', async () => {
-    const { card, submit } = setup()
+  it('requires all Web tax fields and specific notes under Other, while retaining partial saves', async () => {
+    const { card, submit, request } = setup()
     await submit(card('start'), { mode: 'manual' })
     await submit(card(), { values: {
       companyName: '合成建档企业', taxId: '000000000000000033', establishedOn: '2026-01-01',
     } })
     const tax = card()
-    expect(tax).toMatchObject({ kind: 'document', documentKind: 'tax', fields: expect.arrayContaining([
-      expect.objectContaining({ key: 'taxStatus', type: 'select', required: false }),
-    ]) })
-    await expect(submit(tax, { values: { taxpayerIdentity: 'small-scale', taxStatus: '' } }))
-      .resolves.toMatchObject({ accepted: true, view: { enterprise: { taxStatus: '' } } })
+    if (tax.kind !== 'document') throw Error('Missing tax card')
+    expect(tax.fields.map(field => field.key)).toEqual([
+      'taxpayerIdentity', 'taxStatus', 'taxStatusOther', 'taxAuthority', 'incomeMethod', 'accountingSystem', 'accountingSystemOther',
+    ])
+    expect(tax.fields[0]?.options?.map(option => option.value)).toEqual(['small-scale', 'general'])
+    expect(tax.fields[4]?.options?.map(option => option.value)).toEqual(['查账征收', '核定征收'])
+    const partial = await submit(tax, { values: { taxpayerIdentity: 'small-scale', taxAuthority: taxDetails.taxAuthority } })
+    expect(partial).toMatchObject({ accepted: true, incomplete: true, card: { id: tax.id } })
+    expect(partial.card.message).toContain('纳税人状态')
+    const another = await submit(partial.card, { values: {
+      taxStatus: '其他', incomeMethod: '核定征收', accountingSystem: '其他',
+    } })
+    expect(another).toMatchObject({ accepted: true, incomplete: true, card: { id: tax.id } })
+    expect(another.card.message).toContain('具体纳税人状态')
+    expect(another.card.message).toContain('具体会计制度')
+    const result = await submit(another.card, { values: {
+      taxStatusOther: '合成状态说明', accountingSystemOther: '合成制度说明',
+    } })
+    expect(result).toMatchObject({ accepted: true, receipt: {}, view: { enterprise: {
+      taxStatus: '其他', taxStatusOther: '合成状态说明', incomeMethod: '核定征收',
+      accountingSystem: '其他', accountingSystemOther: '合成制度说明', province: '', city: '',
+    } } })
+    await expect(request('edit-section', {
+      draftId: result.view.draftId, revision: result.view.revision, section: 'tax', input: { province: '北京市' },
+    })).resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
     expect(card()).toMatchObject({ title: '确认实际经营' })
   })
 
@@ -292,7 +316,7 @@ describe('company onboarding RPC', () => {
     }
     await send({ mode: 'manual' })
     await send({ values: { companyName: '合成建档企业', taxId: '000000000000000099', establishedOn: '2026-01-01' } })
-    await send({ values: { taxpayerIdentity: 'small-scale' } })
+    await send({ values: taxDetails })
     await send({ values: { business: ['none'] } })
     await send({ values: { bankStatus: 'none' } })
     await send({ values: { history: 'new' } })
@@ -313,7 +337,7 @@ describe('company onboarding RPC', () => {
     const { request, onboarding, card, submit } = setup()
     await submit(card('start'), { mode: 'manual' })
     await submit(card(), { values: { companyName: '合成初始企业', taxId: '000000000000000010', establishedOn: '2026-01-01' } })
-    await submit(card(), { values: { taxpayerIdentity: 'small-scale', taxAuthority: '合成主管机关' } })
+    await submit(card(), { values: taxDetails })
     const business = card()
     expect(business).toMatchObject({ title: '确认实际经营' })
 
@@ -358,7 +382,7 @@ describe('company onboarding RPC', () => {
     const { card, submit } = setup()
     await submit(card('start'), { mode: 'manual' })
     await submit(card(), { values: { companyName: '合成月份资料企业', taxId: '000000000000000091', establishedOn: '2026-01-01' } })
-    await submit(card(), { values: { taxpayerIdentity: 'small-scale' } })
+    await submit(card(), { values: taxDetails })
     await submit(card(), { values: { business: ['none'] } })
     await submit(card(), { values: { bankStatus: 'none' } })
 

@@ -23,7 +23,7 @@ window.__ModuleLoader__.load({
     const PRESET = 'moneycome-zhangjie'
     const QUESTION_HISTORY = 'moneycome-question-history'
     const TAX_REGION_CITIES = /* tax-region-catalogue */ {}
-    const TAX_STATUS_CHOICES = /* tax-status-choices */ {}
+    const TAX_FIELDS = /* tax-fields */ []
     const TAX_SCAN_CITIES = /* tax-scan-cities */ {}
     const AVATAR = '__AVATAR_DATA_URL__'
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
@@ -250,8 +250,8 @@ window.__ModuleLoader__.load({
           return { companyName: enterprise?.companyName ?? '', taxId: enterprise?.taxId ?? '',
             establishedOn: enterprise?.establishedOn ?? '', business: enterprise?.business ?? [] }
         case 'tax':
-          return { province: enterprise?.province ?? '', city: enterprise?.city ?? '', taxAuthority: enterprise?.taxAuthority ?? '',
-            taxStatus: enterprise?.taxStatus ?? '', taxpayerIdentity: enterprise?.taxpayerIdentity ?? '' }
+          return Object.fromEntries(TAX_FIELDS.map(({ key }) => [key,
+            key === 'taxpayerIdentity' && enterprise?.[key] === 'unknown' ? '' : enterprise?.[key] ?? '']))
         case 'bank':
           return { bankStatus: enterprise?.bankStatus ?? '', accounts: (enterprise?.accounts ?? []).map(accountValues) }
         case 'accounting':
@@ -302,6 +302,10 @@ window.__ModuleLoader__.load({
 
       async function save() {
         if (pendingSave.current || !changed.length) return
+        if (section === 'tax') {
+          const detail = TAX_FIELDS.find(field => field.requiredWhen && input[field.requiredWhen] === '其他' && !input[field.key]?.trim())
+          if (detail) { setError('请填写' + detail.label + '。'); return }
+        }
         pendingSave.current = true
         setSaving(true)
         setError('')
@@ -326,15 +330,16 @@ window.__ModuleLoader__.load({
       }
 
       const field = (label, name, options = {}) => {
-        const { type = 'text', list, locked, fullWidth, placeholder, maxLength,
+        const { type = 'text', list, locked, fullWidth, placeholder, maxLength, required = false,
           value = locked ? current[name] : input[name], set = next => change(name, next) } = options
-        const props = { name, value: value ?? '', disabled: saving || Boolean(list && !Object.keys(list).length),
+        const props = { name, value: value ?? '', 'aria-required': required || undefined,
+          disabled: saving || Boolean(list && !Object.keys(list).length),
           onChange: event => set(event.target.value), style: panelInput }
         return jsx('label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0,
           ...(fullWidth ? { gridColumn: '1 / -1' } : {}) }, children: [
           jsx('span', { style: { color: muted, fontSize: 12 }, children: label }),
           locked ? jsx('span', { title: '来自已核对的税务资料', style: { overflowWrap: 'anywhere' }, children: value || '待补' }) : list ? jsx('select', { ...props, children: [
-            jsx('option', { value: '', children: placeholder || '请选择' }),
+            jsx('option', { value: '', disabled: required, children: placeholder || '请选择' }),
             ...Object.entries(list).map(([key, text]) => jsx('option', { value: key, children: text }, key)),
           ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off' }),
           !locked && conflicts.has(name) ? jsx('span', { style: { color: muted, fontSize: 12, overflowWrap: 'anywhere' },
@@ -367,17 +372,22 @@ window.__ModuleLoader__.load({
           ]
           break
         case 'tax': {
-          const options = values => Object.fromEntries(values.map(value => [value, value]))
+          const lockedFields = {
+            taxpayerIdentity: officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown',
+            taxAuthority: officialTax?.taxAuthority, taxStatus: officialTax?.taxStatus,
+            incomeMethod: officialTax?.incomeMethod, accountingSystem: officialTax?.accountingSystem,
+          }
           fields = [
-            field('省份', 'province', { list: options(Object.keys(TAX_REGION_CITIES)), locked: Boolean(officialTax),
-              set: value => change({ province: value, city: '' }) }),
-            field('城市或地区', 'city', { list: options(TAX_REGION_CITIES[input.province] ?? []), locked: Boolean(officialTax) }),
-            field('主管税务机关', 'taxAuthority', { maxLength: 200, fullWidth: true, locked: Boolean(officialTax) }),
-            field('纳税人类型', 'taxpayerIdentity', { list: taxpayerTypes, value: officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown'
-              ? taxpayerTypes[current.taxpayerIdentity] : input.taxpayerIdentity, locked: Boolean(officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown') }),
-            field('税务状态（选填）', 'taxStatus', { placeholder: '不确定可留空', locked: Boolean(officialTax?.taxStatus),
-              list: current.taxStatus && !Object.hasOwn(TAX_STATUS_CHOICES, current.taxStatus)
-                ? { ...TAX_STATUS_CHOICES, [current.taxStatus]: current.taxStatus } : TAX_STATUS_CHOICES }),
+            ...TAX_FIELDS.filter(item => !item.requiredWhen || input[item.requiredWhen] === '其他').map(item => {
+              const list = item.options && Object.fromEntries(item.options.map(({ value, label }) => [value, label]))
+              const locked = !!lockedFields[item.key]
+              return field(item.label, item.key, {
+                list, locked, required: true, maxLength: item.maxLength,
+                fullWidth: item.key === 'taxAuthority' || Boolean(item.requiredWhen),
+                ...(item.requiredWhen ? { placeholder: '请按税务登记资料填写' } : {}),
+                ...(locked && list ? { value: list[current[item.key]] ?? current[item.key] } : {}),
+              })
+            }),
             officialTax ? jsx('dl', { style: { gridColumn: '1 / -1', margin: 0 }, children:
               readoutRow('当前页税费种', summarizeObligations(officialTax.obligations) || '本次未读取到'),
             }) : null,
@@ -460,7 +470,9 @@ window.__ModuleLoader__.load({
           readoutRow('统一社会信用代码', profile.taxId),
           ...(profile.establishedOn ? [readoutRow('成立日期', profile.establishedOn)] : []),
           readoutRow('主管税务机关', profile.authority),
-          readoutRow('纳税人资格', profile.taxpayerQualification),
+          readoutRow('纳税人身份', profile.taxpayerQualification),
+          ...(profile.incomeMethod ? [readoutRow('企业所得税征收方式', profile.incomeMethod)] : []),
+          ...(profile.accountingSystem ? [readoutRow('会计制度', profile.accountingSystem)] : []),
           ...(profile.registrationStatus ? [readoutRow('登记状态', profile.registrationStatus)] : []),
           ...(profile.taxpayerStatus ? [readoutRow('纳税人状态', profile.taxpayerStatus)] : []),
           readoutRow('当前页税费种', summarizeObligations(profile.obligations) || '本次未读取到'),
@@ -472,10 +484,8 @@ window.__ModuleLoader__.load({
           readoutRow('实际经营', (enterprise?.business ?? []).map(key => businessTypes[key]).filter(Boolean).join('、')),
         ]),
         section('tax', [
-          readoutRow('税务地区', [enterprise?.province, enterprise?.city].filter(Boolean).join(' ')),
-          readoutRow('主管税务机关', enterprise?.taxAuthority),
-          readoutRow('纳税人类型', taxpayerTypes[enterprise?.taxpayerIdentity]),
-          readoutRow('税务状态', enterprise?.taxStatus),
+          ...TAX_FIELDS.filter(item => !item.requiredWhen || enterprise?.[item.requiredWhen] === '其他').map(item =>
+            readoutRow(item.label, item.key === 'taxpayerIdentity' ? taxpayerTypes[enterprise?.taxpayerIdentity] : enterprise?.[item.key])),
           ...(enterprise?.officialTax ? [readoutRow('当前页税费种', summarizeObligations(enterprise.officialTax.obligations) || '本次未读取到')] : []),
         ]),
         section('bank', [
@@ -761,7 +771,7 @@ window.__ModuleLoader__.load({
       registerOnboardingChat(ctx, {
         jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest,
         sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
-        taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES, taxStatusChoices: TAX_STATUS_CHOICES,
+        taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })
       ctx.inject(['uiConversation'], scope => {
         const { events } = scope.uiConversation

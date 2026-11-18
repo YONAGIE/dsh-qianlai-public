@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } fr
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 
-import { taxStatusChoices } from '../lib/onboarding-fields.js'
+import { taxFields } from '../lib/onboarding-fields.js'
 import { taxRegionCities, taxScanCities } from '../lib/tax-portals.js'
 
 const root = new URL('..', import.meta.url)
@@ -15,7 +15,7 @@ writeFileSync(new URL('lib/client.js', root), source
   .replace('__AVATAR_DATA_URL__', `data:image/png;base64,${avatar}`)
   .replace('/* onboarding-chat-client */', () => onboardingChat)
   .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
-  .replace('/* tax-status-choices */ {}', JSON.stringify(taxStatusChoices))
+  .replace('/* tax-fields */ []', JSON.stringify(taxFields))
   .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities())))
 
 // Ship SheetJS CE's official full build and license without rewriting either.

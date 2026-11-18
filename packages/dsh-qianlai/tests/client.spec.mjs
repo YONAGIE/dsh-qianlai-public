@@ -2,13 +2,13 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
-import { taxStatusChoices } from '../src/onboarding-fields.js'
+import { taxFields } from '../src/onboarding-fields.js'
 import { taxRegionCities, taxScanCities } from '../src/tax-portals.js'
 
 function makeClient() {
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
     .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
-    .replace('/* tax-status-choices */ {}', JSON.stringify(taxStatusChoices))
+    .replace('/* tax-fields */ []', JSON.stringify(taxFields))
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
     .replace('/* onboarding-chat-client */', 'function registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
   const fibers = new Map()
@@ -289,9 +289,9 @@ describe('Zhangjie onboarding sidebar', () => {
     }
   })
 
-  it('shows the original tax status alongside selectable options and permits clearing it', async () => {
+  it('matches the manual tax selectors and requires a specific note for Other', async () => {
     const client = makeClient()
-    let draft = { ...sampleDraft, enterprise: { taxStatus: '合成旧状态' } }
+    let draft = { ...sampleDraft, enterprise: { taxStatus: '正常' } }
     const respond = vi.fn(payload => {
       if (payload.action === 'edit-section') draft = {
         ...draft, revision: draft.revision + 1, enterprise: { ...draft.enterprise, ...payload.input },
@@ -303,16 +303,24 @@ describe('Zhangjie onboarding sidebar', () => {
       client.openOnboarding()
       client.render()
       await settle()
+      expect(client.controls().map(node => node.props.name)).not.toContain('province')
+      expect(client.controls().map(node => node.props.name)).not.toContain('city')
       const control = client.controls().find(node => node.props.name === 'taxStatus')
       expect(control.type).toBe('select')
-      expect(control.props.value).toBe('合成旧状态')
-      const options = control.props.children.flat().map(node => node.props.value)
-      expect(options).toEqual(['', '正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他', '合成旧状态'])
-      control.props.onChange({ target: { value: '' } })
+      expect(control.props.value).toBe('正常')
+      expect(control.props.children[0].props).toMatchObject({ value: '', disabled: true })
+      expect(control.props.children.flat().map(node => node.props.value))
+        .toEqual(['', '正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'])
+      control.props.onChange({ target: { value: '其他' } })
       client.submitForm('税务资料')
       await settle()
-      expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { taxStatus: '' } }))
-      expect(client.input('taxStatus').value).toBe('')
+      expect(client.text()).toContain('请填写具体纳税人状态')
+      client.input('taxStatusOther').onChange({ target: { value: '合成状态说明' } })
+      client.submitForm('税务资料')
+      await settle()
+      expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({
+        input: { taxStatus: '其他', taxStatusOther: '合成状态说明' },
+      }))
     } finally {
       client.dispose()
     }
