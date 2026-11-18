@@ -36,19 +36,24 @@ export function registerOnboardingChat(ctx, {
   const idPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
   const controlBorder = '1px solid color-mix(in srgb, currentColor 18%, transparent)'
   const accent = 'var(--dsw-static-deepseek-500, #1f8a5b)'
+  const accentStrong = 'var(--dsw-static-deepseek-600, #1b6f4a)'
+  const tintedSurface = 'color-mix(in srgb, ' + accent + ' 6%, transparent)'
   const cardStyle = {
-    border: controlBorder, borderRadius: 14, padding: '16px 18px',
+    border: controlBorder, borderRadius: 16, padding: '18px clamp(12px, 4%, 24px)',
     color: 'var(--dsw-alias-label-primary)',
-    background: 'color-mix(in srgb, var(--dsw-specific-bubble, #edf8f1) 34%, transparent)',
-    boxSizing: 'border-box', width: 'min(100%, 38rem)', marginBlock: 10,
+    background: 'color-mix(in srgb, ' + accent + ' 3%, var(--dsw-alias-fill-primary, transparent))',
+    boxShadow: '0 2px 8px color-mix(in srgb, #000 4%, transparent)',
+    boxSizing: 'border-box', width: 'min(100%, 39rem)', marginBlock: 12,
   }
+  const receiptStyle = { ...cardStyle, background: 'transparent', boxShadow: 'none', paddingBlock: 11 }
   const controlStyle = {
-    border: controlBorder, borderRadius: 8, padding: '8px 12px', minHeight: 38,
+    border: controlBorder, borderRadius: 9, padding: '8px 12px', minHeight: 40,
     font: 'inherit', color: 'inherit', boxSizing: 'border-box',
   }
   const secondary = { color: 'var(--dsw-alias-label-secondary)', fontSize: '0.875em', lineHeight: 1.55 }
   const actions = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }
   const footerActions = { ...actions, justifyContent: 'flex-end' }
+  const cardHeading = { fontSize: '1.05em', lineHeight: 1.45, fontWeight: 670, margin: 0 }
   const formColumns = 'repeat(auto-fit, minmax(min(100%, max(10rem, 45%)), 1fr))'
   const startingTaxFlows = new Map()
 
@@ -165,9 +170,8 @@ export function registerOnboardingChat(ctx, {
       style: {
         ...controlStyle,
         ...(primary ? {
-          background: 'color-mix(in srgb, ' + accent + ' 16%, transparent)',
-          borderColor: 'color-mix(in srgb, ' + accent + ' 58%, transparent)', fontWeight: 600,
-        } : { background: 'transparent' }),
+          background: accentStrong, borderColor: accentStrong, color: '#fff', fontWeight: 650,
+        } : { background: 'var(--dsw-alias-fill-primary, transparent)', fontWeight: 520 }),
         cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.6 : 1,
         maxWidth: '100%', overflowWrap: 'anywhere',
       },
@@ -655,8 +659,8 @@ export function registerOnboardingChat(ctx, {
           button('确认建档', () => void submit({ choice: 'confirm', replaceSampleBook: Boolean(values.replaceSampleBook) }),
             saving || Boolean(replacesSample && !values.replaceSampleBook), 'button', true),
         ] }),
-        jsx('details', { style: { marginTop: 10 }, children: [
-          jsx('summary', { children: '更正资料' }),
+        jsx('details', { style: { marginTop: 14, borderTop: controlBorder, paddingTop: 10 }, children: [
+          jsx('summary', { style: { ...secondary, cursor: 'pointer', paddingBlock: 4, width: 'fit-content' }, children: '更正资料' }),
           form({
             fields: [{ key: 'correction', label: '要更正的资料', type: 'select', options: corrections }],
             values, change, saving, label: '更正选中资料', onSubmit: input => void submit({ choice: input.correction }),
@@ -678,7 +682,11 @@ export function registerOnboardingChat(ctx, {
 
     return jsx('section', {
       'aria-label': title, 'data-qianlai-onboarding-card': cardId,
-      style: documentForm && dropActive ? { ...cardStyle, outline: '2px solid ' + accent, outlineOffset: 2 } : cardStyle,
+      style: receipt ? receiptStyle : {
+        ...cardStyle,
+        ...(card.kind === 'confirm' ? { borderBlockStart: '3px solid ' + accent } : {}),
+        ...(documentForm && dropActive ? { outline: '2px solid ' + accent, outlineOffset: 2, background: tintedSurface } : {}),
+      },
       ...(documentForm ? {
         onDragEnter: event => handleDocumentDrag(event, 'enter'),
         onDragOver: event => handleDocumentDrag(event, 'over'),
@@ -686,9 +694,11 @@ export function registerOnboardingChat(ctx, {
         onDrop: event => handleDocumentDrag(event, 'drop'),
       } : {}),
       children: [
-        jsx('h3', { style: { fontSize: '1em', lineHeight: 1.45, fontWeight: 650, margin: 0 }, children: title }),
+        jsx('h3', { style: receipt ? { ...cardHeading, ...secondary } : cardHeading, children: title }),
         card.message ? jsx('p', { style: secondary, children: card.message }) : null, body,
-        error ? jsx('p', { role: 'alert', style: { margin: '8px 0 0' }, children: error }) : null,
+        error ? jsx('p', { role: 'alert', style: { ...secondary, margin: '12px 0 0', padding: '8px 10px',
+          borderInlineStart: '2px solid currentColor', color: 'var(--dsw-alias-label-danger, #ad3939)',
+          background: 'color-mix(in srgb, var(--dsw-alias-label-danger, #ad3939) 6%, transparent)' }, children: error }) : null,
       ],
     }, cardId)
   }
