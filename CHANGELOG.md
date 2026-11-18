@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Select, drop or paste bank account documents on the setup chat card. Review extracted account details before saving them to the company draft.
+
 - Format WeChat replies as readable paragraphs. Expand each Markdown table row into a labeled record and split long replies at paragraph or line boundaries where possible.
 
 - Read and correct one field of a completed company profile in chat. Keep bank numbers masked and preserve leading zeros when correcting a registered tail. Show the saved value in the profile without reopening setup.
