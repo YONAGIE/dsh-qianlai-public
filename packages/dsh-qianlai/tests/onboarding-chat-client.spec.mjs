@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { registerOnboardingChat } from '../client/onboarding-chat.src.js'
-import { taxStatusChoices } from '../src/onboarding-fields.js'
+import { onboardingFields, taxStatusChoices } from '../src/onboarding-fields.js'
 
 const sessionId = 'synthetic-zhangjie'
 const cardId = 'e8e802ae-6616-45b5-98b4-1b487cc03c11'
@@ -127,6 +127,30 @@ const companyUpload = next(3, { kind: 'upload', documentKind: 'license' })
 const recognizedView = { revision: 9, enterprise: { companyName: '示例服务有限公司', taxId: '111111111111111111' } }
 
 describe('建档对话卡', () => {
+  it('keeps the four business options compatible with one another and exclusive of "none"', async () => {
+    const card = { ...baseCard, kind: 'fields', title: '确认实际经营',
+      fields: onboardingFields[1].filter(field => field.key === 'business') }
+    const request = vi.fn(async (_session, action) => action === 'card-status' ? { accepted: true, card }
+      : { accepted: true, receipt: { labels: ['企业实际开展的业务'] } })
+    const active = client(request)
+    active.render(card)
+    await settle()
+    const checkbox = value => find(active.render(card), node => node.props.name === 'business' && node.props.value === value).props
+    const pick = value => checkbox(value).onChange({ target: { checked: true } })
+    const activities = ['goods', 'production', 'cross-border', 'multiple-entities']
+    for (const activity of activities) pick(activity)
+    expect(activities.every(activity => checkbox(activity).checked)).toBe(true)
+    pick('none')
+    expect(checkbox('none').checked).toBe(true)
+    expect(activities.some(activity => checkbox(activity).checked)).toBe(false)
+    pick('production')
+    expect(checkbox('none').checked).toBe(false)
+    expect(checkbox('production').checked).toBe(true)
+    find(active.render(card), node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    await settle()
+    expect(request).toHaveBeenLastCalledWith(sessionId, 'submit-card', expect.objectContaining({ values: { business: ['production'] } }))
+  })
+
   it('resumes an older tax card with a blankable status selector and preserves its pending recognized value', async () => {
     const card = { ...baseCard, kind: 'document', documentKind: 'tax', fields: [
       { key: 'taxStatus', type: 'text', label: '税务状态' },

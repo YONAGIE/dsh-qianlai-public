@@ -16,6 +16,8 @@
 
 - Combine typing, file selection, and dropping a license or tax document on one chat card. Preview extracted fields on the card and update the draft after confirmation. Documents sent in chat also get a review card. Close the host drag overlay when a file reaches the card, and show recognition progress inside the card.
 
+- Keep the “none of the above” business choice mutually exclusive in company setup and reject conflicting values before saving.
+
 - Keep an incomplete document on the current card after a partial save. Open a focused correction form for the requested field and resume from the updated draft after saving.
 
 - Cancel obsolete tax scans when switching setup methods. Verify the selected enterprise, source page and current draft before applying reviewed tax details.

@@ -221,6 +221,9 @@ function parseEnterprise(input: unknown, previous?: Enterprise): Enterprise {
   const selected = data.business ?? []
   if (!Array.isArray(selected) || selected.length > choices.length || selected.some(value => !choices.includes(value as Business)))
     throw new InputError('请重新选择企业的实际经营情况。')
+  const business = [...new Set(selected as Business[])]
+  if (business.includes('none') && business.length > 1)
+    throw new InputError('请在「以上都没有」和实际经营项目之间选择。')
   const bankStatus = select(data.bankStatus, ['provided', 'none', 'pending'], '账户情况')
   return {
     companyName, taxId, province, city,
@@ -229,7 +232,7 @@ function parseEnterprise(input: unknown, previous?: Enterprise): Enterprise {
       ? officialTax.taxpayerIdentity : select(data.taxpayerIdentity, identities, '纳税人类型'),
     taxStatus: officialTax?.taxStatus || text(data.taxStatus, '税务状态', 60),
     taxAuthority: officialTax?.taxAuthority || text(data.taxAuthority, '主管税务机关'),
-    business: [...new Set(selected as Business[])],
+    business,
     bankStatus,
     accounts: bankStatus === 'none' ? [] : parseAccounts(data.accounts,
       previous && (!TAX_ID.test(previous.taxId) || previous.taxId === taxId) ? previous.accounts : []),
@@ -365,7 +368,14 @@ export class CompanyOnboarding {
 
   private record(): OnboardingRecord {
     const saved = this.store.companyOnboarding()
-    if (saved) return saved
+    if (saved) {
+      // Old drafts could contain contradictory choices. Preserve every reported business activity for review.
+      const enterprise = saved.enterprise
+      if (enterprise?.business.includes('none') && enterprise.business.some(value => value !== 'none')) {
+        enterprise.business = enterprise.business.filter(value => value !== 'none')
+      }
+      return saved
+    }
     const record: OnboardingRecord = { draftId: randomUUID(), revision: 0, step: 1 }
     const company = this.store.company()
     if (company && !company.isSample) {

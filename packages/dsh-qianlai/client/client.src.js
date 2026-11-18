@@ -323,7 +323,7 @@ window.__ModuleLoader__.load({
               jsx('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }, children: Object.entries(businessTypes).map(([key, label]) => jsx('label', {
                 style: { display: 'flex', alignItems: 'center', gap: 8, minHeight: 30 },
                 children: [jsx('input', {
-                  type: 'checkbox', checked: input.business.includes(key), disabled: saving,
+                  type: 'checkbox', name: 'business', value: key, checked: input.business.includes(key), disabled: saving,
                   onChange: event => {
                     const business = input.business.filter(item => item !== key && item !== 'none')
                     change('business', event.target.checked ? key === 'none' ? ['none'] : [...business, key] : input.business.filter(item => item !== key))
