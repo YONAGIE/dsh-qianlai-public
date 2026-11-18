@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
+import { taxStatusChoices } from '../src/onboarding-fields.js'
 import { taxRegionCities, taxScanCities } from '../src/tax-portals.js'
 
 function makeClient() {
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
     .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
+    .replace('/* tax-status-choices */ {}', JSON.stringify(taxStatusChoices))
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
     .replace('/* onboarding-chat-client */', 'function registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
   const fibers = new Map()
@@ -249,6 +251,35 @@ describe('WeChat header status', () => {
 const sampleDraft = { accepted: true, draftId: 'synthetic-draft', revision: 0, step: 1, completed: false, replacesSampleBook: true }
 
 describe('Zhangjie onboarding sidebar', () => {
+  it('shows the original tax status alongside selectable options and permits clearing it', async () => {
+    const client = makeClient()
+    let draft = { ...sampleDraft, enterprise: { taxStatus: '合成旧状态' } }
+    const respond = vi.fn(payload => {
+      if (payload.action === 'edit-section') draft = {
+        ...draft, revision: draft.revision + 1, enterprise: { ...draft.enterprise, ...payload.input },
+      }
+      return draft
+    })
+    client.setOnboarding(respond)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      const control = client.controls().find(node => node.props.name === 'taxStatus')
+      expect(control.type).toBe('select')
+      expect(control.props.value).toBe('合成旧状态')
+      const options = control.props.children.flat().map(node => node.props.value)
+      expect(options).toEqual(['', '正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他', '合成旧状态'])
+      control.props.onChange({ target: { value: '' } })
+      client.submitForm('税务资料')
+      await settle()
+      expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { taxStatus: '' } }))
+      expect(client.input('taxStatus').value).toBe('')
+    } finally {
+      client.dispose()
+    }
+  })
+
   it('uses the native scoped conversation to send the card answer to its originating session', async () => {
     const client = makeClient()
     const message = '我选择扫码建档。'

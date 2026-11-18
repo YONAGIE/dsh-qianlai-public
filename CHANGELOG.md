@@ -12,6 +12,8 @@
 
 - Show editable draft fields directly in DSH’s right-hand panel. Keep unsaved input while chat updates the other fields and show conflicting changes before saving. Lay out short fields side by side when the card is wide enough. Align primary card actions to the right and keep bank account save/defer buttons in one wrapping row.
 
+- Select an optional tax status from the available choices in both company setup forms. Keep previously saved and recognized statuses available for review.
+
 - Combine typing, file selection, and dropping a license or tax document on one chat card. Preview extracted fields on the card and update the draft after confirmation. Documents sent in chat also get a review card. Close the host drag overlay when a file reaches the card, and show recognition progress inside the card.
 
 - Keep an incomplete document on the current card after a partial save. Open a focused correction form for the requested field and resume from the updated draft after saving.

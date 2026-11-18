@@ -6,6 +6,7 @@ export interface FormField {
   readonly label: string
   readonly type: 'text' | 'date' | 'month' | 'select' | 'multi'
   readonly maxLength?: number
+  readonly required?: false
   readonly options?: readonly { value: string; label: string }[]
 }
 
@@ -24,12 +25,17 @@ const business = { ...selection('business', '企业实际开展的业务', {
   'cross-border': '有境外客户、供应商或外币收付款', 'multiple-entities': '有分公司或多个经营主体', none: '以上都没有',
 }), type: 'multi' as const }
 
+export const taxStatusChoices = Object.fromEntries(
+  ['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'].map(value => [value, value]),
+)
+
 export const onboardingFields = {
   1: [
     input('companyName', '企业全称', 200), input('taxId', '统一社会信用代码', 18),
     input('establishedOn', '成立日期', 10, 'date'),
     selection('taxRegion', '税务地区', Object.fromEntries(regionOptions)),
-    input('taxAuthority', '主管税务机关', 200), input('taxStatus', '税务状态', 60),
+    input('taxAuthority', '主管税务机关', 200),
+    { ...selection('taxStatus', '税务状态', taxStatusChoices), maxLength: 60, required: false },
     selection('taxpayerIdentity', '纳税人类型', { 'small-scale': '小规模纳税人', general: '一般纳税人', unknown: '待核实' }),
     business, selection('bankStatus', '银行账户情况', { provided: '有银行账户', none: '没有银行账户', pending: '账户资料待补' }),
   ],
@@ -66,10 +72,15 @@ export function fieldPatch(fields: readonly FormField[], values: Record<string, 
       patch[key] = [...new Set(raw)]
       continue
     }
+    if (key === 'taxStatus' && raw === '') {
+      patch[key] = ''
+      continue
+    }
     if (typeof raw !== 'string' || !raw.trim() || /\p{Cc}|\p{Cf}/u.test(raw)) throw Error('请按当前表单填写资料。')
     const value = raw.trim()
     if ((field.maxLength && value.length > field.maxLength)
-        || (field.options && !field.options.some(option => option.value === value))
+        // Older drafts and official materials may carry a status outside the manual choices.
+        || (field.options && key !== 'taxStatus' && !field.options.some(option => option.value === value))
         || (field.type === 'month' && !PERIOD_KEY.test(value))
         || (field.type === 'date' && (!isCalendarDate(value) || value > today))
         || (key === 'taxId' && !/^[A-Z0-9]{18}$/i.test(value))) throw Error(`请核对${field.label}。`)
