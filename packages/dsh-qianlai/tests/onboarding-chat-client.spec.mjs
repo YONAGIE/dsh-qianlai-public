@@ -127,6 +127,47 @@ const companyUpload = next(3, { kind: 'upload', documentKind: 'license' })
 const recognizedView = { revision: 9, enterprise: { companyName: '示例服务有限公司', taxId: '111111111111111111' } }
 
 describe('建档对话卡', () => {
+  it('从已保存的成立日期回执重新打开可编辑表单，然后保存新值', async () => {
+    const archived = {
+      ...baseCard, kind: 'fields', title: '更正成立日期', maintenance: { field: 'establishedOn' },
+      fields: [{ key: 'establishedOn', type: 'date', label: '成立日期' }], initialValues: { establishedOn: '2025-01-01' },
+    }
+    const fresh = next(2, { kind: archived.kind, title: archived.title, maintenance: archived.maintenance,
+      fields: archived.fields, initialValues: { establishedOn: '2025-03-03' } })
+    const receipt = { accepted: true, cardState: 'saved', receipt: { labels: ['成立日期'] } }
+    const current = { accepted: true, cardState: 'active', card: fresh }
+    const lookup = Promise.withResolvers()
+    const request = vi.fn(async (_session, action, payload) => {
+      if (action === 'card-status') return payload.cardId === archived.id ? receipt : lookup.promise
+      if (action === 'reopen-profile-card') return current
+      if (action === 'submit-card') return receipt
+    })
+    const active = client(request)
+    active.render(archived)
+    await settle()
+    const saved = active.render(archived)
+    expect(find(saved, node => node.type === 'form')).toBeUndefined()
+    expect(find(saved, info)?.props.children).toBe('已保存 成立日期')
+    find(saved, named('再次更正')).props.onClick()
+    await settle()
+    const reopened = active.render(archived)
+    expect(request).toHaveBeenCalledWith(sessionId, 'reopen-profile-card', { cardId: archived.id })
+    expect(section(reopened, fresh)?.props['aria-label']).toBe('更正成立日期')
+    const date = find(reopened, node => node.props.name === 'establishedOn')
+    expect(date.props).toMatchObject({ type: 'date', value: '2025-03-03' })
+    date.props.onChange({ target: { value: '2025-03-04' } })
+    const edited = active.render(archived)
+    expect(find(edited, named('保存更正'))).toBeDefined()
+    find(edited, node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    await settle()
+    expect(request).toHaveBeenCalledWith(sessionId, 'submit-card',
+      { cardId: fresh.id, draftId, revision: fresh.revision, values: { establishedOn: '2025-03-04' } })
+    lookup.resolve(current)
+    await settle()
+    expect(find(active.render(archived), node => node.type === 'form')).toBeUndefined()
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
+  })
+
   it('keeps a tax status blocker on the same card and sends one receipt after saving the correction', async () => {
     const original = { ...baseCard, kind: 'document', documentKind: 'tax', fields: taxFields,
       initialValues: { taxpayerIdentity: 'small-scale', taxStatus: '停业', taxAuthority: '合成税务机关',

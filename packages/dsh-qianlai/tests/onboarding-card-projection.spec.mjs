@@ -24,6 +24,10 @@ const business = {
 const correction = {
   ...business, id: 'e8e802ae-6616-45b5-98b4-1b487cc03c12', title: '更正企业全称',
 }
+const maintenance = {
+  ...correction, title: '更正成立日期', maintenance: { field: 'establishedOn' },
+  fields: [{ key: 'establishedOn', type: 'date', label: '成立日期' }],
+}
 const call = (callId, name = 'moneycome_onboarding') => ({
   type: 'tool/call', data: { callId, name },
 })
@@ -66,6 +70,36 @@ describe('建档卡按对话轮次显示', () => {
     const repeated = project(contribution, 3, [...guide('three', business), end()], text)
     const next = project(contribution, 4, [...guide('four', correction), end()], repeated)
     expect([first, text, repeated, next].map(({ node }) => node.visibility)).toEqual(['visible', 'hidden', 'hidden', 'visible'])
+  })
+
+  it('旧更正卡留在原回复，新请求只显示本轮新开的更正卡', () => {
+    const contribution = definition()
+    const first = project(contribution, 1, [...guide('first', maintenance), end()])
+    const text = project(contribution, 2, [end()], first)
+    const fresh = { ...maintenance, id: business.id }
+    const latest = project(contribution, 3, [
+      ...guide('fresh', fresh), call('read'), result('read', { accepted: true, completed: true, field: 'establishedOn' }),
+      call('duplicate'), result('duplicate', { accepted: false, code: 'PROFILE_CARD_OPEN' }), end(),
+    ], text)
+    expect(first.node.data).toEqual(maintenance)
+    expect(text.node.visibility).toBe('hidden')
+    expect(latest.node).toMatchObject({ visibility: 'visible', data: fresh })
+  })
+
+  it('被阻止的多余问题保留本轮更正卡，真正的问题会先等用户答复', () => {
+    const contribution = definition()
+    const question = call('question', 'ask_user_question')
+    const events = [...guide('first', maintenance), question]
+    const blocked = {
+      type: 'tool/result', surfaceOp: 'append', data: { message: {
+        isError: true, source: { kind: 'tool', callId: 'question' }, content: [{
+          type: 'text', text: 'Error: 本轮已经提供企业档案更正卡，请等老板在卡片上保存当前项目。',
+        }],
+      } },
+    }
+    expect(project(contribution, 1, [...events, blocked, end()]).node.data).toEqual(maintenance)
+    const answered = result('question', { answers: [{ selected: ['核对后再改'] }] })
+    expect(project(contribution, 1, [...events, answered, end()]).node.visibility).toBe('hidden')
   })
 
   it('发出澄清后丢弃提前给出的表单，明确答复后才接收重新读取的卡片', () => {
