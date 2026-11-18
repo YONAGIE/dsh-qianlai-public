@@ -2,10 +2,11 @@
 
 ## Unreleased
 
+- Use one structured interaction at a time for Zhangjie's desktop and web follow-ups. Reuse known facts and receipts, use a choice for decisions or a form for missing fields, and keep unresolved items pending when a control is unavailable.
+
+- Show the entry in a native choice card in full-access conversations or an approval card when the workspace requires permission. A ready-to-post voucher waits for one confirmation.
+
 - Let a submitted native question free the current confirmation slot, so the next business fact can be reviewed after a valid answer. Keep deferred or unanswered items pending.
-
-- Offer the native approval card for a ready-to-post voucher after reviewing uploaded materials. The card shows the entry and waits for one confirmation, including in full-access conversations when a confirmation is needed.
-
 - Use a native business choice for an unconfirmed voucher in full-access conversations. Bind the choice and save to that exact voucher and current ledger.
 
 - Read and correct one field of a completed company profile in chat. Keep bank numbers masked and preserve leading zeros when correcting a registered tail. Show the saved value in the profile without reopening setup.
