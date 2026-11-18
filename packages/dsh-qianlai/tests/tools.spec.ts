@@ -50,11 +50,15 @@ function plugin() {
   const call = (name: string, args: unknown) => tools.get(name)!.execute(args, {
     ...approvedCall(), agent: { session: session(defaultSession) },
   }) as Promise<Record<string, unknown>>
-  const ask = (questions: unknown, sessionId = defaultSession) =>
-    guard?.({ name: 'ask_user_question', arguments: { questions }, agent: { session: session(sessionId) } })
+  const ask = (questions: unknown, sessionId = defaultSession, callId: string = randomUUID()) =>
+    guard?.({ name: 'ask_user_question', callId, arguments: { questions }, agent: { session: session(sessionId) } })
+  const answer = (callId: string, responses: unknown, isError = false) =>
+    observe?.(session(defaultSession), { type: 'tool/result', seq: 100, data: { message: {
+      isError, source: { kind: 'tool', callId }, content: [{ type: 'text', text: JSON.stringify({ answers: responses }) }],
+    } } })
   const turn = (type: 'turn/start' | 'turn/end', number: number, sessionId = defaultSession) =>
     observe?.(session(sessionId), { type, seq: number * 2 + (type === 'turn/start' ? 0 : 1), data: { turn: number } })
-  return { bookPath, call, ask, turn }
+  return { bookPath, call, ask, answer, turn }
 }
 
 async function ownBook() {
@@ -117,7 +121,7 @@ describe('工具入口', () => {
     expect(await call('moneycome_record_entry', { ...ENTRY, facts: undefined })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
   })
 
-  it('对同一个会话每轮只打开一道原生问题，拒绝合并或重复追问', () => {
+  it('对同一个会话同时只打开一道原生问题，拒绝合并或重复追问', () => {
     const { ask, turn } = plugin()
     const question = (text: string) => [{ question: text }]
     turn('turn/start', 1)
@@ -125,13 +129,50 @@ describe('工具入口', () => {
     expect(ask(question('这笔款怎么付？哪天付的？'))).toContain('只确认一个事实')
     expect(ask(question('请确认\n1. 支付方式\n2. 支付日期'))).toContain('只确认一个事实')
     expect(ask(question('您指一月份，还是下一个月？'))).toBeUndefined()
-    expect(ask(question('您说的是哪一年？'))).toContain('本轮已提出一个问题')
+    expect(ask(question('您说的是哪一年？'))).toContain('一个待答问题')
     turn('turn/start', 1, 'synthetic-other-session')
     expect(ask(question('您说的是哪一年？'), 'synthetic-other-session')).toBeUndefined()
     turn('turn/end', 1)
     turn('turn/start', 2)
     expect(ask(question('您说的是哪一年？'))).toBeUndefined()
   })
+
+  it('已提交的原生选择或表单释放本轮位置，顺序确认可继续', () => {
+    const { ask, answer, turn } = plugin()
+    const question = [{ question: '请确认这笔款项的支付方式。' }]
+    turn('turn/start', 1)
+    expect(ask(question, undefined, 'first')).toBeUndefined()
+    expect(ask(question, undefined, 'concurrent')).toContain('待答问题')
+    answer('concurrent', [{ selected: ['银行'] }])
+    expect(ask(question)).toContain('待答问题')
+    answer('first', [{ selected: ['银行'] }])
+    expect(ask([{ question: '请填写该笔支付日期。' }], undefined, 'second')).toBeUndefined()
+    answer('second', [{ selected: [], custom: '2026-11-02' }])
+    expect(ask([{ question: '请确认是否收到回单。' }])).toBeUndefined()
+  })
+
+  it('问答尚未完成时保留待记，实际提交后可进入凭证确认', async () => {
+    const { ask, answer, call, turn } = await ownBook()
+    turn('turn/start', 1)
+    expect(ask([{ question: '请选择付款方式。' }], undefined, 'payment')).toBeUndefined()
+    expect(await call('moneycome_record_entry', ENTRY)).toMatchObject({ accepted: false, code: 'ENTRY_DECISION_PENDING' })
+    answer('payment', [{ selected: ['银行'] }])
+    expect(await call('moneycome_record_entry', { ...ENTRY, requestApproval: true })).toMatchObject({ accepted: true, voucherNo: expect.any(String) })
+  })
+
+  it.each([[[], false], [[{ selected: [], custom: ' ' }], false], [[{ selected: ['已确认'] }], true]])(
+    '跳过、空答复或宿主错误时保留等待状态（%j）', (responses, isError) => {
+      const { ask, answer, turn } = plugin()
+      const question = [{ question: '请确认这笔款项的支付方式。' }]
+      turn('turn/start', 1)
+      expect(ask(question, undefined, 'first')).toBeUndefined()
+      answer('first', responses, isError)
+      expect(ask(question)).toContain('保留待确认')
+      turn('turn/end', 1)
+      turn('turn/start', 2)
+      expect(ask(question)).toBeUndefined()
+    },
+  )
 
   it('建档中的通用选择题切回当前税务专用表单，并让其他轮次继续正常提问', async () => {
     const { ask, bookPath, call, turn } = plugin()

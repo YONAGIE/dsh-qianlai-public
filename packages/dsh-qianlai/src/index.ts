@@ -108,7 +108,7 @@ interface Context {
   on?(event: 'session/event', listener: (session: PdfReferenceSession, event: PdfReferenceEvent) => void): () => void
   tools: {
     register(tool: ToolDefinition): () => void
-    guard?(check: (execution: { name: string; agent?: Execution['agent']; arguments?: { questions?: unknown } }) => string | undefined): () => void
+    guard?(check: (execution: { name: string; callId?: string; agent?: Execution['agent']; arguments?: { questions?: unknown } }) => string | undefined): () => void
   }
   get?(name: string): unknown
 }
@@ -147,6 +147,24 @@ function asksSeveralFacts(question: string): boolean {
   return marks > 1 || items > 1
 }
 
+function questionResult(data: unknown, callId: string): 'answered' | 'unanswered' | undefined {
+  const message = (data as { message?: {
+    source?: { kind?: string; callId?: string }; toolCallId?: string; isError?: boolean
+    content?: { type?: string; text?: string }[]
+  } } | undefined)?.message
+  if (message?.source?.kind !== 'tool' || (message.source.callId ?? message.toolCallId) !== callId) return undefined
+  const part = message.content?.[0]
+  if (message.isError || part?.type !== 'text' || typeof part.text !== 'string') return 'unanswered'
+  try {
+    const result = JSON.parse(part.text) as { answers?: { selected?: unknown; custom?: unknown }[] }
+    if (!Array.isArray(result?.answers) || result.answers.length !== 1) return 'unanswered'
+    const answer = result.answers[0]
+    if ((Array.isArray(answer?.selected) && answer.selected.some(value => typeof value === 'string' && value.trim())) ||
+      (typeof answer?.custom === 'string' && answer.custom.trim())) return 'answered'
+  } catch { /* Only an actual native answer releases the pending question. */ }
+  return 'unanswered'
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
   if (config.mode === 'ui') {
     ctx.inject?.(['connection', 'sessionController'], scope => {
@@ -172,11 +190,22 @@ export function apply(ctx: Context, config: Config = {}): void {
     const store = new BookStore(config.bookPath ?? defaultBookPath())
     const entryQuestions = new Map<string, { receiptKey: string; argsHash: string }>()
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
-    const questionTurns = new WeakMap<PdfReferenceSession, { asked: boolean; guiding: boolean; profileCard?: true }>()
+    const questionTurns = new WeakMap<PdfReferenceSession, {
+      question?: 'waiting' | 'unanswered'; questionCallId?: string; guiding: boolean; profileCard?: true
+    }>()
     const stopObserving = ctx.on?.('session/event', (session, event) => {
       pdfReferences.observe(session, event)
-      if (event.type === 'turn/start') questionTurns.set(session, { asked: false, guiding: false })
+      if (event.type === 'turn/start') questionTurns.set(session, { guiding: false })
       if (event.type === 'turn/end') questionTurns.delete(session)
+      if (event.type === 'tool/result') {
+        const turn = questionTurns.get(session)
+        if (!turn?.questionCallId || turn.question !== 'waiting') return
+        const result = questionResult(event.data, turn.questionCallId)
+        if (!result) return
+        delete turn.questionCallId
+        if (result === 'answered') delete turn.question
+        else turn.question = 'unanswered'
+      }
     })
     const onboarding = new CompanyOnboarding(store)
     const currentGuide = (sessionId: string) => {
@@ -190,17 +219,22 @@ export function apply(ctx: Context, config: Config = {}): void {
       const session = execution.agent?.session
       const turn = session && questionTurns.get(session)
       if (turn?.profileCard) return '本轮已经提供企业档案更正卡，请等老板在卡片上保存当前项目。'
+      if (session && entryQuestions.has(session.id)) return '当前凭证确认正在等待选择，请先完成这张卡。'
 
       if (session && (turn?.guiding || onboardingCardQuestion.test(JSON.stringify(questions)))) {
         const card = currentGuide(session.id)
         if (card) return '请用下方钱来建档表单完成当前步骤。当前建档卡：' + JSON.stringify(card)
       }
 
-      if (turn?.asked) return '本轮已提出一个问题。请在用户回复后的下一轮确认其他事项。'
+      if (turn?.question === 'waiting') return '本轮已提出一个待答问题。请等当前控件提交，再确认下一项。'
+      if (turn?.question === 'unanswered') return '刚才的控件没有收到有效答复。请把这项保留待确认。'
       const question = (questions[0] as { question?: unknown } | null | undefined)?.question
       if (questions.length > 1 || (typeof question === 'string' && asksSeveralFacts(question)))
         return '每次只确认一个事实，请只问当前阻塞的一项。'
-      if (turn && typeof question === 'string' && question.trim()) turn.asked = true
+      if (turn && typeof question === 'string' && question.trim()) {
+        turn.question = 'waiting'
+        if (execution.callId) turn.questionCallId = execution.callId
+      }
     })
     let disposed = false
     const attachPageImages = async ({ images = [], ...result }: UploadResult, page: number, signal?: AbortSignal): Promise<UploadResult> => {
@@ -264,6 +298,9 @@ export function apply(ctx: Context, config: Config = {}): void {
                 return refuse('CALL_ID_CONFLICT', '同一次确认的参数已变化。这次没有记账。')
               if (pendingEntry && name === 'moneycome_record_entry')
                 return refuse('ENTRY_CONFIRMATION_PENDING', '当前凭证的确认卡正在等待选择。')
+              const decision = questionTurns.get(session)
+              if (name === 'moneycome_record_entry' && (decision?.question || decision?.profileCard))
+                return refuse('ENTRY_DECISION_PENDING', '当前资料还待确认。这笔凭证仍待记。')
               const conflict = openingConflict()
               if (conflict) return conflict
               const presets = ctx.get?.('permissionPresets') as PermissionPresets | undefined
@@ -343,7 +380,14 @@ export function apply(ctx: Context, config: Config = {}): void {
                   if (!hasFullAccess(session, presets) || isWechatSession(session.id))
                     return refuse('ENTRY_PERMISSION_CHANGED', '确认期间会话权限已变化。这笔凭证仍待记，需按当前会话权限重新核对。')
                 } else if (approval) {
-                  const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
+                  const posting = name === 'moneycome_record_entry'
+                  if (posting) entryQuestions.set(session.id, { receiptKey, argsHash })
+                  let outcome: string
+                  try {
+                    outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
+                  } finally {
+                    if (posting) entryQuestions.delete(session.id)
+                  }
                   if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
                   if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
                 }
