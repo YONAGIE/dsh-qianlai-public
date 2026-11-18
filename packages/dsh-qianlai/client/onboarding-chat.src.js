@@ -3,7 +3,7 @@
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset,
   openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, subscribeOnboarding,
-  readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {}, taxStatusChoices = {},
+  readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
 }) {
   const kind = 'moneycome-onboarding-card'
   const toolName = 'moneycome_onboarding'
@@ -229,17 +229,18 @@ export function registerOnboardingChat(ctx, {
       width: '100%',
       minWidth: 0,
     }
+    const visibleFields = fields.filter(field => !field.requiredWhen || values[field.requiredWhen] === '其他')
     return jsx('form', {
       style: { display: 'grid', gridTemplateColumns: formColumns, gap: '12px 16px', marginTop: 12 },
       onSubmit: event => {
         event.preventDefault()
-        if (!event.currentTarget) { onSubmit(values); return }
+        if (!event.currentTarget) { onSubmit(Object.fromEntries(visibleFields.map(({ key }) => [key, values[key]]))); return }
         const formValues = new FormData(event.currentTarget)
-        onSubmit(Object.fromEntries(fields.map(({ key, type }) => [
+        onSubmit(Object.fromEntries(visibleFields.map(({ key, type }) => [
           key, type === 'multi' ? formValues.getAll(key) : formValues.get(key),
         ])))
       },
-      children: [...fields.map(field => {
+      children: [...visibleFields.map(field => {
         if (field.type === 'multi') {
           const existing = values[field.key] ?? []
           return jsx('fieldset', {
@@ -261,27 +262,23 @@ export function registerOnboardingChat(ctx, {
             })],
           }, field.key)
         }
-        const isTaxStatus = field.key === 'taxStatus'
         const value = values[field.key] ?? ''
-        const choices = isTaxStatus && field.type !== 'select'
-          ? Object.entries(taxStatusChoices).map(([value, label]) => ({ value, label })) : field.options
-        const options = isTaxStatus && value && !choices.some(option => option.value === value)
-          ? [...choices, { value, label: value }] : choices
         const input = {
-          name: field.key, required: !isTaxStatus && field.required !== false, disabled: saving, value,
+          name: field.key, required: Boolean(field.requiredWhen) || field.required !== false, disabled: saving, value,
           onChange: event => change(field.key, event.target.value),
           style: inputStyle,
         }
         return jsx('label', {
           style: { display: 'grid', alignContent: 'start', gap: 5, minWidth: 0,
-            ...(['companyName', 'taxAuthority'].includes(field.key) ? { gridColumn: '1 / -1' } : {}) }, children: [
-            field.label + (isTaxStatus ? '（选填）' : ''),
-            field.type === 'select' || isTaxStatus
-              ? jsx('select', { ...input, disabled: saving || !options.length, children: [
-                jsx('option', { value: '', children: isTaxStatus ? '不确定可留空' : '请选择' }),
-                ...options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
+            ...(['companyName', 'taxAuthority'].includes(field.key) || field.requiredWhen ? { gridColumn: '1 / -1' } : {}) }, children: [
+            field.label,
+            field.type === 'select'
+              ? jsx('select', { ...input, disabled: saving || !field.options.length, children: [
+                jsx('option', { value: '', disabled: true, children: '请选择' }),
+                ...field.options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
               ] })
-              : jsx('input', { ...input, type: field.type, maxLength: field.maxLength }),
+              : jsx('input', { ...input, type: field.type, maxLength: field.maxLength,
+                ...(field.requiredWhen ? { placeholder: '请按税务登记资料填写' } : {}) }),
           ],
         }, field.key)
       }), jsx('div', {
@@ -615,7 +612,8 @@ export function registerOnboardingChat(ctx, {
       const label = '选择' + sourceText(card.documentKind)
       const uploadHintId = 'qianlai-document-upload-hint-' + cardId
       const documentValues = { ...documentPreview?.fields, ...prefilled, ...values }
-      const complete = card.fields.every(field => (wantsTax && field.key !== 'taxpayerIdentity') || documentValues[field.key]?.trim())
+      const complete = card.fields.every(field => (field.requiredWhen && documentValues[field.requiredWhen] !== '其他') ||
+        documentValues[field.key]?.trim())
       const confirm = complete ? (wantsTax ? '确认税务资料' : '确认公司资料') : '保存到草稿'
       const prefilledText = documentPreview?.held.length
         ? '保留了原先填写的' + documentPreview.held.join('、') + '。请对照资料核对后确认。'

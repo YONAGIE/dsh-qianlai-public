@@ -43,13 +43,17 @@ const fieldPatterns = {
   taxId: /^[0-9A-Z]{18}$/,
   establishedOn: /^\d{4}-\d{2}-\d{2}$/,
   taxpayerIdentity: /^(small-scale|general)$/,
-  taxStatus: /^(正常|非正常|注销|非正常注销|停业|清算)$/,
+  taxStatus: /^(正常|非正常|注销|非正常注销|停业|清算|其他)$/,
+  taxStatusOther: /^[^\p{Cc}\p{Cf}]{1,160}$/u,
   taxAuthority: /^[^\p{Cc}\p{Cf}]{1,160}$/u,
+  incomeMethod: /^(查账征收|核定征收)$/,
+  accountingSystem: /^(小企业会计准则|企业会计准则（一般企业）|其他)$/,
+  accountingSystemOther: /^[^\p{Cc}\p{Cf}]{1,160}$/u,
 }
 
 const fieldsFor = {
   license: ['companyName', 'taxId', 'establishedOn'],
-  tax: ['companyName', 'taxId', 'taxpayerIdentity', 'taxStatus', 'taxAuthority'],
+  tax: ['companyName', 'taxId', 'taxpayerIdentity', 'taxStatus', 'taxStatusOther', 'taxAuthority', 'incomeMethod', 'accountingSystem', 'accountingSystemOther'],
 } as const
 
 export async function recognizeCompanyDocument(
