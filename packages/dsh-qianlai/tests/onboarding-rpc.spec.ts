@@ -53,6 +53,41 @@ describe('company onboarding RPC', () => {
     await expect(request('confirm', { draftId: 'other', revision: 0, replaceSampleBook: true })).resolves.toMatchObject({ accepted: false, code: 'ONBOARDING_CHANGED' })
   })
 
+  it('previews bank document fields on the current account card, then saves the reviewed values', async () => {
+    const account = {
+      holder: '合成开户企业', bank: '合成银行支行', number: '000001234567890001', currency: 'HKD', openedOn: '2026-01-04',
+    }
+    const stream = vi.fn(async function* () {
+      yield { type: 'text-delta', index: 0, text: JSON.stringify({
+        ...account, number: '0000 0123 4567 8900 01', taxId: '000000000000000099',
+      }) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })
+    const { request, card, submit, store } = setup({
+      llm: { async prepareCall() { return { config: {}, inputModalities: ['image'], stream } } },
+      attachments: { async saveImage() { return { attachmentId: 'synthetic-account' } } },
+    })
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { values: { companyName: '合成建档企业', taxId: '000000000000000099', establishedOn: '2026-01-01' } })
+    await submit(card(), { values: taxDetails })
+    await submit(card(), { values: { business: ['none'] } })
+    await submit(card(), { values: { bankStatus: 'provided' } })
+    const bank = card()
+    expect(bank.kind).toBe('bank')
+    const payload = { draftId: bank.draftId, revision: bank.revision, cardId: bank.id, file: document }
+    await expect(request('recognize', { ...payload, sessionId: 'test-zhangjie-other' }))
+      .resolves.toMatchObject({ code: 'CARD_UNAVAILABLE' })
+    const preview = await request('recognize', payload)
+    expect(preview).toEqual({ accepted: true, fields: account })
+    expect(stream).toHaveBeenCalledWith(expect.objectContaining({ system: expect.stringContaining('只显示尾号或有遮挡时省略 number') }))
+    expect(store.companyOnboarding()?.enterprise?.accounts).toEqual([])
+    const submitted = await submit(bank, { values: { ...preview.fields, bank: '核对后的合成银行' } })
+    expect(submitted).toMatchObject({ accepted: true, view: { enterprise: { accounts: [{
+      holder: account.holder, bank: '核对后的合成银行', maskedNumber: '尾号 0001', currency: 'HKD',
+    }] } } })
+    expect(store.companyOnboarding()?.enterprise?.accounts[0]?.number).toBe(account.number)
+  })
+
   it('recognizes only requested fields with the selected model, leaving the draft unchanged until review', async () => {
     const savedRef = { attachmentId: 'synthetic' }
     const prepareCall = vi.fn(async () => ({
