@@ -380,14 +380,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                   if (!hasFullAccess(session, presets) || isWechatSession(session.id))
                     return refuse('ENTRY_PERMISSION_CHANGED', '确认期间会话权限已变化。这笔凭证仍待记，需按当前会话权限重新核对。')
                 } else if (approval) {
-                  const posting = name === 'moneycome_record_entry'
-                  if (posting) entryQuestions.set(session.id, { receiptKey, argsHash })
-                  let outcome: string
-                  try {
-                    outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
-                  } finally {
-                    if (posting) entryQuestions.delete(session.id)
-                  }
+                  const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
                   if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
                   if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })
                 }
