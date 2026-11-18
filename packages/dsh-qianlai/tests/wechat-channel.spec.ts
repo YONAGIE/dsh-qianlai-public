@@ -152,6 +152,28 @@ describe('微信通道', () => {
     expect(sent.map((s) => s.to)).toEqual(['boss'])
   })
 
+  it('发送微信进度回复时，凭证明细按记录分段并保留字段和值', async () => {
+    const { sent } = fakeIlink([textMessage('boss', '现在什么进度了')])
+    const host = fakeHost(stateDirWithLogin(), { reason: 'completed', text: [
+      '**已记两张凭证**',
+      '',
+      '凭证 | 日期 | 内容 | 金额',
+      '--- | --- | --- | ---',
+      'PZ-SYNTH-001 | 11-03 | 合成服务收入 | 3,030.00',
+      'PZ-SYNTH-002 | 11-06 | 合成手续费 | 30.00',
+      '',
+      '下一步需要补流水。',
+    ].join('\n') })
+    await until(() => sent.length > 0)
+    host.stop()
+    expect(sent).toEqual([{ to: 'boss', context: 'ctx-boss', text: [
+      '已记两张凭证',
+      '• 凭证 PZ-SYNTH-001 · 日期 11-03 · 内容 合成服务收入 · 金额 3,030.00',
+      '• 凭证 PZ-SYNTH-002 · 日期 11-06 · 内容 合成手续费 · 金额 30.00',
+      '下一步需要补流水。',
+    ].join('\n\n') }])
+  })
+
   it('这一轮没做完、也没说话时，告诉老板再说一次', async () => {
     const { sent } = fakeIlink([textMessage('boss', '记吧')])
     const host = fakeHost(stateDirWithLogin(), { text: '', reason: 'aborted' })
