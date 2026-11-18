@@ -280,7 +280,7 @@ describe('建档对话卡', () => {
     expect(active.sendOnboardingReply).toHaveBeenCalledTimes(2)
   })
 
-  it('拖到卡片只走识别，不触发原聊天上传，失败时保留手填与选文件', async () => {
+  it('拖到卡片收起宿主遮罩并显示识别进度，失败后可重新选文件', async () => {
     const request = vi.fn(async (_session, action) => {
       if (action === 'recognize') throw Error('没有识别到公司资料，请换一份更清晰的营业执照。')
       return { accepted: true }
@@ -290,22 +290,40 @@ describe('建档对话卡', () => {
     active.render(companyChoice)
     await settle()
     const file = { name: '合成营业执照.pdf', type: 'application/pdf', size: 4 }
-    const drop = active.render(companyChoice).props.onDrop
-    const event = { dataTransfer: { types: ['Files'], files: [file, file] }, preventDefault: vi.fn(), stopPropagation: vi.fn() }
-    drop(event)
+    const card = active.render(companyChoice)
+    const host = new EventTarget()
+    host.Event = Event
+    let globalMask = true // A file drag previously entered the document outside the card.
+    host.addEventListener('dragend', () => { globalMask = false })
+    const currentTarget = { ownerDocument: { defaultView: host } }
+    const event = {
+      currentTarget, dataTransfer: { types: ['Files'], files: [file, file] },
+      preventDefault: vi.fn(), stopPropagation: vi.fn(),
+    }
+    card.props.onDragEnter(event)
+    expect(globalMask).toBe(false)
+    expect(active.render(companyChoice).props.style.outline).toBeDefined()
+    card.props.onDrop(event)
     expect(find(active.render(companyChoice), node => node.props.role === 'alert').props.children).toContain('一次只能识别一份资料')
     expect(readOnboardingFile).not.toHaveBeenCalled()
     event.dataTransfer.files = [file]
-    drop(event)
+    globalMask = true
+    card.props.onDrop(event)
+    expect(globalMask).toBe(false)
+    const reading = active.render(companyChoice)
+    expect(reading.props.style.outline).toBeUndefined()
+    expect(find(reading, node => node.type === 'progress')).toBeDefined()
+    expect(find(reading, info).props.children).toBe('正在识别「合成营业执照.pdf」…')
     await settle()
-    expect(event.preventDefault).toHaveBeenCalledTimes(2)
-    expect(event.stopPropagation).toHaveBeenCalledTimes(2)
+    expect(event.preventDefault).toHaveBeenCalledTimes(3)
+    expect(event.stopPropagation).toHaveBeenCalledTimes(3)
     expect(request).toHaveBeenCalledWith(sessionId, 'recognize', {
       cardId: companyChoice.id, draftId, revision: companyChoice.revision,
       file: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
     })
     expect(find(active.render(companyChoice), node => node.props.role === 'alert').props.children)
       .toBe('没有识别到公司资料，请换一份更清晰的营业执照。')
+    expect(find(active.render(companyChoice), node => node.type === 'progress')).toBeUndefined()
     expect(find(active.render(companyChoice), named('选择营业执照')).props.disabled).toBe(false)
     expect(active.refreshOnboarding).not.toHaveBeenCalled()
     expect(active.sendOnboardingReply).not.toHaveBeenCalled()
