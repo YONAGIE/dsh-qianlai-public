@@ -205,7 +205,10 @@ export function apply(ctx: Context, config: Config = {}): void {
             if (isIntroductionSession(exec?.agent?.session.id) && (WORK_OPERATIONS.has(name) || name === 'moneycome_save_work_note' || (name === 'moneycome_wechat' && args.action !== 'status')))
               return refuse('INTRODUCTION_READ_ONLY', '本轮只整理微信接入后的业务摘要，不执行或批准账务操作。请等老板明确提出后再办理。')
             if (asynchronous) return await run(args, exec?.signal, exec)
-            const critical = CRITICAL_WRITES.has(name) && !(name === 'moneycome_record_entry' && args.preview === true)
+            const entryPreview = name === 'moneycome_record_entry' && args.preview === true
+            const confirmEntry = name === 'moneycome_record_entry' && args.requestApproval === true
+            if (entryPreview && confirmEntry) return refuse('ENTRY_MODE_CONFLICT', '请分别选择只看预演或发起正式记账确认。')
+            const critical = CRITICAL_WRITES.has(name) && !entryPreview
             const openingConflict = () => name === 'moneycome_open_book'
               ? checkOnboardingBookOpen(store, String(args.companyName ?? ''), typeof args.taxId === 'string' ? args.taxId : undefined)
               : undefined
@@ -231,7 +234,7 @@ export function apply(ctx: Context, config: Config = {}): void {
               const conflict = openingConflict()
               if (conflict) return conflict
               const presets = ctx.get?.('permissionPresets') as PermissionPresets | undefined
-              if (isWechatSession(session.id) || !hasFullAccess(session, presets)) {
+              if (confirmEntry || isWechatSession(session.id) || !hasFullAccess(session, presets)) {
                 const approval = ctx.get?.('approval') as Approval | undefined
                 if (!approval?.request)
                   return refuse('APPROVAL_UNAVAILABLE', '当前宿主无法确认这项账务操作，没有改动账本。请使用支持批准交互的 DSH 会话。')
@@ -502,7 +505,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_record_entry',
-        '记一笔业务凭证。先用 moneycome_posting_guide 查到 eventKind、facts、amounts 的代号再填。必须先带 preview: true 推一遍，把日期、金额、怎么记跟老板说清，他同意后再不带 preview 正式记。有发票的带 invoiceNumber（要先用 moneycome_check_invoice 核过，金额和票面一致）。钱走银行、流水已经导入的，带上对应流水的 statementLineIds（流水日期要和这笔账在同一个月）。evidenceRoles 只填老板说手上确实有的凭据：contract（合同、协议，如租房合同、出资协议）、payroll_sheet（工资表）、tax_certificate（完税凭证）；发票和流水不用填。这笔已经按发票记过、只是流水后到的，不要再记一遍，用 moneycome_link_statement。月末损益结转由 moneycome_close_period 自动做，不要手工记。',
+        '记一笔业务凭证。先用 moneycome_posting_guide 查到 eventKind、facts、amounts 的代号再填。先用 preview: true 核对日期、摘要和分录。老板只要求看预演时停在预演。待记业务资料齐全且需要老板确认时，用预演通过的同一笔资料调用 requestApproval: true，在 DSH 当轮打开正式记账审批，卡片会显示本次分录。等用户点一次「允许一次」才写入。拒绝或取消后停在该笔。不要在发卡前另问「回复确定」，也不要在同一笔上再开一张选择卡。未解决的业务事实仍用原生问题卡。老板已明确按已核对的方案记账时直接正式调用，沿用当前会话权限。有发票的带 invoiceNumber（要先用 moneycome_check_invoice 核过，金额和票面一致）。钱走银行、流水已经导入的，带上对应流水的 statementLineIds（流水日期要和这笔账在同一个月）。evidenceRoles 只填实际有的凭据，发票和流水无需重复填。已经记过凭证的后来流水用 moneycome_link_statement。损益结转由 moneycome_close_period 做。',
         {
           date: str('业务日期，YYYY-MM-DD'),
           summary: str('摘要，一句话说清这笔是什么'),
@@ -513,10 +516,16 @@ export function apply(ctx: Context, config: Config = {}): void {
           invoiceNumber: str('核过的发票号码'),
           statementLineIds: { type: 'array', items: { type: 'integer' }, description: '对应的流水行 lineId' },
           preview: { type: 'boolean', description: 'true 时只推分录不落账' },
+          requestApproval: { type: 'boolean', description: 'true 时用本次待记分录发起一次确认，允许一次后才记账。与 preview: true 互斥。' },
           correctsVoucherNo: str('更正已结账月份的哪张凭证；那张要先用 moneycome_reverse_voucher 冲销。原凭证的发票号可以再带上，凭据照算'),
         },
         ['date', 'summary', 'eventKind', 'facts', 'amounts'],
-        (a) => recordEntry(store, pack, a as unknown as RecordEntryInput, new Date()),
+        (a) => {
+          const result = recordEntry(store, pack, a as unknown as RecordEntryInput, new Date())
+          return result.accepted && a.preview === true ? {
+            ...result, reviewAction: '待记且需老板确认时，按本次预演资料用 requestApproval: true 打开审批卡。只看预演时到此为止。',
+          } : result
+        },
       ),
       tool(
         'moneycome_void_voucher',

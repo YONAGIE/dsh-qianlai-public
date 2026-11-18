@@ -88,6 +88,34 @@ describe('记账的可信批准与调用重试', () => {
     expect(test.request).toHaveBeenCalledTimes(1)
     expect(test.count()).toBe(1)
   })
+  it('待记凭证可直接请求审批卡，即使当前会话有完全权限', async () => {
+    let decide!: (outcome: string) => void
+    const test = fixture(() => new Promise(resolve => { decide = resolve }), undefined, fullAccess)
+    const proposed = await test.call({ ...entry, preview: true }, execution())
+    expect(proposed).toMatchObject({ accepted: true, preview: true, reviewAction: expect.stringContaining('requestApproval') })
+    expect(test.request).not.toHaveBeenCalled()
+    const args = { ...entry, requestApproval: true }
+    const exec = execution()
+    const pending = test.call(args, exec)
+    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(0)
+    decide('allowed-once')
+    const posted = await pending
+    expect(posted).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-001' })
+    expect(await test.call(args, exec)).toEqual(posted)
+    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(1)
+  })
+
+  it('完全权限下拒绝卡片仍保留预演状态，互斥动作也不会记账', async () => {
+    const test = fixture(async () => 'rejected', undefined, fullAccess)
+    expect(await test.call({ ...entry, preview: true, requestApproval: true }, execution()))
+      .toMatchObject({ code: 'ENTRY_MODE_CONFLICT' })
+    expect(test.request).not.toHaveBeenCalled()
+    expect(await test.call({ ...entry, requestApproval: true }, execution())).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(test.request).toHaveBeenCalledTimes(1)
+    expect(test.count()).toBe(0)
+  })
   it.each([
     { sandbox: 'danger-full-access', approval: 'ask' },
     { sandbox: 'workspace-write', approval: 'never' },
