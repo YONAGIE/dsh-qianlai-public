@@ -80,6 +80,27 @@ describe('建档卡按对话轮次显示', () => {
     expect(project(contribution, 1, [...proposed, answered, ...guide('verified', correction), end()]).node.data).toEqual(correction)
   })
 
+  it('用被宿主拦截的建档问题里的当前卡片恢复，普通工具错误不能显示卡片', () => {
+    const contribution = definition()
+    const question = call('question', 'ask_user_question')
+    const rejected = text => ({
+      type: 'tool/result', surfaceOp: 'append', data: { message: {
+        isError: true, source: { kind: 'tool', callId: 'question' }, content: [{ type: 'text', text }],
+      } },
+    })
+    const fallback = rejected('Error: 请用下方钱来建档表单完成当前步骤。当前建档卡：' + JSON.stringify(business))
+    const unrelated = rejected('Error: ' + JSON.stringify(business))
+    expect(project(contribution, 1, [question, fallback, end()]).node.data).toEqual(business)
+    expect(project(contribution, 1, [question, unrelated, end()]).node.visibility).toBe('hidden')
+    expect(project(contribution, 1, [question, fallback, ...guide('next', correction), end()]).node.data).toEqual(correction)
+  })
+
+  it('资料校验失败后仍显示工具给回的当前卡片', () => {
+    const contribution = definition()
+    const events = [call('fill'), result('fill', { accepted: false, card: business }), end()]
+    expect(project(contribution, 1, events).node.data).toEqual(business)
+  })
+
   it('只接收建档工具结果，取消的回复不展示卡片', () => {
     const contribution = definition()
     const forged = [call('other', 'unrelated'), result('other', { accepted: true, card: business })]

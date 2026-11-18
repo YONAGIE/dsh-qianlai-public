@@ -144,8 +144,9 @@ const editableSections = {
 } satisfies Record<string, { step: EditableStep; keys: string[] }>
 
 const correctionSections = {
-  companyName: 'company', establishedOn: 'company',
+  companyName: 'company', establishedOn: 'company', business: 'company',
   taxAuthority: 'tax', taxStatus: 'tax', taxpayerIdentity: 'tax',
+  lastMonth: 'accounting', startMonth: 'accounting',
 } as const satisfies Record<string, keyof typeof editableSections>
 type CorrectionField = keyof typeof correctionSections
 
@@ -527,18 +528,21 @@ export class CompanyOnboarding {
   }
 
   private correctionCard(record: OnboardingRecord, key: CorrectionField) {
-    const field = onboardingFields[1].find(field => field.key === key)!
+    const { step } = editableSections[correctionSections[key]]
+    const field = onboardingFields[step].find(field => field.key === key)!
     return {
-      kind: 'fields' as const, step: 1 as const, correction: true as const,
+      kind: 'fields' as const, step, correction: true as const,
       title: '更正' + field.label, fields: [field],
-      initialValues: { [key]: record.enterprise?.[key] ?? '' },
+      initialValues: { [key]: this.stepValues(record, step)[key] ?? (field.type === 'multi' ? [] : '') },
     }
   }
 
   private prepareCorrection(record: OnboardingRecord, key: unknown, values: Record<string, unknown>) {
-    if (!record.mode || !isCorrectionField(key)) return refuse('DRAFT_INPUT_INVALID', '请选择一项要更正的企业或税务资料。')
+    if (!record.mode || !isCorrectionField(key)) return refuse('DRAFT_INPUT_INVALID', '请选择一项要更正的建档资料。')
     if (isOfficialField(key, record.enterprise?.officialTax))
       return refuse('DRAFT_INPUT_INVALID', '这是从税务机关读取的资料。如需更正，请核对税务资料。')
+    if (key === 'lastMonth' && record.accounting?.history !== 'previous')
+      return refuse('DRAFT_INPUT_INVALID', '请先确认有旧账，再核对旧账做到的月份。')
     const card = this.correctionCard(record, key)
     try {
       Object.assign(card.initialValues, fieldPatch(card.fields, values, todayInChina(this.now())))
@@ -621,10 +625,15 @@ export class CompanyOnboarding {
       const error = record.step === 2 ? validateAccounting(record.accounting, record.enterprise, today) : validatePayroll(record.payroll)
       if (error) {
         const missing = availableFields(record.step, current)
-        const fieldSet = missing.length ? missing : onboardingFields[record.step].filter(({ key }) =>
+        const applicable = onboardingFields[record.step].filter(({ key }) =>
           (key !== 'lastMonth' || current.history === 'previous') && (key !== 'payday' || current.payroll === 'scheduled'))
+        const fieldSet = record.step === 2 && !current.history ? applicable.filter(({ key }) => key === 'history')
+          : missing.length ? missing : applicable
+        const initialValues = Object.fromEntries(fieldSet.filter(({ key }) => current[key] !== undefined)
+          .map(({ key }) => [key, key === 'payday' ? String(current[key]) : current[key]]))
         const expected = ['ACCOUNTING_REQUIRED', 'PAYROLL_REQUIRED'].includes(error.code)
-        return { kind: 'fields', title: record.step === 2 ? '确认记账准备' : '确认工资社保', fields: fieldSet, ...(!expected ? { message: error.message } : {}) }
+        return { kind: 'fields', title: record.step === 2 ? '确认记账准备' : '确认工资社保', fields: fieldSet,
+          ...(Object.keys(initialValues).length ? { initialValues } : {}), ...(!expected ? { message: error.message } : {}) }
       }
     } else {
       if (enterprise?.taxpayerIdentity !== 'small-scale') return {
@@ -691,6 +700,11 @@ export class CompanyOnboarding {
     const content: CardContent = taxPortalFor(province, city) ? { kind: 'tax-scan', province, city, autoStart: true }
       : { kind: 'region', message: '该辖区暂未接入扫码取数。您可以核对地区，或在聊天里告诉我改为手动填写。' }
     return { ...saved, content }
+  }
+
+  hasGuide(sessionId: string): boolean {
+    const record = this.store.companyOnboarding()
+    return !!record && !record.completedAt && record.cards?.some(item => item.sessionId === sessionId) === true
   }
 
   guide(sessionId: string, action: OnboardingGuideAction, fields?: unknown, values?: unknown, mode?: unknown, documentKind?: unknown) {
