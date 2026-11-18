@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Format WeChat replies as readable paragraphs. Expand each Markdown table row into a labeled record and split long replies at paragraph or line boundaries where possible.
+
 - Show the current WeChat connection state in the Zhangjie header, mark sustained long-poll failures as reconnecting, and restore the connected state when polling recovers.
 
 - Record WeChat welcome send attempts, response codes and retry stages in the local channel log. The log records whether a conversation context is present and omits credentials and message contents.

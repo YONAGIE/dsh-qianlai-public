@@ -9,6 +9,9 @@ import type * as QRCodeType from 'qrcode'
 
 import { downloadMedia, getBotQrcode, IlinkConnection, IlinkSendError, imageMediaType, pollQrStatus, type IlinkMessage } from './ilink.js'
 import { isIntroductionSession, registerLoginControl, registerLoginRpc, setIntroductionSession, type LoginControl, type LoginView, type RpcConnection } from './control.js'
+import { splitForWechat, toWechatText } from './text.js'
+
+export { splitForWechat, toWechatText } from './text.js'
 
 // Windows 受限安装可能生成 Node 未识别的 Global junction；先取得原生真实路径，
 // 让 qrcode 的间接依赖从实际包目录解析。正常目录和其他系统沿用同一个库。
@@ -106,61 +109,6 @@ interface ApprovalQuestion {
 }
 interface ApprovalEvents {
   on(event: 'approval/request', handler: (question: ApprovalQuestion, next: () => Promise<string>) => Promise<string>, options: { prepend: boolean }): () => void
-}
-
-/** 单条微信消息的字数上限取保守值，超了按段落拆成几条发。 */
-const MAX_WECHAT_CHARS = 1500
-
-/**
- * Markdown 转微信纯文本：去掉粗体、标题号、行内代码，表格改成一行一条、格子用「｜」隔开。
- * 微信不渲染 Markdown，原样发过去满屏是星号和竖线。
- */
-export function toWechatText(markdown: string): string {
-  const lines: string[] = []
-  for (const raw of markdown.split('\n')) {
-    const line = raw.trimEnd()
-    if (/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(line)) continue
-    if (/^\s*\|.*\|\s*$/.test(line)) {
-      lines.push(
-        line
-          .trim()
-          .replace(/^\||\|$/g, '')
-          .split('|')
-          .map((c) => c.trim())
-          .join('｜'),
-      )
-      continue
-    }
-    lines.push(line.replace(/^#{1,6}\s+/, ''))
-  }
-  return lines
-    .join('\n')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-/** 按段落拆成不超过上限的几段。 */
-export function splitForWechat(text: string, limit = MAX_WECHAT_CHARS): string[] {
-  const chunks: string[] = []
-  let current = ''
-  for (const paragraph of text.split('\n\n')) {
-    const next = current ? `${current}\n\n${paragraph}` : paragraph
-    if (next.length <= limit) {
-      current = next
-      continue
-    }
-    if (current) chunks.push(current)
-    current = paragraph
-    while (current.length > limit) {
-      chunks.push(current.slice(0, limit))
-      current = current.slice(limit)
-    }
-  }
-  if (current) chunks.push(current)
-  return chunks
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
