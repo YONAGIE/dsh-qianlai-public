@@ -295,6 +295,10 @@ export class BookStore {
       .run(company.name, company.taxId ?? null, company.accountingStartMonth, company.isSample ? 1 : 0)
   }
 
+  updateCompanyName(name: string): void {
+    this.db.prepare('UPDATE company SET name = ? WHERE id = 1').run(name)
+  }
+
   /** 清空整本账，换一家企业重新开。只在把样本账换成老板自己的账时用。 */
   clearBook(): void {
     for (const table of [

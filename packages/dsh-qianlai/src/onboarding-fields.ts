@@ -65,6 +65,22 @@ export const onboardingFields = {
   ],
 } satisfies Record<number, FormField[]>
 
+export const profileAccountFields = [
+  input('accountTail', '银行账号尾号', 4),
+  input('holder', '账户户名', 200),
+  input('bank', '开户行', 200),
+  input('currency', '币种', 3),
+  { ...input('openedOn', '开户日期', 10, 'date'), required: false },
+] satisfies FormField[]
+
+export const profilePayrollField: FormField = {
+  ...onboardingFields[3][0]!,
+  options: [
+    { value: 'none', label: '暂时不发工资' },
+    ...onboardingFields[3][1]!.options!.map(option => ({ ...option, label: '每月 ' + option.label + '发工资' })),
+  ],
+}
+
 export function availableFields(step: 1 | 2 | 3, current: Record<string, unknown>) {
   const missingTax = step === 1 ? new Set(missingTaxFields(current).map(field => field.key)) : undefined
   return onboardingFields[step].filter(({ key }) => {
@@ -81,6 +97,10 @@ export function fieldPatch(fields: readonly FormField[], values: Record<string, 
   for (const [key, raw] of Object.entries(values)) {
     const field = fields.find(candidate => candidate.key === key)
     if (!field) throw Error('请按当前表单填写资料。')
+    if (raw === '' && field.required === false) {
+      patch[key] = ''
+      continue
+    }
     if (field.type === 'multi') {
       if (!Array.isArray(raw) || !raw.length || raw.length > (field.options?.length ?? 0) ||
           raw.some(value => !field.options?.some(option => option.value === value)) ||

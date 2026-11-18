@@ -2,6 +2,7 @@
 
 export function onboardingFieldError(key, value, { savedNumber = false, lastMonth } = {}) {
   const input = String(value ?? '').trim()
+  if (key === 'accountTail' && !/^\d{4}$/.test(input)) return '请输入四位数字，开头的 0 也要保留。'
   if (key === 'number' && (!savedNumber || input) && !/^\d{4,34}$/.test(input.replace(/[ -]/g, '')))
     return '请输入 4 至 34 位数字。账号中的空格和短横线会自动忽略。'
   if (key === 'holder' && !input) return '请填写账户户名。'
@@ -314,7 +315,7 @@ export function registerOnboardingChat(ctx, {
                 ...field.options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
               ] })
               : jsx('input', { ...input, type: field.type, maxLength: field.maxLength,
-                inputMode: field.key === 'number' ? 'numeric' : undefined,
+                inputMode: ['number', 'accountTail'].includes(field.key) ? 'numeric' : undefined,
                 ...(field.requiredWhen ? { placeholder: '请按税务登记资料填写' } : {}) }),
             error ? jsx('span', { id: errorId, role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #ad3939)', fontSize: '0.875em' }, children: error }) : null,
           ],
@@ -502,6 +503,7 @@ export function registerOnboardingChat(ctx, {
       }
       if (!result.receipt) throw Error('未能确认资料已保存，请重试。')
       setValues({})
+      if (card.maintenance) return
       if (card.kind === 'mode') void openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
       await sendReply(replyFor(card, input, result))
     }
@@ -647,8 +649,9 @@ export function registerOnboardingChat(ctx, {
       ]
     } else if (status?.stale || obsolete) {
       body = [
-        jsx('p', { style: { ...secondary, margin: '7px 0 0' }, children: '建档资料已更新，可以按最新进度继续。' }),
-        jsx('div', { style: actions, children: button('继续建档', () => void sendReply('请按最新资料继续建档。'), saving) }),
+        jsx('p', { style: { ...secondary, margin: '7px 0 0' }, children: card.maintenance
+          ? '企业档案已更新。要改这一项，请在对话中重新提出。' : '建档资料已更新，可以按最新进度继续。' }),
+        card.maintenance ? null : jsx('div', { style: actions, children: button('继续建档', () => void sendReply('请按最新资料继续建档。'), saving) }),
       ]
     } else if (!status) {
       body = error ? jsx('div', { style: actions, children: button('重试加载', () => {
@@ -740,7 +743,9 @@ export function registerOnboardingChat(ctx, {
         : { ...prefilled, ...values }
       body = buildForm({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
-        ...(card.correction ? { label: '保存更正' } : {}),
+        ...(card.maintenance || card.correction ? {
+          label: fields[0]?.key === 'accountChoice' ? '确认账户' : '保存更正',
+        } : {}),
         secondaryAction: card.kind === 'bank'
           ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
       })
