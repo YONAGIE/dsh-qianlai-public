@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { openBook } from './book.js'
-import { accountingSystemChoices, availableFields, fieldPatch, incomeMethodChoices, missingTaxFields, onboardingFields, taxFields, taxStatusChoices, type FormField } from './onboarding-fields.js'
+import { accountingSystemChoices, availableFields, fieldPatch, incomeMethodChoices, missingTaxFields, onboardingFields, profileAccountFields, profilePayrollField, taxFields, taxStatusChoices, type FormField } from './onboarding-fields.js'
 import { isCalendarDate, PERIOD_KEY, previousPeriod, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore } from './store.js'
 import regions from './tax-regions.json' with { type: 'json' }
@@ -111,11 +111,21 @@ interface DocumentCard {
   initialValues?: Record<string, unknown>
 }
 
+interface FieldsCard {
+  kind: 'fields'
+  fields: FormField[]
+  step?: EditableStep
+  initialValues?: Record<string, unknown>
+  correction?: true
+  recheck?: true
+  maintenance?: { field: string; accountId?: string; proposed?: Record<string, unknown> }
+}
+
 type CardContent = (
   | { kind: 'mode' | 'region' | 'bank' | 'bank-next' }
   | { kind: 'source' | 'upload'; documentKind: 'license' | 'tax' }
   | DocumentCard
-  | { kind: 'fields'; fields: FormField[]; step?: EditableStep; initialValues?: Record<string, unknown>; correction?: true; recheck?: true }
+  | FieldsCard
   | { kind: 'tax-scan'; province: string; city: string; autoStart?: true }
   | { kind: 'confirm'; replacesSampleBook: boolean }
   | { kind: 'blocked'; message: string; locked?: true }
@@ -123,9 +133,13 @@ type CardContent = (
 type OnboardingCard = CardBase & CardContent
 interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
 interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; autoStartClaimed?: true }
-export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct'
+export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile'
 
 const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
+const profileFields = [...onboardingFields[1], ...onboardingFields[2], ...onboardingFields[3]]
+const profileReadOnly = new Set(['taxId', 'bankStatus', 'history', 'startMonth'])
+const accountTail = (account: Account) => account.number.slice(-4)
+const accountLabel = (account: Account) => account.bank + (account.number ? ' 尾号 ' + accountTail(account) : '（尾号待补）')
 
 const TAX_ID = /^[0-9A-Z]{18}$/
 const cities: Readonly<Record<string, readonly string[]>> = regions
@@ -392,9 +406,7 @@ export function onboardingBookStatus(store: BookStore) {
   return {
     completed: true as const, ...accounting, payroll, nextAction, guidance,
     bankStatus: enterprise?.bankStatus,
-    confirmedAccountLabels: enterprise?.bankStatus === 'provided'
-      ? enterprise.accounts.map(account => `${account.bank} 尾号 ${account.number.slice(-4)}`)
-      : [],
+    confirmedAccountLabels: enterprise?.bankStatus === 'provided' ? enterprise.accounts.map(accountLabel) : [],
   }
 }
 
@@ -779,8 +791,204 @@ export class CompanyOnboarding {
     return !!record && !record.completedAt && record.cards?.some(item => item.sessionId === sessionId) === true
   }
 
-  guide(sessionId: string, action: OnboardingGuideAction, fields?: unknown, values?: unknown, mode?: unknown, documentKind?: unknown) {
+  private activeProfile() {
+    const record = this.store.companyOnboarding()
+    const company = this.store.company()
+    if (!record?.completedAt || !record.enterprise || !company || company.isSample ||
+      company.taxId !== record.enterprise.taxId || normalizeCompanyName(company.name) !== normalizeCompanyName(record.enterprise.companyName))
+      return undefined
+    return { ...record, enterprise: record.enterprise }
+  }
+
+  private maintainProfile(sessionId: string, edit: boolean, fields: unknown, values: unknown, currentAccountTail: unknown) {
+    const record = this.activeProfile()
+    if (!record) return refuse('PROFILE_UNAVAILABLE', '当前账本没有已完成建档的企业档案。')
+    const key = Array.isArray(fields) && fields.length === 1 ? fields[0] : undefined
+    const { enterprise, accounting, payroll } = record
+    const accountField = profileAccountFields.find(field => field.key === key)
+    const field = accountField ?? profileFields.find(field => field.key === key)
+    if (!field && key !== 'bankAccounts')
+      return refuse('PROFILE_FIELD_REQUIRED', '请指定要查阅或更正的那一项企业档案资料。')
+    if (currentAccountTail !== undefined && (typeof currentAccountTail !== 'string' || !/^\d{4}$/.test(currentAccountTail)))
+      return refuse('PROFILE_ACCOUNT_TAIL_INVALID', '请用四位数字指定现有账户的尾号。')
+    const accounts = enterprise.accounts.filter(account => currentAccountTail === undefined || accountTail(account) === currentAccountTail)
+    if ((accountField || key === 'bankAccounts') && currentAccountTail !== undefined && !accounts.length)
+      return refuse('PROFILE_ACCOUNT_NOT_FOUND', '企业档案中没有这个尾号的银行账户。')
+    const current: Record<string, unknown> = { ...enterprise, ...accounting, ...payroll }
+    if (!edit) {
+      if (key === 'bankAccounts') return {
+        accepted: true as const, completed: true, field: 'bankAccounts', label: '已登记的银行账户', value: accounts.map(accountLabel),
+      }
+      if (!field) return refuse('PROFILE_FIELD_REQUIRED', '请指定要查阅的那一项企业档案资料。')
+      const labelOf = (value: unknown) => field.options?.find(option => option.value === String(value))?.label ?? value
+      const value = current[field.key]
+      return {
+        accepted: true as const, completed: true, field: field.key, label: field.label,
+        value: accountField ? accounts.map(account => ({
+          account: accountLabel(account), value: (field.key === 'accountTail' ? accountTail(account) : account[field.key as keyof Account]) || null,
+        })) : field.key === 'taxId' && enterprise.taxId ? '尾号 ' + enterprise.taxId.slice(-4)
+          : Array.isArray(value) ? value.map(labelOf) : value ? labelOf(value) : null,
+      }
+    }
+    if (!field || profileReadOnly.has(field.key))
+      return refuse('PROFILE_FIELD_LOCKED', '这一项关联已建立的账本或账户清单，目前可查阅。')
+    if (isOfficialField(field.requiredWhen ?? field.key, enterprise.officialTax))
+      return refuse('PROFILE_FIELD_LOCKED', '这一项来自已核对的官方税务资料，请先核对官方记录。')
+    if (field.requiredWhen && current[field.requiredWhen] !== '其他')
+      return refuse('PROFILE_FIELD_NOT_APPLICABLE', '选为「其他」时才需要填写这项说明。')
+    if (field.key === 'lastMonth' && accounting?.history !== 'previous')
+      return refuse('PROFILE_FIELD_NOT_APPLICABLE', '当前档案未登记旧账，无需填写旧账截止月。')
+
+    const proposed = values && typeof values === 'object' && !Array.isArray(values) ? { ...values } as Record<string, unknown> : {}
+    let content: FieldsCard & { title: string; message?: string }
+    if (accountField) {
+      if (!accounts.length) return refuse('PROFILE_ACCOUNT_NOT_FOUND', '企业档案还没有登记银行账户。')
+      content = accounts.length === 1 ? this.profileAccountCard(accountField, accounts[0]!, proposed)
+        : {
+          kind: 'fields', title: '选择要更正的银行账户', message: '请先确认要改哪一个账户。',
+          fields: [{ key: 'accountChoice', label: '银行账户', type: 'select', options: accounts.map((account, index) => ({
+            value: account.id, label: `${index + 1}. ${accountLabel(account)} · ${account.holder} · ${account.currency}`,
+          })) }],
+          maintenance: { field: accountField.key,
+            ...(typeof proposed[accountField.key] === 'string' && this.validProfileProposal(accountField, proposed[accountField.key])
+              ? { proposed: { [accountField.key]: proposed[accountField.key] } } : {}) },
+        }
+    } else {
+      const standalone = { ...field }
+      delete standalone.requiredWhen
+      const input = field.key === 'payroll' ? profilePayrollField : standalone
+      const form = [input, ...taxFields.filter(item => item.requiredWhen === field.key)]
+      if (field.key === 'payroll') {
+        current.payroll = payroll?.payroll === 'scheduled' ? payroll.payday : payroll?.payroll
+        if (proposed.payroll === 'scheduled') proposed.payroll = proposed.payday ?? ''
+      }
+      content = this.profileFieldCard(form, current, proposed, { field: field.key })
+    }
+    return { accepted: true as const, completed: true, card: this.issueCard(sessionId, content) }
+  }
+
+  private validProfileProposal(field: FormField, value: unknown) {
+    if (field.key === 'accountTail' && (typeof value !== 'string' || !/^\d{4}$/.test(value.trim()))) return false
+    try {
+      return Object.hasOwn(fieldPatch([field], { [field.key]: value }, todayInChina(this.now())), field.key)
+    } catch {
+      return false
+    }
+  }
+
+  private profileFieldCard(fields: FormField[], current: Record<string, unknown>, proposed: Record<string, unknown>,
+    maintenance: NonNullable<FieldsCard['maintenance']>, message?: string): FieldsCard & { title: string; message?: string } {
+    return {
+      kind: 'fields', title: '更正' + fields[0]!.label, fields, maintenance, ...(message ? { message } : {}),
+      initialValues: Object.fromEntries(fields.map(field => {
+        const key = field.key
+        const value = current[key]
+        const saved = typeof value === 'number' ? String(value) : value
+        return [key, Object.hasOwn(proposed, key) ? (this.validProfileProposal(field, proposed[key]) ? proposed[key] : '') : saved ?? '']
+      })),
+    }
+  }
+
+  private profileAccountCard(field: FormField, account: Account, proposed: Record<string, unknown>) {
+    const current = field.key === 'accountTail' ? accountTail(account) : account[field.key as keyof Account]
+    return this.profileFieldCard([field], { [field.key]: current }, proposed,
+      { field: field.key, accountId: account.id }, '当前登记为「' + accountLabel(account) + '」。')
+  }
+
+  private applyProfileAccount(enterprise: Enterprise, account: Account, key: string, value: string, today: string) {
+    if (key === 'accountTail' && !/^\d{4}$/.test(value))
+      return refuse('PROFILE_ACCOUNT_TAIL_INVALID', '请输入四位数字，开头的 0 也要保留。', { field: key })
+    const updated = { ...account, ...(key === 'accountTail' ? { number: account.number.slice(0, -4) + value }
+      : { [key]: key === 'currency' ? value.toUpperCase() : value }) }
+    if (accountTail(updated) !== accountTail(account) &&
+      enterprise.accounts.some(other => other.id !== account.id && accountTail(other) === accountTail(updated)))
+      return refuse('PROFILE_ACCOUNT_TAIL_COLLIDES', '这个尾号已用于另一个登记账户，请核对。', { field: key })
+    if (accountLabel(account) !== accountLabel(updated)) {
+      const related = this.store.statementCoverage().some(({ accountRef }) => {
+        const digits = accountRef.replace(/\D/g, '')
+        return digits.length >= 4 && (account.number.endsWith(digits) || updated.number.endsWith(digits))
+      })
+      if (related) return refuse('PROFILE_ACCOUNT_HAS_STATEMENTS', '该账户或新尾号关联已导入流水。请先核对账户归属，再处理登记资料。', { field: key })
+    }
+    const accounts = enterprise.accounts.map(other => other.id === account.id ? updated : other)
+    const problem = validateAccountValues(accounts, today)
+    if (problem) return { ...problem, details: { field: key } }
+    enterprise.accounts = accounts
+  }
+
+  private submitProfileCard(sessionId: string, card: OnboardingCard & FieldsCard, values: unknown) {
+    const record = this.activeProfile()
+    const maintenance = card.maintenance
+    if (!record || !maintenance) return refuse('PROFILE_UNAVAILABLE', '当前账本没有可维护的企业档案。')
+    const { enterprise } = record
+    const key = maintenance.field
+    const field = card.fields[0]!
+    const today = todayInChina(this.now())
+    let patch: Record<string, unknown>
+    try {
+      patch = fieldPatch(card.fields, object(values), today)
+      if (!Object.hasOwn(patch, field.key)) throw Error('请填写' + field.label + '。')
+      const reason = card.fields.find(item => item.requiredWhen === key)
+      if (reason) {
+        if (patch[key] === '其他' && !patch[reason.key]) return refuse('PROFILE_INPUT_INVALID', '请填写' + reason.label + '。', { field: reason.key })
+        if (patch[key] !== '其他') patch[reason.key] = ''
+      }
+    } catch (error) {
+      return refuse('PROFILE_INPUT_INVALID', error instanceof Error ? error.message : '请核对填写的资料。', { field: field.key })
+    }
+    if (field.key === 'accountChoice') {
+      const account = enterprise.accounts.find(item => item.id === patch.accountChoice)
+      const accountField = profileAccountFields.find(item => item.key === key)
+      if (!account || !accountField) return refuse('PROFILE_ACCOUNT_NOT_FOUND', '账户列表已更新，请重新指定要更正的账户。')
+      return this.keepCard(record, card.id, this.profileAccountCard(accountField, account, maintenance.proposed ?? {}))
+    }
+
+    const before = JSON.stringify(record)
+    if (maintenance.accountId) {
+      const account = enterprise.accounts.find(item => item.id === maintenance.accountId)
+      if (!account) return refuse('PROFILE_ACCOUNT_NOT_FOUND', '账户列表已更新，请重新指定要更正的账户。')
+      const problem = this.applyProfileAccount(enterprise, account, key, patch[key] as string, today)
+      if (problem) return problem
+    } else if (onboardingFields[3].some(item => item.key === key)) {
+      if (key === 'payroll') {
+        const payday = Number(patch.payroll)
+        patch = patch.payroll === 'none' ? { payroll: 'none' } : { payroll: 'scheduled', payday }
+      } else if (key === 'payday') patch.payroll = 'scheduled'
+      const updated = parsePayroll({ ...record.payroll, ...patch })
+      const problem = validatePayroll(updated)
+      if (problem) return problem
+      record.payroll = updated
+    } else if (key === 'lastMonth') {
+      const updated = parseAccounting({ ...record.accounting, ...patch })
+      const problem = validateAccounting(updated, enterprise, today)
+      if (problem) return { ...problem, details: { field: key } }
+      record.accounting = updated
+    } else {
+      const updated = { ...enterprise, ...patch }
+      const unsupported = unsupportedEnterpriseFields(updated).find(item => item.key === key)
+      if (unsupported) return refuse('ENTERPRISE_UNSUPPORTED', '当前版本暂不能承接' + unsupported.reason + '的企业，请按实际情况核对。', { field: key })
+      if (key === 'establishedOn') {
+        const problem = validateAccounting(record.accounting, updated, today)
+        if (problem) return { ...problem, details: { field: key } }
+      }
+      if (key === 'companyName' && updated.companyName !== enterprise.companyName)
+        this.store.updateCompanyName(updated.companyName)
+      record.enterprise = updated
+    }
+    const changed = before !== JSON.stringify(record)
+    if (changed) {
+      record.revision++
+      this.store.saveCompanyOnboarding(record)
+    }
+    return this.transition(sessionId, card.id, {
+      labels: [field.label], notice: changed ? '已更新企业档案中的' + field.label + '。' : field.label + '与现有登记一致。',
+    }, () => undefined)
+  }
+
+  guide(sessionId: string, action: OnboardingGuideAction, fields?: unknown, values?: unknown, mode?: unknown, documentKind?: unknown, currentAccountTail?: unknown) {
     return this.store.transaction(() => {
+      if (action === 'read-profile' || action === 'edit-profile')
+        return this.maintainProfile(sessionId, action === 'edit-profile', fields, values, currentAccountTail)
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
       let content: CardContent | undefined
@@ -893,7 +1101,9 @@ export class CompanyOnboarding {
       if (item.receipt) return this.cardResult(record, item)
       if (item.card.kind === 'tax-scan' && record.taxFlowId === cardId)
         return this.transition(sessionId, cardId, { labels: ['已回填官方税务资料'] }, () => this.nextCard(this.record()))
-      if (record.completedAt || item.card.kind === 'source' || item.card.kind === 'upload' || this.activeCard(record, sessionId)?.card.id !== cardId)
+      const maintenance = item.card.kind === 'fields' && item.card.maintenance
+      if (Boolean(record.completedAt) !== Boolean(maintenance) || item.card.kind === 'source' ||
+        item.card.kind === 'upload' || this.activeCard(record, sessionId)?.card.id !== cardId)
         return { accepted: true as const, stale: true }
       return this.cardResult(record, item)
     })
@@ -921,9 +1131,11 @@ export class CompanyOnboarding {
       const item = record.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
       if (!item) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
       if (item.receipt) return this.cardResult(record, item)
-      if (item.card.revision !== revision || record.completedAt || this.activeCard(record, sessionId)?.card.id !== cardId)
-        return refuse('DRAFT_STALE', '资料已更新，请发送「继续建档」刷新当前步骤。')
       const card = item.card
+      const maintenance = card.kind === 'fields' && card.maintenance
+      if (card.revision !== revision || Boolean(record.completedAt) !== Boolean(maintenance) || this.activeCard(record, sessionId)?.card.id !== cardId)
+        return refuse('DRAFT_STALE', maintenance ? '企业档案已更新，请在对话中重新提出要更正的项目。' : '资料已更新，请发送「继续建档」刷新当前步骤。')
+      if (card.kind === 'fields' && card.maintenance) return this.submitProfileCard(sessionId, card, values)
       const invalid = () => refuse('DRAFT_INPUT_INVALID', '请按当前建档卡片继续。')
       const next = (receipt: CardReceipt, content?: CardContent) =>
         this.transition(sessionId, cardId, receipt, () => content ?? this.nextCard(this.record()))

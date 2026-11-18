@@ -295,3 +295,101 @@ describe('企业建档', () => {
     expect(store.openingBalancesSetAt()).toBe(now().toISOString())
   })
 })
+
+describe('已完成的企业档案', () => {
+  const number = '620000000000001001'
+  const firstAccount = { ...enterprise.accounts[0]!, number }
+  const secondAccount = { ...firstAccount, bank: '另一家样例银行', number: '930000000000002002' }
+
+  function completed(accounts = [firstAccount]) {
+    const { store, wizard } = setup()
+    return { store, wizard, original: accepted(wizard.confirm(ready(wizard, { ...enterprise, accounts }).revision, false)) }
+  }
+
+  function edit(wizard: CompanyOnboarding, field: string, values?: Record<string, unknown>, oldTail?: string, session = 'owner-chat') {
+    const result = wizard.guide(session, 'edit-profile', [field], values, undefined, undefined, oldTail)
+    if (!result.accepted || !('card' in result) || result.card?.kind !== 'fields') throw Error('未取得企业档案更正卡')
+    return result.card
+  }
+
+  it('更正尾号只在原会话确认后写库，保留完整账号的前缀、前导零和已建的账本', () => {
+    const { store, wizard, original } = completed()
+    const card = edit(wizard, 'accountTail', { accountTail: '0001' }, '1001')
+    const current = () => wizard.guide('owner-chat', 'read-profile', ['bankAccounts'])
+    expect(current()).toEqual({ accepted: true, completed: true, field: 'bankAccounts', label: '已登记的银行账户', value: ['样例银行 尾号 1001'] })
+    expect(wizard.cardStatus('another-chat', card.id)).toMatchObject({ stale: true })
+    expect(card).toMatchObject({ fields: [{ key: 'accountTail' }], initialValues: { accountTail: '0001' } })
+    expect(JSON.stringify(card)).not.toContain(number)
+    expect(wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountTail: '001' }))
+      .toMatchObject({ accepted: false, code: 'PROFILE_ACCOUNT_TAIL_INVALID' })
+    expect(wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountTail: '0001', social: 'all' }))
+      .toMatchObject({ accepted: false, code: 'PROFILE_INPUT_INVALID' })
+    const updated = wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountTail: '0001' })
+    expect(updated).toMatchObject({ accepted: true, receipt: { labels: ['银行账号尾号'] },
+      view: { completed: true, completedAt: original.completedAt, payroll, accounting, enterprise: {
+        accounts: [{ maskedNumber: '尾号 0001' }],
+      } } })
+    expect(store.companyOnboarding()?.enterprise?.accounts[0]?.number).toBe(number.slice(0, -4) + '0001')
+    expect(current()).toMatchObject({ value: ['样例银行 尾号 0001'] })
+    expect(onboardingBookStatus(store)).toMatchObject({ completed: true, confirmedAccountLabels: ['样例银行 尾号 0001'] })
+    expect(wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountTail: '9999' })).toEqual(updated)
+    expect(wizard.guide('owner-chat', 'continue')).toEqual({ accepted: true, completed: true })
+  })
+
+  it('多账户在同一张卡内先选择账户，拒绝重复尾号及并行窗口的旧卡', () => {
+    const { wizard, store } = completed([firstAccount, secondAccount])
+    const oldCard = edit(wizard, 'social', { social: 'all' }, undefined, 'other-chat')
+    const card = edit(wizard, 'accountTail', { accountTail: '2002' })
+    const choices = card.fields[0]?.options
+    expect(choices?.map(option => option.label)).toEqual([
+      expect.stringContaining('样例银行 尾号 1001'), expect.stringContaining('另一家样例银行 尾号 2002'),
+    ])
+    const selected = wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountChoice: choices?.[0]?.value })
+    if (!selected.accepted || !('card' in selected) || !selected.card) throw Error('未取得同一张更正卡')
+    expect(selected).toMatchObject({ incomplete: true, card: { id: card.id, initialValues: { accountTail: '2002' } } })
+    expect(store.companyOnboarding()?.enterprise?.accounts[0]?.number).toBe(number)
+    expect(wizard.submitCard('owner-chat', card.id, selected.card.revision, undefined, { accountTail: '2002' }))
+      .toMatchObject({ code: 'PROFILE_ACCOUNT_TAIL_COLLIDES' })
+    expect(wizard.submitCard('owner-chat', card.id, selected.card.revision, undefined, { accountTail: '0001' }))
+      .toMatchObject({ accepted: true })
+    expect(store.companyOnboarding()?.enterprise?.accounts[1]?.number).toBe(secondAccount.number)
+    expect(wizard.submitCard('other-chat', oldCard.id, oldCard.revision, undefined, { social: 'all' }))
+      .toMatchObject({ code: 'DRAFT_STALE' })
+  })
+
+  it('有关联流水时阻止更改账户标识，保留已导入数据', () => {
+    const { wizard, store } = completed()
+    const card = edit(wizard, 'accountTail', { accountTail: '0001' })
+    const label = '样例银行 尾号 001001'
+    store.importStatement({ accountRef: label, periodStart: '2026-11-01', periodEnd: '2026-11-16', openingBalanceCents: 0n, lines: [], now: now() })
+    expect(wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountTail: '0001' }))
+      .toMatchObject({ accepted: false, code: 'PROFILE_ACCOUNT_HAS_STATEMENTS' })
+    expect(store.companyOnboarding()?.enterprise?.accounts[0]?.number).toBe(number)
+    expect(store.statementCoverage()[0]?.accountRef).toBe(label)
+  })
+
+  it('只读取所问字段，维护公司名和工资社保时保留原账及其他资料', () => {
+    const { wizard, store } = completed()
+    store.setOpeningBalances([], now())
+    const name = '样例更正企业有限公司'
+    const companyCard = edit(wizard, 'companyName', { companyName: name })
+    expect(wizard.submitCard('owner-chat', companyCard.id, companyCard.revision, undefined, { companyName: name })).toMatchObject({ accepted: true })
+    expect(wizard.guide('owner-chat', 'read-profile', ['companyName']))
+      .toEqual({ accepted: true, completed: true, field: 'companyName', label: '企业全称', value: name })
+    expect(wizard.guide('owner-chat', 'read-profile', ['taxId'])).toMatchObject({ value: '尾号 0001' })
+    const payrollCard = edit(wizard, 'payroll', { payroll: 'scheduled', payday: '9' })
+    expect(payrollCard.initialValues).toEqual({ payroll: '9' })
+    expect(wizard.submitCard('owner-chat', payrollCard.id, payrollCard.revision, undefined, { payroll: '9' }))
+      .toMatchObject({ view: { payroll: { payroll: 'scheduled', payday: 9, social: 'partial' }, accounting } })
+    expect(store.company()).toMatchObject({ name, taxId: enterprise.taxId, accountingStartMonth: accounting.startMonth })
+    expect(store.openingBalancesSetAt()).toBe(now().toISOString())
+    expect(wizard.guide('owner-chat', 'edit-profile', ['taxId'])).toMatchObject({ accepted: false, code: 'PROFILE_FIELD_LOCKED' })
+    expect(wizard.guide('owner-chat', 'edit-profile', ['social', 'payday'])).toMatchObject({ accepted: false, code: 'PROFILE_FIELD_REQUIRED' })
+  })
+
+  it('读取未完成档案时不创建草稿', () => {
+    const { wizard, store } = setup()
+    expect(wizard.guide('owner-chat', 'read-profile', ['companyName'])).toMatchObject({ accepted: false, code: 'PROFILE_UNAVAILABLE' })
+    expect(store.companyOnboarding()).toBeUndefined()
+  })
+})

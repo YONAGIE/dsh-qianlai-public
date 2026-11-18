@@ -144,7 +144,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
-    const questionTurns = new WeakMap<PdfReferenceSession, { asked: boolean; guiding: boolean }>()
+    const questionTurns = new WeakMap<PdfReferenceSession, { asked: boolean; guiding: boolean; profileCard?: true }>()
     const stopObserving = ctx.on?.('session/event', (session, event) => {
       pdfReferences.observe(session, event)
       if (event.type === 'turn/start') questionTurns.set(session, { asked: false, guiding: false })
@@ -161,6 +161,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const questions: unknown[] = Array.isArray(execution.arguments?.questions) ? execution.arguments.questions : []
       const session = execution.agent?.session
       const turn = session && questionTurns.get(session)
+      if (turn?.profileCard) return '本轮已经提供企业档案更正卡，请等老板在卡片上保存当前项目。'
 
       if (session && (turn?.guiding || onboardingCardQuestion.test(JSON.stringify(questions)))) {
         const card = currentGuide(session.id)
@@ -289,14 +290,15 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前需处理的卡片。当前只有一个明确卡点时，直接展示返回的表单。枚举字段用表单上的完整选项，用户在表单选择并保存一次即可。真实不支持的状态保留，不能为了继续而改成正常。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新草稿，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档或维护档案。完成建档后用 read-profile 查询所问的一项，edit-profile 给一项更正卡。明确的新值用 values 预填，只有用户在卡上保存才写入。例如更正登记尾号用 fields: ["accountTail"]，values.accountTail 传新尾号的四位字符串。明确提到的原尾号用 currentAccountTail；没指定且有多个账户时用卡片选择。保留开头的零，不索要完整账号。建档中 start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前卡。有一个明确卡点时，直接展示返回的表单。枚举字段用表单上的完整选项，用户在表单选择并保存一次即可。真实不支持的状态保留，不能为了继续而改成正常。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新资料，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具不启用账本或代替卡片确认。',
         {
-          action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct'] },
+          action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct', 'read-profile', 'edit-profile'] },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
           documentKind: { type: 'string', enum: ['license', 'tax'], description: '仅 review-document 使用。license 为营业执照，tax 为税务资料。' },
-          fields: { type: 'array', items: { type: 'string' }, description: 'correct 只传一个明确要更正的字段：companyName、establishedOn、taxAuthority、taxpayerIdentity、taxStatus、incomeMethod、accountingSystem、business、lastMonth 或 startMonth。其他动作可省略。' },
+          fields: { type: 'array', items: { type: 'string' }, description: 'correct、read-profile、edit-profile 只传一个字段。公司和税务：companyName、taxId、establishedOn、business、taxAuthority、taxpayerIdentity、taxStatus、taxStatusOther、incomeMethod、accountingSystem、accountingSystemOther。银行：bankAccounts（仅查询已登记的账户列表）、bankStatus、accountTail、holder、bank、currency、openedOn。记账和工资社保：history、lastMonth、startMonth、payroll、payday、social。以工具返回的可编辑范围为准。' },
+          currentAccountTail: str('仅银行档案查阅或更正时可用，现有登记尾号的四位数字字符串，例如 "1001"。不要在这里传新尾号。'),
           values: {
-            ...stringMap('fill、review-document 或 correct 的明确值。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general）、taxStatus、incomeMethod（查账征收 / 核定征收）、accountingSystem。taxStatus 或 accountingSystem 选其他时分别提供 taxStatusOther 或 accountingSystemOther 的具体说明。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。其他：bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+            ...stringMap('fill、review-document、correct 或 edit-profile 的明确值。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general）、taxStatus、incomeMethod（查账征收 / 核定征收）、accountingSystem。taxStatus 或 accountingSystem 选其他时分别提供 taxStatusOther 或 accountingSystemOther。开户日期和成立日期用 YYYY-MM-DD，accountTail 用新尾号四位数字字符串（例如 "0001"），currency 用三位币种代码。确认扫码地区时只传 province 和 city（北京两者均为北京市）。bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth 和 startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
             properties: {
               business: {
                 type: 'array', items: { type: 'string', enum: ['goods', 'production', 'cross-border', 'multiple-entities', 'none'] },
@@ -310,10 +312,13 @@ export function apply(ctx: Context, config: Config = {}): void {
           const session = execution?.agent?.session
           if (!session?.id || isWechatSession(session.id) || isIntroductionSession(session.id))
             return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
-          const result = onboarding.guide(session.id, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind)
           const turn = questionTurns.get(session)
+          if (args.action === 'edit-profile' && turn?.profileCard)
+            return refuse('PROFILE_CARD_OPEN', '本轮已给出一项更正卡，请等老板保存当前项目。')
+          const result = onboarding.guide(session.id, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind, args.currentAccountTail)
+          if (args.action === 'edit-profile' && result.accepted && 'card' in result && result.card && turn) turn.profileCard = true
           if (turn && onboarding.hasGuide(session.id)) turn.guiding = true
-          if (result.accepted) return result
+          if (result.accepted || args.action === 'read-profile' || args.action === 'edit-profile') return result
           const card = currentGuide(session.id)
           return card ? { ...result, card } : result
         },
