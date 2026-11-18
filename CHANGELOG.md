@@ -26,7 +26,7 @@
 - Create new WeChat conversations in the DSH workspace where the owner connected WeChat. Keep older conversations in history when reconnecting from a different workspace.
 - Show a short notice while Zhangjie prepares the WeChat handoff. Supply the filtered desktop dialogue and business context to the model through DSH's runtime context.
 - Use the current business date for missing bank statement reminders during an open month. Check complete coverage when closing that month.
-- Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post.
+- Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post. Summarize the actual opening month and balances in the confirmation for entering opening balances.
 - Provide the first WeChat reply with the fixed welcome's send status and text when available so it can continue the conversation.
 
 - Show the current WeChat connection state in the Zhangjie header, mark sustained long-poll failures as reconnecting, and restore the connected state when polling recovers.
