@@ -406,6 +406,52 @@ describe('建档对话卡', () => {
     expect(active.sendOnboardingReply).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { card: companyChoice, title: '添加营业执照', field: 'companyName', value: '合成公司有限公司', direct: true },
+    { card: next(4, { kind: 'document', documentKind: 'tax', fields: [
+      { key: 'taxAuthority', type: 'text', label: '主管税务机关' },
+    ] }), title: '添加税务资料', field: 'taxAuthority', value: '合成税务机关', direct: false },
+  ])('$title 可直接粘贴图片，识别结果留在当前卡片核对', async ({ card, title, field, value, direct }) => {
+    const request = vi.fn(async (_session, action) => action === 'recognize' ? { fields: { [field]: value } } : { accepted: true })
+    const readOnboardingFile = vi.fn(async () => 'dGVzdA==')
+    const active = client(request, undefined, { readOnboardingFile })
+    active.render(card)
+    await settle()
+    const current = active.render(card)
+    const area = find(current, node => node.props['aria-label'] === title)
+    expect(area.props.tabIndex).toBe(0)
+    const image = { name: '合成截图.png', type: 'image/png', size: 4 }
+    const event = {
+      target: { closest: vi.fn(() => null) },
+      clipboardData: { files: direct ? [image] : [], items: [{ kind: 'file', getAsFile: () => image }] },
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    }
+    current.props.onPaste({ ...event, clipboardData: { files: [], items: [{ kind: 'string' }] } })
+    current.props.onPaste({ ...event, target: { closest: () => ({}) } })
+    expect(event.preventDefault).not.toHaveBeenCalled()
+    expect(readOnboardingFile).not.toHaveBeenCalled()
+
+    current.props.onPaste({ ...event, clipboardData: { files: [image, image] } })
+    expect(find(active.render(card), node => node.props.role === 'alert').props.children).toContain('一次只能识别一份资料')
+    expect(readOnboardingFile).not.toHaveBeenCalled()
+
+    current.props.onPaste(event)
+    expect(find(active.render(card), info).props.children).toBe('正在识别「合成截图.png」…')
+    await settle()
+    expect(event.preventDefault).toHaveBeenCalledTimes(2)
+    expect(event.stopPropagation).toHaveBeenCalledTimes(2)
+    expect(readOnboardingFile).toHaveBeenCalledExactlyOnceWith(image)
+    expect(request).toHaveBeenCalledWith(sessionId, 'recognize', {
+      cardId: card.id, draftId, revision: card.revision,
+      file: { name: image.name, mimeType: image.type, base64: 'dGVzdA==' },
+    })
+    expect(find(active.render(card), node => node.props.name === field).props.value).toBe(value)
+    expect(find(active.render(card), node => node.props.role === 'alert')).toBeUndefined()
+    expect(active.refreshOnboarding).not.toHaveBeenCalled()
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
+  })
+
   it('侧栏保存后阻止旧聊天卡继续提交，用户可以按最新草稿开启下一轮', async () => {
     let update
     const request = vi.fn(async () => ({ accepted: true }))

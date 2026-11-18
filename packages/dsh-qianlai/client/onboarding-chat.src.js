@@ -515,6 +515,22 @@ export function registerOnboardingChat(ctx, {
       void loadDocument(file)
     }
 
+    function loadSingleDocument(files) {
+      if (files.length === 1) void loadDocument(files[0])
+      else if (files.length > 1) setError('一次只能识别一份资料。请选择其中一份。')
+    }
+
+    function pasteDocument(event) {
+      const transfer = event.clipboardData
+      if (!transfer || event.target?.closest?.('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
+      const files = transfer.files?.length ? transfer.files : Array.from(transfer.items ?? [])
+        .filter(item => item.kind === 'file').map(item => item.getAsFile()).filter(Boolean)
+      if (!files.length) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (!submitting.current) loadSingleDocument(files)
+    }
+
     function handleDocumentDrag(event, phase) {
       const transfer = event.dataTransfer
       if (!transfer?.types?.includes('Files') && !transfer?.files?.length) return
@@ -533,9 +549,7 @@ export function registerOnboardingChat(ctx, {
       }
       if (phase === 'drop') {
         setDropActive(false)
-        const files = transfer.files
-        if (files.length === 1) void loadDocument(files[0])
-        else if (files.length > 1) setError('一次只能识别一份资料。请选择其中一份。')
+        loadSingleDocument(transfer.files)
         return
       }
       transfer.dropEffect = saving ? 'none' : 'copy'
@@ -599,6 +613,7 @@ export function registerOnboardingChat(ctx, {
       body = jsx('div', { style: footerActions, children: choices[card.kind] })
     } else if (documentForm) {
       const label = '选择' + sourceText(card.documentKind)
+      const uploadHintId = 'qianlai-document-upload-hint-' + cardId
       const documentValues = { ...documentPreview?.fields, ...prefilled, ...values }
       const complete = card.fields.every(field => (wantsTax && field.key !== 'taxpayerIdentity') || documentValues[field.key]?.trim())
       const confirm = complete ? (wantsTax ? '确认税务资料' : '确认公司资料') : '保存到草稿'
@@ -606,14 +621,18 @@ export function registerOnboardingChat(ctx, {
         ? '保留了原先填写的' + documentPreview.held.join('、') + '。请对照资料核对后确认。'
         : '请核对预填内容，补齐缺项后确认。'
       body = [
-        jsx('div', { style: { ...actions, padding: '10px 12px', border: '1px dashed color-mix(in srgb, currentColor 24%, transparent)', borderRadius: 8 }, children: [
-          button(label, () => documentInput.current?.click(), saving),
-          jsx('span', { style: secondary, children: '也可拖一份文件到此卡片，或直接填写。' }),
-          jsx('input', {
-            ref: documentInput, type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp',
-            hidden: true, disabled: saving, onChange: selectDocument,
-          }),
-        ] }),
+        jsx('div', {
+          role: 'group', tabIndex: 0, 'aria-label': '添加' + sourceText(card.documentKind), 'aria-describedby': uploadHintId,
+          style: { ...actions, gap: '8px 12px', padding: '12px 14px', background: tintedSurface, border: '1px dashed color-mix(in srgb, ' + accent + ' 42%, transparent)', borderRadius: 10 },
+          children: [
+            button(label, () => documentInput.current?.click(), saving),
+            jsx('span', { id: uploadHintId, style: secondary, children: '也可拖入文件，或点这里按 Ctrl+V（Mac 上按 ⌘V）粘贴。' }),
+            jsx('input', {
+              ref: documentInput, type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp',
+              hidden: true, disabled: saving, onChange: selectDocument,
+            }),
+          ],
+        }),
         jsx('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }, children: [
           readingDocument ? jsx('progress', { 'aria-hidden': true, style: { width: '3rem', height: 8, accentColor: accent, flex: 'none' } }) : null,
           jsx('p', {
@@ -688,6 +707,7 @@ export function registerOnboardingChat(ctx, {
         ...(documentForm && dropActive ? { outline: '2px solid ' + accent, outlineOffset: 2, background: tintedSurface } : {}),
       },
       ...(documentForm ? {
+        onPaste: pasteDocument,
         onDragEnter: event => handleDocumentDrag(event, 'enter'),
         onDragOver: event => handleDocumentDrag(event, 'over'),
         onDragLeave: event => handleDocumentDrag(event, 'leave'),
