@@ -29,12 +29,26 @@ function makeClient() {
   const sidebarRight = {
     commandTarget: vi.fn(() => target),
     openTabFromTarget: vi.fn(() => { tabOpen = true }),
+    isExpanded: () => tabOpen,
+    active: () => tabOpen ? { kind: 'moneycome-onboarding' } : undefined,
   }
   const sidebarRightTabs = { register: definition => tabTypes.push(definition) }
   const send = vi.fn(async () => {})
-  const sessions = { scope: vi.fn(id => id === sessionId ? {
-    get: service => service === 'conversation' ? { send } : undefined,
-  } : undefined) }
+  let eventWindow = { revision: 0 }
+  const eventSubscribers = new Set()
+  const eventSource = {
+    getSnapshot: () => eventWindow,
+    subscribe(listener) {
+      eventSubscribers.add(listener)
+      return () => eventSubscribers.delete(listener)
+    },
+  }
+  const sessions = {
+    scope: vi.fn(id => id === sessionId ? {
+      get: service => service === 'conversation' ? { send } : undefined,
+    } : undefined),
+    binding: id => id === sessionId ? { eventSource } : undefined,
+  }
   const react = {
     useId() {
       const index = hookIndex++
@@ -163,6 +177,10 @@ function makeClient() {
     tabTypes,
     send,
     sessions,
+    emitHistoryChange(kind, events) {
+      eventWindow = { revision: eventWindow.revision + 1, change: { kind, entries: events.map(event => ({ event })) } }
+      for (const listener of eventSubscribers) listener()
+    },
     sendOnboardingReply: (id, text) => window.onboardingClient.sendOnboardingReply(id, text),
     openOnboarding() { window.onboardingClient.openOnboarding(sessionId) },
     subscribeOnboarding(listener) { return window.onboardingClient.subscribeOnboarding(listener) },
@@ -295,6 +313,49 @@ describe('Zhangjie onboarding sidebar', () => {
       await settle()
       expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { taxStatus: '' } }))
       expect(client.input('taxStatus').value).toBe('')
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it('opens on a live, accepted onboarding start and respects its session and history', async () => {
+    const client = makeClient()
+    client.setOnboarding(() => sampleDraft)
+    const call = (callId, action = 'start') => ({
+      type: 'tool/call', data: { name: 'moneycome_onboarding', callId, arguments: JSON.stringify({ action }) },
+    })
+    const result = (callId, value = { accepted: true, card: { kind: 'mode' } }) => ({
+      type: 'tool/result', surfaceOp: 'append',
+      data: { message: { source: { kind: 'tool', callId }, content: [{ type: 'text', text: JSON.stringify(value) }] } },
+    })
+    try {
+      client.render()
+      client.emitHistoryChange('replace', [call('historical'), result('historical')])
+      client.emitHistoryChange('prepend', [call('older'), result('older')])
+      client.emitHistoryChange('append', [call('refused'), result('refused', { accepted: false })])
+      client.emitHistoryChange('append', [call('completed'), result('completed', { accepted: true, completed: true })])
+      expect(client.sidebarRight.openTabFromTarget).not.toHaveBeenCalled()
+
+      client.emitHistoryChange('append', [call('start')])
+      client.emitHistoryChange('append', [result('start')])
+      expect(client.sidebarRight.openTabFromTarget).toHaveBeenCalledExactlyOnceWith('moneycome-onboarding',
+        { sessionId: 'synthetic-session', paneId: 'synthetic-pane' })
+      client.openOnboarding()
+      expect(client.sidebarRight.openTabFromTarget).toHaveBeenCalledTimes(1)
+
+      client.closeOnboarding()
+      client.emitHistoryChange('append', [call('next', 'continue'), result('next')])
+      expect(client.sidebarRight.openTabFromTarget).toHaveBeenCalledTimes(1)
+
+      client.sidebarRight.commandTarget.mockReturnValueOnce({ sessionId: 'another-session', paneId: 'another-pane' })
+      client.emitHistoryChange('append', [call('background-start'), result('background-start')])
+      expect(client.sidebarRight.openTabFromTarget).toHaveBeenCalledTimes(1)
+
+      client.emitHistoryChange('append', [call('resume'), result('resume', { accepted: true, card: { kind: 'fields' } })])
+      expect(client.sidebarRight.openTabFromTarget).toHaveBeenCalledTimes(2)
+      client.render()
+      await settle()
+      expect(client.text()).toContain('1/4 · 企业信息')
     } finally {
       client.dispose()
     }

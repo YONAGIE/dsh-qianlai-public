@@ -160,8 +160,35 @@ window.__ModuleLoader__.load({
       refreshOnboarding(sessionId, view)
       const target = sidebarRight?.commandTarget(null)
       if (!target || target.sessionId !== sessionId) return false
+      if (sidebarRight.isExpanded() && sidebarRight.active()?.kind === ONBOARDING_TAB) return true
       sidebarRight.openTabFromTarget(ONBOARDING_TAB, target)
       return true
+    }
+
+    function watchOnboardingStart(sessionId) {
+      const source = sessions?.binding(sessionId)?.eventSource
+      if (!source) return
+      let revision = source.getSnapshot().revision
+      const starts = new Set()
+      return source.subscribe(() => {
+        const next = source.getSnapshot()
+        if (next.revision === revision) return
+        const incremental = next.revision === revision + 1
+        revision = next.revision
+        // Loading conversation history must not reopen a manually closed panel.
+        if (!incremental || next.change.kind === 'replace') starts.clear()
+        if (!incremental || next.change.kind !== 'append') return
+        for (const { event } of next.change.entries) {
+          if (event.type === 'turn/end') starts.clear()
+          if (event.type === 'tool/call' && event.data.name === 'moneycome_onboarding'
+            && parseJson(event.data.arguments)?.action === 'start') {
+            starts.add(event.data.callId)
+          }
+          if (event.type !== 'tool/result' || !starts.delete(event.data.message?.source?.callId)) continue
+          const result = parseJson(toolResultText(event))
+          if (result?.accepted === true && result.card) openOnboarding(sessionId)
+        }
+      })
     }
 
     function sendOnboardingReply(sessionId, text) {
@@ -570,6 +597,7 @@ window.__ModuleLoader__.load({
     function ZhangjieAvatar({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
+      useEffect(() => active ? watchOnboardingStart(sessionId) : undefined, [active, sessionId])
       return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId })] }) : null
     }
 
@@ -588,7 +616,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function questionResultText(event) {
+    function toolResultText(event) {
       const message = event.data.message
       const content = message?.content
       if (event.surfaceOp !== 'append' || message?.isError || message?.source?.kind !== 'tool'
@@ -605,7 +633,7 @@ window.__ModuleLoader__.load({
             ? { id: event.data.callId, role: 'start' }
             : null,
           'tool/result': event => {
-            const text = questionResultText(event)
+            const text = toolResultText(event)
             // Only ask-user results can add a row. Keep matches when history
             // loads the result before its call, without retaining unrelated results.
             return text?.includes('"answers"')
@@ -621,7 +649,7 @@ window.__ModuleLoader__.load({
         },
         update: ({ state }, { event }) => {
           if (state === null) return state
-          const result = parseJson(questionResultText(event))
+          const result = parseJson(toolResultText(event))
           if (result?.pending || !Array.isArray(result?.answers) || result.answers.length !== state.questions.length) return state
           const answers = new Map(result.answers.map(item => [item?.id, item]))
           const pairs = []
