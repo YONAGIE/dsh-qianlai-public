@@ -497,11 +497,19 @@ export class CompanyOnboarding {
 
   private documentCard(record: OnboardingRecord): DocumentCard | undefined {
     if (record.step !== 1 || !record.mode || (record.mode === 'scan' && !record.enterprise?.officialTax)) return
-    const fields = availableFields(1, this.stepValues(record))
-    const company = fields.filter(field => companyDocumentKeys.includes(field.key))
+    const { companyName, taxId = '', establishedOn = '' } = record.enterprise ?? {}
+    const missingCompany = {
+      companyName: !companyName,
+      taxId: !TAX_ID.test(taxId),
+      establishedOn: !isCalendarDate(establishedOn) || establishedOn > todayInChina(this.now()),
+    }
+    const company = onboardingFields[1].filter(field =>
+      companyDocumentKeys.includes(field.key) && missingCompany[field.key as keyof typeof missingCompany])
     if (company.length) return { kind: 'document', documentKind: 'license', fields: company }
-    if (!record.enterprise?.taxpayerIdentity)
-      return { kind: 'document', documentKind: 'tax', fields: fields.filter(field => taxDocumentKeys.includes(field.key)) }
+    if (!record.enterprise?.taxpayerIdentity) return {
+      kind: 'document', documentKind: 'tax',
+      fields: availableFields(1, this.stepValues(record)).filter(field => taxDocumentKeys.includes(field.key)),
+    }
   }
 
   private documentPreview(record: OnboardingRecord, card: DocumentCard, values: Record<string, unknown>) {
@@ -593,7 +601,10 @@ export class CompanyOnboarding {
   }
 
   private cardResult(record: OnboardingRecord, item: StoredCard) {
-    return { accepted: true as const, view: this.view(record), ...(item.receipt ? { receipt: item.receipt } : {}), stale: false }
+    return {
+      accepted: true as const, view: this.view(record), stale: false,
+      ...(item.receipt ? { receipt: item.receipt } : { card: item.card }),
+    }
   }
 
   private transition(sessionId: string, cardId: string, receipt: CardReceipt, choose: () => CardContent | undefined) {
@@ -745,9 +756,9 @@ export class CompanyOnboarding {
     return this.store.transaction(() => {
       const record = this.record()
       const item = record.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
-      if (!item || item.card.revision !== revision) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
+      if (!item) return refuse('CARD_UNAVAILABLE', '这张建档卡已失效，请在当前对话继续建档。')
       if (item.receipt) return this.cardResult(record, item)
-      if (record.completedAt || this.activeCard(record, sessionId)?.card.id !== cardId)
+      if (item.card.revision !== revision || record.completedAt || this.activeCard(record, sessionId)?.card.id !== cardId)
         return refuse('DRAFT_STALE', '资料已更新，请发送「继续建档」刷新当前步骤。')
       const card = item.card
       const invalid = () => refuse('DRAFT_INPUT_INVALID', '请按当前建档卡片继续。')
@@ -769,6 +780,21 @@ export class CompanyOnboarding {
       if (card.kind === 'fields' || card.kind === 'document') {
         const saved = this.saveFields(record, card.fields, values, card.kind === 'document' ? 1 : card.step)
         if (!saved.accepted) return saved
+        if (card.kind === 'document') {
+          const latest = this.record()
+          const remaining = this.documentCard(latest)
+          if (remaining?.documentKind === card.documentKind) {
+            const stored = latest.cards!.find(candidate => candidate.card.id === cardId)!
+            stored.card = {
+              ...remaining, id: cardId, draftId: latest.draftId, revision: latest.revision,
+              message: '已保存本次填写。还需补齐' + remaining.fields
+                .filter(field => remaining.documentKind === 'license' || field.key === 'taxpayerIdentity')
+                .map(field => field.label).join('、') + '。',
+            }
+            this.store.saveCompanyOnboarding(latest)
+            return { ...this.cardResult(latest, stored), incomplete: true as const }
+          }
+        }
         return next({ labels: card.fields.filter(field => Object.hasOwn(values as object, field.key)).map(field => field.label) })
       }
       if (card.kind === 'bank') {
