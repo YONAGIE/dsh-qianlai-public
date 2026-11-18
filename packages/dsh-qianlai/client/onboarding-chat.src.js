@@ -48,6 +48,7 @@ export function registerOnboardingChat(ctx, {
   }
   const secondary = { color: 'var(--dsw-alias-label-secondary)', fontSize: '0.875em', lineHeight: 1.55 }
   const actions = { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginTop: 12 }
+  const footerActions = { ...actions, justifyContent: 'flex-end' }
   const formColumns = 'repeat(auto-fit, minmax(min(100%, max(10rem, 45%)), 1fr))'
   const startingTaxFlows = new Map()
 
@@ -181,7 +182,7 @@ export function registerOnboardingChat(ctx, {
     }
   }
 
-  function form({ fields, values, change, saving, onSubmit, label = '保存到草稿' }) {
+  function form({ fields, values, change, saving, onSubmit, label = '保存到草稿', secondaryAction }) {
     const inputStyle = {
       ...controlStyle,
       background: 'var(--dsw-alias-fill-primary, transparent)',
@@ -237,7 +238,10 @@ export function registerOnboardingChat(ctx, {
               : jsx('input', { ...input, type: field.type, maxLength: field.maxLength }),
           ],
         }, field.key)
-      }), jsx('div', { style: { ...actions, gridColumn: '1 / -1', marginTop: 0 }, children: button(label, undefined, saving, 'submit', true) })],
+      }), jsx('div', {
+        style: { ...footerActions, gridColumn: '1 / -1', marginTop: 0 },
+        children: [secondaryAction, button(label, undefined, saving, 'submit', true)],
+      })],
     })
   }
 
@@ -326,12 +330,12 @@ export function registerOnboardingChat(ctx, {
     return [
       message ? jsx('p', { role: 'status', style: secondary, children: message }) : null,
       error ? jsx('p', { role: 'alert', children: error }) : null,
-      jsx('div', { style: actions, children: [
+      jsx('div', { style: footerActions, children: [
+        active || phase === 'ready' ? button('取消扫码', () => void request('cancel')) : null,
         phase === 'idle' || phase === 'failed'
           ? button('重新打开扫码页', () => void request('start')) : null,
-        phase === 'ready' ? button('核对无误，回填税务资料', () => void request('submit')) : null,
-        active || phase === 'ready' ? button('取消扫码', () => void request('cancel')) : null,
         phase === 'waiting' && flow.retryRead ? button('重试读取', () => void request('read')) : null,
+        phase === 'ready' ? button('核对无误，回填税务资料', () => void request('submit'), false, 'button', true) : null,
         phase === 'submitted' && error ? button('继续建档', () => void request('status')) : null,
       ] }),
     ]
@@ -501,10 +505,13 @@ export function registerOnboardingChat(ctx, {
     const documentCard = card.kind === 'source' || card.kind === 'upload'
     const documentForm = card.kind === 'document' && status && !status.stale && !receipt && !obsolete
     const choices = {
-      mode: Object.entries(modes).map(([mode, label]) => button(label, () => void submit({ mode }), saving, 'button', mode === 'scan')),
+      mode: [
+        button(modes.manual, () => void submit({ mode: 'manual' }), saving),
+        button(modes.scan, () => void submit({ mode: 'scan' }), saving, 'button', true),
+      ],
       'bank-next': [
         button('再添加一个账户', () => void submit({ choice: 'add' }), saving),
-        button('继续', () => void submit({ choice: 'continue' }), saving),
+        button('继续', () => void submit({ choice: 'continue' }), saving, 'button', true),
       ],
     }
     let body
@@ -533,7 +540,7 @@ export function registerOnboardingChat(ctx, {
         setStatusAttempt(previous => previous + 1)
       }) }) : jsx('p', { role: 'status', style: { ...secondary, margin: '7px 0 0' }, children: '正在加载建档进度…' })
     } else if (Object.hasOwn(choices, card.kind)) {
-      body = jsx('div', { style: actions, children: choices[card.kind] })
+      body = jsx('div', { style: footerActions, children: choices[card.kind] })
     } else if (documentForm) {
       const label = '选择' + sourceText(card.documentKind)
       const confirm = wantsTax ? '确认税务资料' : '确认公司资料'
@@ -589,10 +596,10 @@ export function registerOnboardingChat(ctx, {
             ' 同意替换演示用的样本账本',
           ],
         }) : null,
-        jsx('div', { style: actions, children: [
+        jsx('div', { style: footerActions, children: [
           button('查看建档表单', () => void openDraft()),
           button('确认建档', () => void submit({ choice: 'confirm', replaceSampleBook: Boolean(values.replaceSampleBook) }),
-            saving || Boolean(replacesSample && !values.replaceSampleBook)),
+            saving || Boolean(replacesSample && !values.replaceSampleBook), 'button', true),
         ] }),
         jsx('details', { style: { marginTop: 10 }, children: [
           jsx('summary', { children: '更正资料' }),
@@ -607,11 +614,11 @@ export function registerOnboardingChat(ctx, {
       const formValues = card.kind === 'bank'
         ? { currency: 'CNY', holder: status.view?.enterprise?.companyName ?? '', ...prefilled, ...values }
         : { ...prefilled, ...values }
-      body = [
-        form({ fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input) }),
-        card.kind === 'bank' ? jsx('div', { style: actions,
-          children: button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) }) : null,
-      ]
+      body = form({
+        fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
+        secondaryAction: card.kind === 'bank'
+          ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
+      })
     }
 
     return jsx('section', {

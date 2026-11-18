@@ -345,6 +345,26 @@ describe('建档对话卡', () => {
     expect(active.sendOnboardingReply).toHaveBeenCalledExactlyOnceWith(sessionId, '请按最新资料继续建档。')
   })
 
+  it('银行账户卡把稍后补资料和保存放在同一右对齐操作区', async () => {
+    const bank = next(4, { kind: 'bank' })
+    const request = vi.fn(async (_session, action) => action === 'card-status'
+      ? { accepted: true }
+      : { accepted: true, receipt: { labels: ['稍后补账户资料'] } })
+    const active = client(request)
+    active.render(bank)
+    await settle()
+    const form = find(active.render(bank), node => node.type === 'form')
+    const footer = find(form, node => node.props.style?.justifyContent === 'flex-end')
+    expect(footer.props.style.flexWrap).toBe('wrap')
+    expect(footer.props.children.map(button => [button.props.children, button.props.type]))
+      .toEqual([['稍后补账户资料', 'button'], ['保存到草稿', 'submit']])
+    find(footer, named('稍后补账户资料')).props.onClick()
+    await settle()
+    expect(request).toHaveBeenLastCalledWith(sessionId, 'submit-card', {
+      cardId: bank.id, draftId, revision: bank.revision, choice: 'skip',
+    })
+  })
+
   it('选择地区后立刻打开官方扫码，重开对话只恢复状态，用户核对后再回填', async () => {
     vi.useFakeTimers()
     try {
@@ -503,7 +523,10 @@ describe('建档对话卡', () => {
     const active = client(request)
     active.render(confirm)
     await settle()
-    expect(find(active.render(confirm), named('确认建档')).props.disabled).toBe(true)
+    const footer = find(active.render(confirm), node => node.props.style?.justifyContent === 'flex-end' &&
+      node.props.children?.some?.(child => child && named('确认建档')(child)))
+    expect(footer.props.children.map(button => button.props.children)).toEqual(['查看建档表单', '确认建档'])
+    expect(find(footer, named('确认建档')).props.disabled).toBe(true)
     find(active.render(confirm), node => node.type === 'select').props.onChange({ target: { value: 'edit-accounting' } })
     find(active.render(confirm), node => node.type === 'form').props.onSubmit({ preventDefault() {} })
     await settle()
