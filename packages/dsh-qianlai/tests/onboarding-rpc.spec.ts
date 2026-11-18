@@ -109,6 +109,21 @@ describe('company onboarding RPC', () => {
     expect(store.company()).toBeUndefined()
   })
 
+  it('advances past the tax card when the optional tax status is left blank', async () => {
+    const { card, submit } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { values: {
+      companyName: '合成建档企业', taxId: '000000000000000033', establishedOn: '2026-01-01',
+    } })
+    const tax = card()
+    expect(tax).toMatchObject({ kind: 'document', documentKind: 'tax', fields: expect.arrayContaining([
+      expect.objectContaining({ key: 'taxStatus', type: 'select', required: false }),
+    ]) })
+    await expect(submit(tax, { values: { taxpayerIdentity: 'small-scale', taxStatus: '' } }))
+      .resolves.toMatchObject({ accepted: true, view: { enterprise: { taxStatus: '' } } })
+    expect(card()).toMatchObject({ title: '确认实际经营' })
+  })
+
   it('previews an upload on the same card, then saves only confirmed fields', async () => {
     const prepareCall = vi.fn(async () => ({
       config: {}, inputModalities: ['text', 'image'],

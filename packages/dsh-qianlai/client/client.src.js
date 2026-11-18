@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
     const PRESET = 'moneycome-zhangjie'
     const QUESTION_HISTORY = 'moneycome-question-history'
     const TAX_REGION_CITIES = /* tax-region-catalogue */ {}
+    const TAX_STATUS_CHOICES = /* tax-status-choices */ {}
     const TAX_SCAN_CITIES = /* tax-scan-cities */ {}
     const AVATAR = '__AVATAR_DATA_URL__'
     const buttonStyle = { font: 'inherit', fontSize: 14, border: '1px solid #c4eacf', borderRadius: 8, padding: '7px 12px', cursor: 'pointer', background: '#edf8f1', color: '#1b6f4a' }
@@ -300,7 +301,7 @@ window.__ModuleLoader__.load({
           ...(fullWidth ? { gridColumn: '1 / -1' } : {}) }, children: [
           jsx('span', { style: { color: muted, fontSize: 12 }, children: label }),
           locked ? jsx('span', { title: '来自已核对的税务资料', style: { overflowWrap: 'anywhere' }, children: value || '待补' }) : list ? jsx('select', { ...props, children: [
-            jsx('option', { value: '', children: '请选择' }),
+            jsx('option', { value: '', children: placeholder || '请选择' }),
             ...Object.entries(list).map(([key, text]) => jsx('option', { value: key, children: text }, key)),
           ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off' }),
           !locked && conflicts.has(name) ? jsx('span', { style: { color: muted, fontSize: 12, overflowWrap: 'anywhere' },
@@ -341,7 +342,9 @@ window.__ModuleLoader__.load({
             field('主管税务机关', 'taxAuthority', { maxLength: 200, fullWidth: true, locked: Boolean(officialTax) }),
             field('纳税人类型', 'taxpayerIdentity', { list: taxpayerTypes, value: officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown'
               ? taxpayerTypes[current.taxpayerIdentity] : input.taxpayerIdentity, locked: Boolean(officialTax?.taxpayerIdentity && officialTax.taxpayerIdentity !== 'unknown') }),
-            field('税务状态', 'taxStatus', { maxLength: 60, locked: Boolean(officialTax?.taxStatus) }),
+            field('税务状态（选填）', 'taxStatus', { placeholder: '不确定可留空', locked: Boolean(officialTax?.taxStatus),
+              list: current.taxStatus && !Object.hasOwn(TAX_STATUS_CHOICES, current.taxStatus)
+                ? { ...TAX_STATUS_CHOICES, [current.taxStatus]: current.taxStatus } : TAX_STATUS_CHOICES }),
             officialTax ? jsx('dl', { style: { gridColumn: '1 / -1', margin: 0 }, children:
               readoutRow('当前页税费种', summarizeObligations(officialTax.obligations) || '本次未读取到'),
             }) : null,
@@ -720,7 +723,7 @@ window.__ModuleLoader__.load({
       registerOnboardingChat(ctx, {
         jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest,
         sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
-        taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
+        taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES, taxStatusChoices: TAX_STATUS_CHOICES,
       })
       ctx.inject(['uiConversation'], scope => {
         const { events } = scope.uiConversation
