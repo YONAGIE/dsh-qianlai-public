@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
+import { onboardingFieldError } from '../client/onboarding-chat.src.js'
 import { taxFields } from '../src/onboarding-fields.js'
 import { taxRegionCities, taxScanCities } from '../src/tax-portals.js'
 
@@ -10,7 +11,8 @@ function makeClient() {
     .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
     .replace('/* tax-fields */ []', JSON.stringify(taxFields))
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
-    .replace('/* onboarding-chat-client */', 'function registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
+    .replace('/* onboarding-chat-client */', () => onboardingFieldError.toString() +
+      '\nfunction registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
@@ -470,6 +472,35 @@ describe('Zhangjie onboarding sidebar', () => {
       expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { accounts: [{
         id: 'synthetic-account', holder: '合成公司', bank: '合成另一银行', currency: 'CNY', openedOn: '',
       }] } }))
+    } finally {
+      client.dispose()
+    }
+  })
+
+  it('explains an invalid bank account number beside the sidebar input without submitting it', async () => {
+    const client = makeClient()
+    const draft = { ...sampleDraft, enterprise: { bankStatus: 'provided', accounts: [
+      { id: 'synthetic-account', holder: '合成公司', bank: '合成银行', maskedNumber: '尾号 4321', currency: 'CNY' },
+    ] } }
+    const respond = vi.fn(() => draft)
+    client.setOnboarding(respond)
+    try {
+      client.openOnboarding()
+      client.render()
+      await settle()
+      const account = () => client.input('account-0-number')
+      account().onChange({ target: { value: '123' } })
+      account().onBlur()
+      expect(account()).toMatchObject({ value: '123', 'aria-invalid': true })
+      expect(client.text()).toContain('请输入 4 至 34 位数字')
+      client.submitForm('银行账户')
+      expect(respond.mock.calls.some(([payload]) => payload.action === 'edit-section')).toBe(false)
+      account().onChange({ target: { value: '12 34-56' } })
+      expect(account()['aria-invalid']).toBeUndefined()
+      client.submitForm('银行账户')
+      expect(respond).toHaveBeenLastCalledWith(expect.objectContaining({ input: { accounts: [
+        expect.objectContaining({ id: 'synthetic-account', number: '12 34-56' }),
+      ] } }))
     } finally {
       client.dispose()
     }
