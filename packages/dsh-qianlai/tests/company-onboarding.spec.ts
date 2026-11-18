@@ -312,6 +312,34 @@ describe('已完成的企业档案', () => {
     return result.card
   }
 
+  it('重复更正成立日期时打开新卡，旧回执按最新档案重新打开', () => {
+    const { wizard, store } = completed()
+    const session = 'owner-chat'
+    const first = edit(wizard, 'establishedOn', { establishedOn: '2025-03-01' })
+    const repeated = edit(wizard, 'establishedOn', { establishedOn: '2025-03-01' })
+    expect(repeated.id).not.toBe(first.id)
+    expect(wizard.cardStatus(session, first.id)).toMatchObject({ stale: true, cardState: 'stale' })
+    expect(wizard.cardStatus(session, repeated.id)).toMatchObject({ cardState: 'active' })
+    expect(wizard.submitCard(session, first.id, first.revision, undefined, { establishedOn: '2025-03-01' }))
+      .toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    expect(store.companyOnboarding()?.enterprise?.establishedOn).toBe(enterprise.establishedOn)
+    expect(wizard.submitCard(session, repeated.id, repeated.revision, undefined, { establishedOn: '2025-03-02' }))
+      .toMatchObject({ accepted: true, cardState: 'saved', receipt: { labels: ['成立日期'] } })
+
+    const later = edit(wizard, 'establishedOn')
+    expect(wizard.submitCard(session, later.id, later.revision, undefined, { establishedOn: '2025-03-03' }))
+      .toMatchObject({ accepted: true, cardState: 'saved' })
+    expect(wizard.reopenProfileCard('another-chat', repeated.id)).toMatchObject({ accepted: false, code: 'CARD_UNAVAILABLE' })
+    const reopened = wizard.reopenProfileCard(session, repeated.id)
+    if (!reopened.accepted || !('card' in reopened)) throw Error('未重新打开企业档案更正卡')
+    expect(reopened).toMatchObject({
+      cardState: 'active', card: { maintenance: { field: 'establishedOn' }, initialValues: { establishedOn: '2025-03-03' } },
+    })
+    expect(reopened.card.id).not.toBe(repeated.id)
+    expect(wizard.cardStatus(session, repeated.id)).toMatchObject({ cardState: 'saved' })
+    expect(store.companyOnboarding()?.enterprise?.establishedOn).toBe('2025-03-03')
+  })
+
   it('更正尾号只在原会话确认后写库，保留完整账号的前缀、前导零和已建的账本', () => {
     const { store, wizard, original } = completed()
     const card = edit(wizard, 'accountTail', { accountTail: '0001' }, '1001')
@@ -334,6 +362,11 @@ describe('已完成的企业档案', () => {
     expect(onboardingBookStatus(store)).toMatchObject({ completed: true, confirmedAccountLabels: ['样例银行 尾号 0001'] })
     expect(wizard.submitCard('owner-chat', card.id, card.revision, undefined, { accountTail: '9999' })).toEqual(updated)
     expect(wizard.guide('owner-chat', 'continue')).toEqual({ accepted: true, completed: true })
+    const reopened = wizard.reopenProfileCard('owner-chat', card.id)
+    expect(reopened).toMatchObject({
+      cardState: 'active', card: { maintenance: { field: 'accountTail' }, initialValues: { accountTail: '0001' } },
+    })
+    expect(JSON.stringify(reopened)).not.toContain(number.slice(0, -4))
   })
 
   it('多账户在同一张卡内先选择账户，拒绝重复尾号及并行窗口的旧卡', () => {

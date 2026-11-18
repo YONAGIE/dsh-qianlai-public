@@ -113,14 +113,15 @@ export function registerOnboardingChat(ctx, {
     }
   }
 
-  function questionFallbackCard(event) {
+  function questionFallbackCard(event, previousProfileCard) {
     const message = event.data?.message
     const prefix = 'Error: 请用下方钱来建档表单完成当前步骤。当前建档卡：'
     if (event.surfaceOp !== 'append' || message?.source?.kind !== 'tool' || !message.isError ||
       !Array.isArray(message.content) || message.content.length !== 1) return undefined
     const [part] = message.content
-    if (part?.type !== 'text' || typeof part.text !== 'string' ||
-      part.text.length > 65536 || !part.text.startsWith(prefix)) return undefined
+    if (part?.type !== 'text' || typeof part.text !== 'string' || part.text.length > 65536) return undefined
+    if (previousProfileCard && part.text.startsWith('Error: 本轮已经提供企业档案更正卡，')) return previousProfileCard
+    if (!part.text.startsWith(prefix)) return undefined
     try {
       return validCard(JSON.parse(part.text.slice(prefix.length)))
     } catch {
@@ -156,13 +157,16 @@ export function registerOnboardingChat(ctx, {
         if (event.type === 'tool/call') {
           if (event.data.name === 'ask_user_question') {
             // A question invalidates any proposed action from before the question.
-            return { ...state, calls: [], card: undefined, question: event.data.callId }
+            return {
+              ...state, calls: [], card: undefined, question: event.data.callId,
+              previousProfileCard: state.card?.maintenance ? state.card : undefined,
+            }
           }
           return state.question ? state : { ...state, calls: [...state.calls, event.data.callId] }
         }
         const callId = event.data.message.source.callId
         if (callId === state.question) {
-          const fallback = questionFallbackCard(event)
+          const fallback = questionFallbackCard(event, state.previousProfileCard)
           if (fallback) return { ...state, card: fallback, question: undefined }
           const result = toolResult(event)
           const answered = !result?.pending && Array.isArray(result?.answers) && result.answers.some(answer =>
@@ -173,7 +177,10 @@ export function registerOnboardingChat(ctx, {
         }
         if (!state.calls.includes(callId)) return state
         const result = toolResult(event)
-        return { ...state, card: validCard(result?.card) }
+        const card = validCard(result?.card)
+        const readProfile = result?.accepted === true && result.completed === true && typeof result.field === 'string'
+        if (!card && state.card?.maintenance && (readProfile || result?.code === 'PROFILE_CARD_OPEN')) return state
+        return { ...state, card }
       },
       publication: ({ event }) => event.type === 'turn/end' ? 'immediate' : 'none',
       buildViewNode: ({ key, id, state, start }) => state?.anchorSeq !== undefined ? {
@@ -428,6 +435,7 @@ export function registerOnboardingChat(ctx, {
     const [reviewed, setReviewed] = useState({})
     const [serverIssue, setServerIssue] = useState(null)
     const [status, setStatus] = useState(null)
+    const [reopenedCard, setReopenedCard] = useState(null)
     const [statusAttempt, setStatusAttempt] = useState(0)
     const [error, setError] = useState('')
     const [saving, setSaving] = useState(false)
@@ -440,7 +448,8 @@ export function registerOnboardingChat(ctx, {
     const sending = useRef(false)
     const documentInput = useRef(null)
     const currentRevision = useRef(projectedCard.revision)
-    const card = status?.card ?? projectedCard
+    const statusVersion = useRef(0)
+    const card = status?.card ?? reopenedCard ?? projectedCard
     const { id: cardId, draftId, revision } = card
     const viewOnly = card.kind === 'fields' && card.fields.length === 0
     const buildForm = props => form({
@@ -448,17 +457,19 @@ export function registerOnboardingChat(ctx, {
       review: keys => setReviewed(previous => ({ ...previous, ...Object.fromEntries(keys.map(key => [key, true])) })),
     })
     function applyStatus(result) {
+      statusVersion.current++
       if (result.card) currentRevision.current = result.card.revision
       setStatus(result)
       if (result.view) refreshOnboarding(sessionId, result.view)
     }
     useEffect(() => {
       let active = true
+      const version = statusVersion.current
       void onboardingRequest(sessionId, 'card-status', { cardId }).then(result => {
-        if (!active) return
+        if (!active || version !== statusVersion.current) return
         applyStatus(result)
       }, error => {
-        if (active) setError(shownError(error, '建档卡片暂时无法加载。'))
+        if (active && version === statusVersion.current) setError(shownError(error, '建档卡片暂时无法加载。'))
       })
       return () => { active = false }
     }, [sessionId, cardId, statusAttempt])
@@ -506,6 +517,31 @@ export function registerOnboardingChat(ctx, {
       if (card.maintenance) return
       if (card.kind === 'mode') void openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
       await sendReply(replyFor(card, input, result))
+    }
+
+    async function reopenProfileCard() {
+      if (submitting.current) return
+      submitting.current = true
+      setError('')
+      setSaving(true)
+      try {
+        const result = await onboardingRequest(sessionId, 'reopen-profile-card', { cardId })
+        const fresh = validCard(result.card)
+        if (result.cardState !== 'active' || !fresh || fresh.draftId !== draftId ||
+          fresh.maintenance?.field !== card.maintenance.field || fresh.id === cardId)
+          throw Error('未能打开本次更正表单，请重试。')
+        setReopenedCard(fresh)
+        setValues({})
+        setReviewed({})
+        setServerIssue(null)
+        setObsolete(false)
+        applyStatus(result)
+      } catch (error) {
+        setError(shownError(error, '更正表单暂时无法打开，请重试。'))
+      } finally {
+        submitting.current = false
+        setSaving(false)
+      }
     }
 
     async function submit(input) {
@@ -645,13 +681,16 @@ export function registerOnboardingChat(ctx, {
       body = [
         jsx('p', { role: 'status', style: { ...secondary, margin: '7px 0 0' },
           children: receipt.notice ?? (mode ? '已选择' + mode : choice ?? (labels.length ? '已保存 ' + labels.join('、') : '资料已保存。')) }),
+        card.maintenance ? jsx('div', { style: actions, children: button('再次更正', () => void reopenProfileCard(), saving) }) : null,
         pendingReply ? jsx('div', { style: actions, children: button('重试发送到对话', () => void sendReply(pendingReply), saving) }) : null,
       ]
     } else if (status?.stale || obsolete) {
       body = [
-        jsx('p', { style: { ...secondary, margin: '7px 0 0' }, children: card.maintenance
-          ? '企业档案已更新。要改这一项，请在对话中重新提出。' : '建档资料已更新，可以按最新进度继续。' }),
-        card.maintenance ? null : jsx('div', { style: actions, children: button('继续建档', () => void sendReply('请按最新资料继续建档。'), saving) }),
+        jsx('p', { role: 'status', style: { ...secondary, margin: '7px 0 0' }, children: card.maintenance
+          ? '这张更正卡已失效，可以按最新资料重新打开。' : '建档资料已更新，可以按最新进度继续。' }),
+        jsx('div', { style: actions, children: card.maintenance
+          ? button('重新打开更正', () => void reopenProfileCard(), saving)
+          : button('继续建档', () => void sendReply('请按最新资料继续建档。'), saving) }),
       ]
     } else if (!status) {
       body = error ? jsx('div', { style: actions, children: button('重试加载', () => {
