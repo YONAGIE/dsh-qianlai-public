@@ -148,6 +148,73 @@ describe('company onboarding RPC', () => {
     expect(card()).toMatchObject({ title: '确认实际经营' })
   })
 
+  it('keeps the original tax form editable for only the actual blocker and continues after one corrected selection', async () => {
+    const { request, card, submit, store } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    const company = { companyName: '合成状态企业', taxId: '000000000000000033', establishedOn: '2024-01-01' }
+    await submit(card(), { values: company })
+    const tax = card()
+    const paused = await submit(tax, { values: { ...taxDetails, taxStatus: '停业' } })
+    expect(paused).toMatchObject({
+      accepted: true, incomplete: true, view: { step: 1, enterprise: { ...company, ...taxDetails, taxStatus: '停业' } },
+      card: { id: tax.id, revision: tax.revision + 1, kind: 'fields', title: '更正纳税人状态',
+        correction: true, recheck: true, initialValues: { taxStatus: '停业' }, message: expect.stringContaining('停业') },
+    })
+    expect(paused).not.toHaveProperty('receipt')
+    expect(paused.card.fields.map(({ key }: { key: string }) => key)).toEqual(['taxStatus', 'taxStatusOther'])
+    expect(paused.card.fields[0].options.map(({ value }: { value: string }) => value))
+      .toEqual(['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'])
+    expect(card('correct', ['taxStatus'], { taxStatus: '正常' })).toEqual(paused.card)
+    await expect(submit(paused.card, { values: { taxStatus: '其他' } }))
+      .resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID', message: expect.stringContaining('具体纳税人状态') })
+    await expect(submit(paused.card, { values: { taxStatus: '正常', taxAuthority: '越界改动' } }))
+      .resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    const stillPaused = await submit(paused.card, { values: { taxStatus: '注销' } })
+    expect(stillPaused).toMatchObject({
+      accepted: true, incomplete: true,
+      card: { id: tax.id, initialValues: { taxStatus: '注销' }, message: expect.stringContaining('注销') },
+    })
+    expect(stillPaused).not.toHaveProperty('receipt')
+    await expect(submit(paused.card, { values: { taxStatus: '正常' } })).resolves.toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    await expect(request('card-status', { cardId: tax.id })).resolves.toMatchObject({ card: stillPaused.card })
+    expect(store.company()).toBeUndefined()
+    await expect(submit(stillPaused.card, { values: { taxStatus: '正常' } })).resolves.toMatchObject({
+      accepted: true, receipt: { labels: ['纳税人状态'] }, view: { enterprise: { ...company, ...taxDetails } },
+    })
+    expect(card()).toMatchObject({ kind: 'fields', title: '确认实际经营', fields: [expect.objectContaining({ key: 'business' })] })
+  })
+
+  it('restores a focused card from the old broad recheck and handles one blocker at a time', async () => {
+    const { request, card, submit, store } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { values: { companyName: '合成多卡点企业', taxId: '000000000000000044', establishedOn: '2024-01-01' } })
+    const tax = card()
+    const paused = await submit(tax, { values: { ...taxDetails, taxStatus: '停业', taxpayerIdentity: 'general' } })
+    const record = store.companyOnboarding()!
+    record.cards!.at(-1)!.card = {
+      id: tax.id, draftId: tax.draftId, revision: paused.card.revision,
+      kind: 'blocked', message: '旧版要求重新核对企业情况。',
+    }
+    store.saveCompanyOnboarding(record)
+    const focused = card()
+    expect(focused.id).not.toBe(tax.id)
+    expect(focused).toMatchObject({ kind: 'fields', recheck: true, fields: [
+      expect.objectContaining({ key: 'taxStatus' }), expect.objectContaining({ key: 'taxStatusOther' }),
+    ] })
+    await expect(request('card-status', { cardId: tax.id })).resolves.toMatchObject({ stale: true })
+    await submit(focused, { values: { taxStatus: '正常' } })
+    const identity = card()
+    expect(identity).toMatchObject({ kind: 'fields', recheck: true, fields: [expect.objectContaining({ key: 'taxpayerIdentity' })] })
+    await submit(identity, { values: { taxpayerIdentity: 'small-scale' } })
+    const business = card()
+    const unsupportedBusiness = await submit(business, { values: { business: ['cross-border'] } })
+    expect(unsupportedBusiness).toMatchObject({ incomplete: true,
+      card: { id: business.id, recheck: true, fields: [expect.objectContaining({ key: 'business' })] } })
+    await submit(unsupportedBusiness.card, { values: { business: ['none'] } })
+    expect(card()).toMatchObject({ title: '确认账户情况' })
+    expect(store.company()).toBeUndefined()
+  })
+
   it('previews an upload on the same card, then saves only confirmed fields', async () => {
     const prepareCall = vi.fn(async () => ({
       config: {}, inputModalities: ['text', 'image'],
@@ -275,6 +342,29 @@ describe('company onboarding RPC', () => {
     expect(onboarding.isTaxScanCurrent('test-zhangjie', scan.draftId, scan.id)).toBe(false)
     expect(card('fill', undefined, { province: '上海市', city: '上海市' })).toMatchObject({ kind: 'region', message: expect.stringContaining('暂未接入') })
     await expect(request('status')).resolves.toMatchObject({ mode: 'scan' })
+  })
+
+  it('keeps an unsupported status read from the official portal locked', async () => {
+    const { request, card, submit, onboarding, store } = setup()
+    await submit(card('start'), { mode: 'scan' })
+    const scan = card('fill', undefined, { province: '北京市', city: '北京市' })
+    expect(onboarding.applyTaxProfile(scan.draftId, '北京市', '北京市', {
+      companyName: '合成官方状态企业', taxId: '000000000000000051', establishedOn: '2024-01-01',
+      taxpayerQualification: '小规模纳税人', taxpayerStatus: '停业', authority: '合成主管机关',
+      incomeMethod: '查账征收', accountingSystem: '小企业会计准则', obligations: [], obligationCoverage: 'visible_page',
+      observedAt: '2026-11-18T00:00:00.000Z', sourceUrl: 'https://example.invalid/synthetic',
+    }, scan.id, 'test-zhangjie')).toMatchObject({ accepted: true })
+    await request('card-status', { cardId: scan.id })
+    const blocked = card()
+    expect(blocked).toMatchObject({ kind: 'blocked', locked: true, message: expect.stringContaining('这项来自电子税务局') })
+    expect(onboarding.guide('test-zhangjie', 'correct', ['taxStatus'], { taxStatus: '正常' }))
+      .toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    await expect(submit(blocked, { choice: 'edit' })).resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    await expect(request('edit-section', {
+      draftId: blocked.draftId, revision: blocked.revision, section: 'tax', input: { taxStatus: '正常' },
+    })).resolves.toMatchObject({ accepted: false, code: 'DRAFT_INPUT_INVALID' })
+    await expect(request('status')).resolves.toMatchObject({ enterprise: { taxStatus: '停业' }, completed: false })
+    expect(store.company()).toBeUndefined()
   })
 
   it('keeps chat attachment extraction and typed details pending until card confirmation', async () => {

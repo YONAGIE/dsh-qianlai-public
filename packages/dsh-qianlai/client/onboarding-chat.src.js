@@ -235,6 +235,7 @@ export function registerOnboardingChat(ctx, {
       case 'blocked':
         return '我想重新核对企业情况。'
       default: {
+        if (card.recheck) return '我已核对并保存' + card.fields[0].label + '，请继续建档。'
         if (card.correction) return '我已核对并保存更正，请继续建档。'
         const labels = card.fields.filter(field => Object.hasOwn(input.values ?? {}, field.key) &&
           input.values[field.key]?.length).map(field => field.label)
@@ -708,7 +709,7 @@ export function registerOnboardingChat(ctx, {
         onConfirm: async () => finishCard(await onboardingRequest(sessionId, 'card-status', { cardId })),
       })
     } else if (card.kind === 'blocked') {
-      body = jsx('div', { style: actions, children: button('重新核对资料', () => void submit({ choice: 'edit' }), saving) })
+      body = card.locked ? null : jsx('div', { style: actions, children: button('重新核对资料', () => void submit({ choice: 'edit' }), saving) })
     } else if (card.kind === 'confirm') {
       const replacesSample = card.replacesSampleBook ?? status.view?.replacesSampleBook
       body = [
@@ -761,7 +762,13 @@ export function registerOnboardingChat(ctx, {
       } : {}),
       children: [
         jsx('h3', { style: receipt ? { ...cardHeading, ...secondary } : cardHeading, children: title }),
-        card.message ? jsx('p', { style: secondary, children: card.message }) : null, body,
+        card.message ? jsx('p', {
+          role: card.recheck || card.locked ? 'status' : undefined,
+          style: card.recheck || card.locked
+            ? { ...secondary, margin: '10px 0 0', padding: '8px 10px', borderRadius: 8, background: tintedSurface }
+            : secondary,
+          children: card.message,
+        }) : null, body,
         error ? jsx('p', { role: 'alert', style: { ...secondary, margin: '12px 0 0', padding: '8px 10px',
           borderInlineStart: '2px solid currentColor', color: 'var(--dsw-alias-label-danger, #ad3939)',
           background: 'color-mix(in srgb, var(--dsw-alias-label-danger, #ad3939) 6%, transparent)' }, children: error }) : null,

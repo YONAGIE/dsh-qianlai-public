@@ -24,6 +24,8 @@
 
 - Show company setup validation beside the affected field. Catch malformed bank details before submission and keep edited values available for correction.
 
+- Keep an eligibility blocker in the current setup card. Focus on its single editable field, apply one confirmed correction, and preserve status reported by the official tax portal.
+
 - Keep an incomplete document on the current card after a partial save. Open a focused correction form for the requested field and resume from the updated draft after saving.
 
 - Cancel obsolete tax scans when switching setup methods. Verify the selected enterprise, source page and current draft before applying reviewed tax details.
