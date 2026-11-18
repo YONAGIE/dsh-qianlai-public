@@ -120,15 +120,21 @@ window.__ModuleLoader__.load({
       gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, max(11rem, 45%)), 1fr))',
     }
     const muted = 'var(--dsw-alias-label-secondary, #616b65)'
-    const readoutBorder = '1px solid color-mix(in srgb, currentColor 16%, transparent)'
+    const readoutBorder = '1px solid color-mix(in srgb, currentColor 14%, transparent)'
+    const panelAccent = 'var(--dsw-static-deepseek-600, #1b6f4a)'
+    const panelSectionStyle = {
+      border: readoutBorder, borderRadius: 12, margin: '0 0 12px', padding: '14px clamp(10px, 4%, 18px)', minWidth: 0,
+      background: 'color-mix(in srgb, ' + panelAccent + ' 2%, var(--dsw-alias-fill-primary, transparent))',
+    }
+    const panelSectionHeading = { margin: '0 0 12px', fontSize: 14, fontWeight: 680 }
     const panelAction = {
-      background: 'transparent', color: 'inherit', border: readoutBorder, borderRadius: 8,
-      minHeight: 34, padding: '5px 12px', font: 'inherit', cursor: 'pointer',
+      background: 'var(--dsw-alias-fill-primary, transparent)', color: 'inherit', border: readoutBorder, borderRadius: 9,
+      minHeight: 36, padding: '6px 12px', font: 'inherit', fontWeight: 520, cursor: 'pointer',
     }
     const panelInput = {
       background: 'var(--dsw-alias-fill-primary, transparent)', color: 'inherit', border: readoutBorder,
-      borderRadius: 8, width: '100%', boxSizing: 'border-box', minWidth: 0, minHeight: 36,
-      padding: '5px 8px', font: 'inherit',
+      borderRadius: 9, width: '100%', boxSizing: 'border-box', minWidth: 0, minHeight: 38,
+      padding: '6px 10px', font: 'inherit',
     }
     const sectionLabels = {
       company: '公司资料', tax: '税务资料', bank: '银行账户', accounting: '记账准备', payroll: '工资社保',
@@ -230,8 +236,8 @@ window.__ModuleLoader__.load({
     }
 
     function readoutGroup(title, rows) {
-      return jsx('section', { style: { borderTop: readoutBorder, padding: '12px 0' }, children: [
-        jsx('h3', { style: { margin: '0 0 8px', fontSize: 14, fontWeight: 650 }, children: title }),
+      return jsx('section', { style: panelSectionStyle, children: [
+        jsx('h3', { style: panelSectionHeading, children: title }),
         jsx('dl', { style: readoutGrid, children: rows }),
       ] })
     }
@@ -417,10 +423,10 @@ window.__ModuleLoader__.load({
           break
       }
       return jsx('form', {
-        'aria-label': title, style: { borderTop: readoutBorder, padding: '12px 0' },
+        'aria-label': title, style: panelSectionStyle,
         onSubmit: event => { event.preventDefault(); void save() },
         children: [
-          jsx('h3', { style: { margin: '0 0 12px', fontSize: 14, fontWeight: 650 }, children: title }),
+          jsx('h3', { style: panelSectionHeading, children: title }),
           jsx('div', { style: { ...readoutGrid, gap: '12px 16px' }, children: fields }),
           error ? jsx('p', { role: 'alert', style: { margin: '10px 0 0', color: 'var(--dsw-alias-label-danger, #ad3939)' }, children: error }) : null,
           notice ? jsx('p', { role: 'status', style: { color: muted, margin: '10px 0 0' }, children: notice }) : null,
@@ -516,13 +522,17 @@ window.__ModuleLoader__.load({
       }, [sessionId])
       const profile = !preview?.draftId || preview.draftId === view?.draftId ? preview?.profile : undefined
       return jsx('section', { 'aria-label': '建档资料', 'data-qianlai-onboarding': true, style: {
-        height: '100%', minHeight: 0, overflowY: 'auto', padding: '16px 20px',
+        height: '100%', minHeight: 0, overflowY: 'auto', padding: '16px clamp(10px, 3.5%, 22px)',
         boxSizing: 'border-box', color: 'var(--dsw-alias-label-primary, #26372f)', fontSize: 14,
       }, children: [
-        jsx('h2', { style: { margin: '0 0 6px', fontSize: 18, fontWeight: 650 }, children: '建档资料' }),
-        jsx('p', { role: 'status', style: { margin: '0 0 12px', color: muted },
-          children: view?.completed ? '建档完成' : view ? view.step + '/4 · ' + steps[view.step - 1] : message || '正在读取建档进度…',
-        }),
+        jsx('header', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between',
+          gap: '6px 12px', padding: '0 2px 12px', marginBottom: 12, borderBottom: readoutBorder }, children: [
+          jsx('h2', { style: { margin: 0, fontSize: 18, fontWeight: 680 }, children: '建档资料' }),
+          jsx('p', { role: 'status', style: { margin: 0, color: muted, fontSize: 12, lineHeight: 1.6,
+            padding: '3px 8px', borderRadius: 8, background: 'color-mix(in srgb, ' + panelAccent + ' 7%, transparent)' },
+            children: view?.completed ? '建档完成' : view ? view.step + '/4 · ' + steps[view.step - 1] : message || '正在读取建档进度…',
+          }),
+        ] }),
         view?.handoffWarning ? jsx('p', { children: view.handoffWarning }) : null,
         view ? jsx(OnboardingReadout, { sessionId, view, profile }) : null,
       ] })
