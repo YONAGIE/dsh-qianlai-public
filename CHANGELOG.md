@@ -4,7 +4,7 @@
 
 - Introduce Zhangjie when first-time users greet her and let them choose tax QR login or manual company setup in chat.
 
-- Start new data directories with an empty book. Present first greetings as an introduction, a short list of capabilities, and the next action. Use the current onboarding card and its status to guide each step.
+- Start new data directories with an empty book. Present first greetings as an introduction, a short list of capabilities, and the next action. Use the current onboarding card and its status to guide each step. Place the current setup card after the reply text and wait for a clarification answer before offering a later action.
 
 - Continue company setup in a new reply after each chat card submission. Show the method picker at the start and accept later switches by chat while preserving the draft. Open the official QR page automatically after confirming a supported region.
 

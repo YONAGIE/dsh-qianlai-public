@@ -6,12 +6,14 @@ const sessionId = 'synthetic-zhangjie'
 const cardId = 'e8e802ae-6616-45b5-98b4-1b487cc03c11'
 const draftId = '9a78707f-f585-4aa9-b379-fd86b308c011'
 const toolId = 'synthetic-call'
+const toolCall = { type: 'tool/call', data: { turn: 1, name: 'moneycome_onboarding', callId: toolId } }
+const completedTurn = { type: 'turn/end', seq: 20, data: { turn: 1, reason: { kind: 'completed' } } }
 const baseCard = { id: cardId, draftId, revision: 5 }
 
 function resultFor(card) {
   return {
-    seq: 12, surfaceOp: 'append',
-    data: { message: { source: { kind: 'tool', callId: toolId }, content: [
+    type: 'tool/result', seq: 12, surfaceOp: 'append',
+    data: { turn: 1, message: { source: { kind: 'tool', callId: toolId }, content: [
       { type: 'text', text: JSON.stringify({ accepted: true, card }) },
     ] } },
   }
@@ -68,9 +70,12 @@ function client(onboardingRequest, preset = 'moneycome-zhangjie', extras = {}) {
     return { ...tree, props: { ...tree.props, children: resolve(tree.props.children, path, mounted) } }
   }
   const render = card => {
-    const event = resultFor(card)
-    const state = definition.update({ state: null }, { event })
-    const node = definition.buildViewNode({ id: toolId, key: toolId, state, start: { location: {} } })
+    const start = { location: { kind: 'turn', turn: 1 } }
+    const state = [toolCall, resultFor(card), completedTurn].reduce(
+      (current, event) => definition.update({ state: current }, { event }),
+      definition.start({}, start),
+    )
+    const node = definition.buildViewNode({ id: '1', key: '1', state, start })
     const widget = node && renderNode({ node, sessionId })
     const mounted = new Set()
     const rendered = resolve(widget, 'root', mounted)
@@ -126,10 +131,10 @@ describe('建档对话卡', () => {
     const request = vi.fn(async () => ({ accepted: true, view }))
     const active = client(request)
     const card = { ...baseCard, kind: 'fields', fields: [] }
-    expect(active.definition.match['tool/call']({ data: { name: 'unrelated', callId: toolId } })).toBeNull()
-    expect(active.definition.match['tool/call']({ data: { name: 'moneycome_onboarding', callId: toolId } })).toEqual({ id: toolId, role: 'start' })
-    expect(active.definition.match['tool/result'](resultFor({ ...card, draftId: 'forged' }))).toBeNull()
-    expect(active.definition.match['tool/result'](resultFor(card))).toEqual({ id: toolId, role: 'update' })
+    expect(active.definition.match['tool/call']({ data: { ...toolCall.data, name: 'unrelated' } })).toBeNull()
+    expect(active.definition.match['tool/call'](toolCall)).toEqual({ id: '1', role: 'update' })
+    expect(active.definition.match['tool/result'](resultFor(card))).toEqual({ id: '1', role: 'update' })
+    expect(active.render({ ...card, draftId: 'forged' })).toBeNull()
     expect(client(request, 'default').render(card)).toBeNull()
 
     find(active.render(card), named('打开建档表单')).props.onClick()
