@@ -86,6 +86,21 @@ export function registerOnboardingChat(ctx, {
     }
   }
 
+  function questionFallbackCard(event) {
+    const message = event.data?.message
+    const prefix = 'Error: 请用下方钱来建档表单完成当前步骤。当前建档卡：'
+    if (event.surfaceOp !== 'append' || message?.source?.kind !== 'tool' || !message.isError ||
+      !Array.isArray(message.content) || message.content.length !== 1) return undefined
+    const [part] = message.content
+    if (part?.type !== 'text' || typeof part.text !== 'string' ||
+      part.text.length > 65536 || !part.text.startsWith(prefix)) return undefined
+    try {
+      return validCard(JSON.parse(part.text.slice(prefix.length)))
+    } catch {
+      return undefined
+    }
+  }
+
   function turnMatch(event, role = 'update') {
     return Number.isSafeInteger(event.data?.turn) ? { id: String(event.data.turn), role } : null
   }
@@ -120,6 +135,8 @@ export function registerOnboardingChat(ctx, {
         }
         const callId = event.data.message.source.callId
         if (callId === state.question) {
+          const fallback = questionFallbackCard(event)
+          if (fallback) return { ...state, card: fallback, question: undefined }
           const result = toolResult(event)
           const answered = !result?.pending && Array.isArray(result?.answers) && result.answers.some(answer =>
             (Array.isArray(answer?.selected) && answer.selected.some(label => typeof label === 'string' && label.trim())) ||
@@ -129,7 +146,7 @@ export function registerOnboardingChat(ctx, {
         }
         if (!state.calls.includes(callId)) return state
         const result = toolResult(event)
-        return { ...state, card: result?.accepted === true ? validCard(result.card) : undefined }
+        return { ...state, card: validCard(result?.card) }
       },
       publication: ({ event }) => event.type === 'turn/end' ? 'immediate' : 'none',
       buildViewNode: ({ key, id, state, start }) => state?.anchorSeq !== undefined ? {
@@ -455,7 +472,8 @@ export function registerOnboardingChat(ctx, {
         await finishCard(result, payload)
       } catch (error) {
         setError(shownError(error, '建档资料暂时无法保存，请重试。'))
-        if (error?.code === 'DRAFT_STALE') setStatusAttempt(attempt => attempt + 1)
+        if (['DRAFT_STALE', 'CARD_UNAVAILABLE', 'ONBOARDING_CHANGED'].includes(error?.code))
+          setStatusAttempt(attempt => attempt + 1)
       } finally {
         submitting.current = false
         setSaving(false)
