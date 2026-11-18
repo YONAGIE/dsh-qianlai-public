@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 
 import { checkArgs } from './args.js'
 import { readBalances } from './balances.js'
-import { bookStatus, openBook, setCompanyFacts, setOpeningBalances, type OpeningBalanceInput } from './book.js'
+import { bookStatus, openBook, prepareOpeningBalances, setCompanyFacts, setOpeningBalances, type OpeningBalanceInput } from './book.js'
 import { closePeriod, closingCheck } from './closing.js'
 import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus, type OnboardingGuideAction } from './company-onboarding.js'
 import { quarterFilingPrep, upcomingDeadlines } from './deadlines.js'
@@ -203,23 +203,44 @@ export function apply(ctx: Context, config: Config = {}): void {
                 const preview = name === 'moneycome_record_entry'
                   ? recordEntry(store, pack, { ...args, preview: true } as unknown as RecordEntryInput, new Date()) : undefined
                 if (preview && !preview.accepted) return preview
+                const openingPreview = name === 'moneycome_set_opening_balances'
+                  ? prepareOpeningBalances(store, pack, args.balances as OpeningBalanceInput[]) : undefined
+                if (openingPreview && !openingPreview.accepted) return openingPreview
                 const book = store.company()?.name ?? '未开账'
                 const line = (value: unknown) => String(value ?? '').replace(/[\s\u202a-\u202e\u2066-\u2069]+/g, ' ').trim()
-                const reason = preview
-                  ? [
-                      `账本：${line(book)}`,
-                      '操作：正式记账',
-                      `日期：${line(args.date)}`,
-                      `摘要：${line(args.summary)}`,
-                      '',
-                      '本次分录',
-                      ...preview.legs.map(leg => `${leg.side}\u3000${line(leg.subjectName)}（${leg.subjectCode}）\u3000${leg.amount} 元`),
-                      ...(args.invoiceNumber ? [`发票号码：${line(args.invoiceNumber)}`] : []),
-                      ...(Array.isArray(args.statementLineIds) && args.statementLineIds.length ? [`关联流水：${args.statementLineIds.length} 笔`] : []),
-                      '',
-                      '允许一次后将正式生成凭证。拒绝或取消时，本次操作不入账。',
-                    ].join('\n')
-                  : `账本：${book}\n操作：${name}\n参数：${canonical(args)}\n只批准本次操作；拒绝或取消不会执行。`
+                let reason: string
+                if (preview) {
+                  reason = [
+                    `账本：${line(book)}`,
+                    '操作：正式记账',
+                    `日期：${line(args.date)}`,
+                    `摘要：${line(args.summary)}`,
+                    '',
+                    '本次分录',
+                    ...preview.legs.map(leg => `${leg.side}\u3000${line(leg.subjectName)}（${leg.subjectCode}）\u3000${leg.amount} 元`),
+                    ...(args.invoiceNumber ? [`发票号码：${line(args.invoiceNumber)}`] : []),
+                    ...(Array.isArray(args.statementLineIds) && args.statementLineIds.length ? [`关联流水：${args.statementLineIds.length} 笔`] : []),
+                    '',
+                    '允许一次后将正式生成凭证。拒绝或取消时，本次操作不入账。',
+                  ].join('\n')
+                } else if (openingPreview) {
+                  const { accountingStartMonth, balances, debitTotal, creditTotal } = openingPreview.summary
+                  const [year, month] = accountingStartMonth.split('-')
+                  reason = [
+                    '录入期初余额。',
+                    `账本为「${line(openingPreview.companyName)}」。`,
+                    `起账月份为 ${year} 年 ${Number(month)} 月。`,
+                    ...(balances.length ? [
+                      ...balances.map(item => `${line(item.subjectName)}（${item.subjectCode}）${item.side}方余额为 ${item.balance} 元。`),
+                      `借方合计 ${debitTotal} 元，贷方合计 ${creditTotal} 元。其余科目按 0 元录入。`,
+                    ] : ['各科目的期初余额按 0 元录入。']),
+                    openingPreview.replacesExisting
+                      ? '选择「允许一次」后，本次结果将整体替换已录入的期初余额。'
+                      : '选择「允许一次」后，将上述期初余额保存到账本。',
+                  ].join('\n')
+                } else {
+                  reason = `账本：${book}\n操作：${name}\n参数：${canonical(args)}\n只批准本次操作；拒绝或取消不会执行。`
+                }
                 const outcome = await approval.request({ agent, toolName: name, callId: exec.callId, reason, signal: exec.signal })
                 if (disposed || exec.signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，没有改动账本。')
                 if (outcome !== 'allowed-once') return refuse('APPROVAL_REQUIRED', '本次账务操作未获得宿主批准，没有改动账本。', { outcome })

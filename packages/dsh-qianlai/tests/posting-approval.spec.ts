@@ -26,6 +26,10 @@ const fullAccess = {
   current: () => 'danger-full-access',
   resolve: () => ({ sandbox: 'danger-full-access', approval: 'never' }),
 }
+const openingEntries = [
+  { subjectCode: '1002', side: 'debit', amount: '3100.50' },
+  { subjectCode: '4001', side: 'credit', amount: '3100.50' },
+]
 function fixture(
   decide: (request: unknown) => Promise<string> = async () => 'allowed-once',
   existingPath?: string,
@@ -215,5 +219,58 @@ describe('记账的可信批准与调用重试', () => {
     }
     expect(await test.tools.get(`moneycome_${name}`)!.execute(args[name]!)).toMatchObject({ accepted: false, code: 'APPROVAL_UNAVAILABLE' })
     expect(test.count()).toBe(0)
+  })
+})
+
+describe('期初余额的审批内容', () => {
+  it('零余额审批展示真实起账月份，拒绝后仍未录入', async () => {
+    const test = fixture(async () => 'rejected')
+    const call = test.tools.get('moneycome_set_opening_balances')!
+    expect(await call.execute({ balances: [] }, execution())).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    const { reason } = test.request.mock.calls[0]![0] as { reason: string }
+    expect(reason).toBe(
+      '录入期初余额。\n账本为「合成批准企业」。\n起账月份为 2026 年 1 月。\n' +
+      '各科目的期初余额按 0 元录入。\n选择「允许一次」后，将上述期初余额保存到账本。',
+    )
+    expect(await test.tools.get('moneycome_book_status')!.execute({})).toMatchObject({ openingBalancesEntered: false })
+  })
+
+  it('展示经校验的非零余额，已录期初会明示整体替换', async () => {
+    let decision = 'allowed-once'
+    const test = fixture(async () => decision)
+    const call = test.tools.get('moneycome_set_opening_balances')!
+    const recorded = await call.execute({ balances: openingEntries }, execution())
+    expect(recorded).toMatchObject({ accepted: true, accountingStartMonth: '2026-01', debitTotal: '3100.50', creditTotal: '3100.50' })
+    const { reason: firstReason } = test.request.mock.calls[0]![0] as { reason: string }
+    expect(firstReason).toContain('银行存款（1002）借方余额为 3100.50 元。')
+    expect(firstReason).toContain('实收资本（4001）贷方余额为 3100.50 元。')
+    expect(firstReason).toContain('借方合计 3100.50 元，贷方合计 3100.50 元。')
+    decision = 'rejected'
+    expect(await call.execute({ balances: [] }, execution())).toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    const { reason: replacementReason } = test.request.mock.calls[1]![0] as { reason: string }
+    expect(replacementReason).toContain('各科目的期初余额按 0 元录入。')
+    expect(replacementReason).toContain('整体替换已录入的期初余额')
+    const saved = new BookStore(test.bookPath)
+    try {
+      expect(saved.openingBalances().map(row => row.netDebitCents)).toEqual([310050n, -310050n])
+    } finally {
+      saved.close()
+    }
+  })
+
+  it('不平衡的期初余额和已结账的起账月都不会发起批准', async () => {
+    const test = fixture()
+    const call = test.tools.get('moneycome_set_opening_balances')!
+    expect(await call.execute({ balances: openingEntries.slice(0, 1) }, execution()))
+      .toMatchObject({ code: 'OPENING_UNBALANCED' })
+    const store = new BookStore(test.bookPath)
+    try {
+      store.lockPeriod('2026-01', new Date('2026-02-01T00:00:00Z'))
+    } finally {
+      store.close()
+    }
+    expect(await call.execute({ balances: [] }, execution())).toMatchObject({ code: 'PERIOD_LOCKED' })
+    expect(test.request).not.toHaveBeenCalled()
+    expect(await test.tools.get('moneycome_book_status')!.execute({})).toMatchObject({ openingBalancesEntered: false })
   })
 })

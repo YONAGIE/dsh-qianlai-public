@@ -22,7 +22,7 @@
 - Open the official Beijing or Zhejiang tax QR page as soon as the user confirms the region in chat. Detect enterprise login and read the visible tax details automatically after the user selects the company. Preview the results before saving them. Use an isolated Playwright browser and install Chromium on demand when Edge and Chrome are unavailable. Real enterprise account validation is pending.
 - Disconnect WeChat from the connection dialog and scan a new code when reconnecting. Keep the original owner and conversation available after restart.
 - Use the current business date for missing bank statement reminders during an open month. Check complete coverage when closing that month.
-- Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post.
+- Show the ledger, date, summary and debit and credit lines in the native posting approval. The card says what approving will post. Summarize the actual opening month and balances in the confirmation for entering opening balances.
 - Provide the first WeChat reply with the fixed welcome's send status and text when available so it can continue the conversation.
 
 - Show the current WeChat connection state in the Zhangjie header, mark sustained long-poll failures as reconnecting, and restore the connected state when polling recovers.
