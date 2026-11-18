@@ -127,6 +127,51 @@ const companyUpload = next(3, { kind: 'upload', documentKind: 'license' })
 const recognizedView = { revision: 9, enterprise: { companyName: '示例服务有限公司', taxId: '111111111111111111' } }
 
 describe('建档对话卡', () => {
+  it('keeps a tax status blocker on the same card and sends one receipt after saving the correction', async () => {
+    const original = { ...baseCard, kind: 'document', documentKind: 'tax', fields: taxFields,
+      initialValues: { taxpayerIdentity: 'small-scale', taxStatus: '停业', taxAuthority: '合成税务机关',
+        incomeMethod: '查账征收', accountingSystem: '小企业会计准则' } }
+    const recheck = { ...baseCard, revision: baseCard.revision + 1, kind: 'fields', correction: true, recheck: true,
+      title: '更正纳税人状态', fields: taxFields.filter(field => field.key === 'taxStatus' || field.requiredWhen === 'taxStatus'),
+      message: '草稿中的纳税人状态为停业，当前无法继续建档。', initialValues: { taxStatus: '停业' } }
+    const request = vi.fn(async (_session, action, { revision }) => {
+      if (action === 'card-status') return { accepted: true, card: original }
+      if (revision === original.revision) return { accepted: true, card: recheck, incomplete: true }
+      return { accepted: true, receipt: { labels: ['纳税人状态'] }, view: { revision: recheck.revision + 1 } }
+    })
+    const active = client(request)
+    active.render(original)
+    await settle()
+    const submit = () => find(active.render(original), node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+    submit()
+    await settle()
+    const tree = active.render(original)
+    const status = find(tree, node => node.props.name === 'taxStatus')
+    expect(section(tree, original)?.props['aria-label']).toBe('更正纳税人状态')
+    expect(find(tree, info)?.props.children).toBe(recheck.message)
+    expect(find(tree, node => node.props.name === 'taxAuthority')).toBeUndefined()
+    expect(status.props.value).toBe('停业')
+    expect(status.props.children.flat().map(child => child.props.value).filter(Boolean))
+      .toEqual(['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'])
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
+    status.props.onChange({ target: { value: '正常' } })
+    submit()
+    await settle()
+    expect(request).toHaveBeenLastCalledWith(sessionId, 'submit-card',
+      expect.objectContaining({ cardId, revision: recheck.revision, values: { taxStatus: '正常' } }))
+    expect(active.sendOnboardingReply).toHaveBeenCalledExactlyOnceWith(sessionId, '我已核对并保存纳税人状态，请继续建档。')
+  })
+
+  it('keeps an official blocker visible without offering to change it', async () => {
+    const card = { ...baseCard, kind: 'blocked', locked: true, message: '税务机关资料显示该企业处于停业状态。' }
+    const active = client(vi.fn(async () => ({ accepted: true, card })))
+    active.render(card)
+    await settle()
+    const tree = active.render(card)
+    expect(find(tree, info)?.props.children).toBe(card.message)
+    expect(find(tree, named('重新核对资料'))).toBeUndefined()
+  })
+
   it('keeps the four business options compatible with one another and exclusive of "none"', async () => {
     const card = { ...baseCard, kind: 'fields', title: '确认实际经营',
       fields: onboardingFields[1].filter(field => field.key === 'business') }
