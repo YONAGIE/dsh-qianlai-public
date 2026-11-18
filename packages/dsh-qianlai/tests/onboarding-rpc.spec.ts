@@ -295,7 +295,8 @@ describe('company onboarding RPC', () => {
     await send({ values: { taxpayerIdentity: 'small-scale' } })
     await send({ values: { business: ['none'] } })
     await send({ values: { bankStatus: 'none' } })
-    await send({ values: { history: 'new', startMonth: '2026-11' } })
+    await send({ values: { history: 'new' } })
+    await send({ values: { startMonth: '2026-11' } })
     await send({ values: { payroll: 'none', social: 'none' } })
     expect(active).toMatchObject({ kind: 'confirm', replacesSampleBook: false })
     expect(store.company()).toBeUndefined()
@@ -351,6 +352,31 @@ describe('company onboarding RPC', () => {
     expect(onboarding.guide('test-zhangjie', 'continue')).toMatchObject({
       draftSummary: { enterprise: { companyName: '合成侧栏更正企业' } }, card: { title: '确认记账准备' },
     })
+  })
+
+  it('选择有旧账后给两个月份控件，账期重叠时保留原值供更正', async () => {
+    const { card, submit } = setup()
+    await submit(card('start'), { mode: 'manual' })
+    await submit(card(), { values: { companyName: '合成月份资料企业', taxId: '000000000000000091', establishedOn: '2026-01-01' } })
+    await submit(card(), { values: { taxpayerIdentity: 'small-scale' } })
+    await submit(card(), { values: { business: ['none'] } })
+    await submit(card(), { values: { bankStatus: 'none' } })
+
+    const history = card()
+    expect(history).toMatchObject({ fields: [{ key: 'history', type: 'select' }] })
+    await submit(history, { values: { history: 'previous' } })
+    expect(card()).toMatchObject({ fields: [
+      { key: 'lastMonth', type: 'month' }, { key: 'startMonth', type: 'month' },
+    ] })
+    await submit(card(), { values: { lastMonth: '2026-02', startMonth: '2026-02' } })
+    expect(card()).toMatchObject({
+      initialValues: { history: 'previous', lastMonth: '2026-02', startMonth: '2026-02' },
+      message: expect.stringContaining('旧账已做到 2026-02'),
+    })
+    const correct = card('correct', ['startMonth'], { startMonth: '2026-03' })
+    expect(correct).toMatchObject({ fields: [{ key: 'startMonth', type: 'month' }], initialValues: { startMonth: '2026-03' } })
+    await submit(correct, { values: { startMonth: '2026-03' } })
+    expect(card()).toMatchObject({ title: '确认工资社保' })
   })
 
   it('rejects a card issued before a newer draft revision', async () => {

@@ -81,7 +81,7 @@ interface Context {
   on?(event: 'session/event', listener: (session: PdfReferenceSession, event: PdfReferenceEvent) => void): () => void
   tools: {
     register(tool: ToolDefinition): () => void
-    guard?(check: (execution: { name: string; arguments?: { questions?: unknown } }) => string | undefined): () => void
+    guard?(check: (execution: { name: string; agent?: Execution['agent']; arguments?: { questions?: unknown } }) => string | undefined): () => void
   }
   get?(name: string): unknown
 }
@@ -107,6 +107,7 @@ export function defaultBookPath(): string {
 const str = (description: string) => ({ type: 'string', description })
 const periodKey = { periodKey: str('会计期间，YYYY-MM') }
 const stringMap = (description: string) => ({ type: 'object', additionalProperties: { type: 'string' }, description })
+const onboardingCardQuestion = /企业实际开展|实际经营|以上都没有|(?:旧账|代账公司).{0,25}(?:做到|记到|哪[个一]?月)|起账月份?|开始记账的月份/u
 
 export function apply(ctx: Context, config: Config = {}): void {
   if (config.mode === 'ui') {
@@ -133,9 +134,20 @@ export function apply(ctx: Context, config: Config = {}): void {
     const store = new BookStore(config.bookPath ?? defaultBookPath())
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
     const stopObserving = ctx.on?.('session/event', (session, event) => pdfReferences.observe(session, event))
+    const onboarding = new CompanyOnboarding(store)
+    const currentGuide = (sessionId: string) => {
+      if (!onboarding.hasGuide(sessionId)) return
+      const result = onboarding.guide(sessionId, 'continue')
+      if (result.accepted && 'card' in result) return result.card
+    }
     const stopQuestionGuard = ctx.tools.guard?.((execution) => {
       if (execution.name !== 'ask_user_question') return
       const questions = execution.arguments?.questions
+      const sessionId = execution.agent?.session.id
+      if (sessionId && Array.isArray(questions) && onboardingCardQuestion.test(JSON.stringify(questions))) {
+        const card = currentGuide(sessionId)
+        if (card) return '请用下方钱来建档表单完成当前步骤。当前建档卡：' + JSON.stringify(card)
+      }
       if (Array.isArray(questions) && questions.length > 1) return '每次只确认一个事实，请只问当前阻塞的一项。'
     })
     let disposed = false
@@ -275,20 +287,31 @@ export function apply(ctx: Context, config: Config = {}): void {
     const disposers = [
       tool(
         'moneycome_onboarding',
-        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前需处理的卡片。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新草稿，再继续。其他步骤的 fill 只保存老板明确提供的缺项。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
+        '在桌面或网页的钱来张姐对话里继续企业建档。start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前需处理的卡片。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新草稿，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具只处理建档草稿，不能启用账本或代替最终确认。',
         {
           action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct'] },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
           documentKind: { type: 'string', enum: ['license', 'tax'], description: '仅 review-document 使用。license 为营业执照，tax 为税务资料。' },
-          fields: { type: 'array', items: { type: 'string' }, description: 'correct 只传一个明确要更正的字段：companyName、establishedOn、taxAuthority、taxpayerIdentity 或 taxStatus。其他动作可省略。' },
-          values: stringMap('fill、review-document 或 correct 的明确值。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。其他：bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+          fields: { type: 'array', items: { type: 'string' }, description: 'correct 只传一个明确要更正的字段：companyName、establishedOn、taxAuthority、taxpayerIdentity、taxStatus、business、lastMonth 或 startMonth。其他动作可省略。' },
+          values: {
+            ...stringMap('fill、review-document 或 correct 的明确值。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。其他：bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+            properties: {
+              business: {
+                type: 'array', items: { type: 'string', enum: ['goods', 'production', 'cross-border', 'multiple-entities', 'none'] },
+                description: '明确的实际经营选项。goods 买卖或存货，production 生产或加工，cross-border 境外往来，multiple-entities 多个经营主体。以上都没有只传 ["none"]。',
+              },
+            },
+          },
         },
         ['action'],
         (args, _signal, execution) => {
           const sessionId = execution?.agent?.session.id
           if (!sessionId || isWechatSession(sessionId) || isIntroductionSession(sessionId))
             return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
-          return new CompanyOnboarding(store).guide(sessionId, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind)
+          const result = onboarding.guide(sessionId, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind)
+          if (result.accepted) return result
+          const card = currentGuide(sessionId)
+          return card ? { ...result, card } : result
         },
       ),
       tool(

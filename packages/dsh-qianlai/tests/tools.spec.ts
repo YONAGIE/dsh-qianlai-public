@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { PDFDocument } from 'pdf-lib'
 
+import { CompanyOnboarding } from '../src/company-onboarding.js'
 import { apply } from '../src/index.js'
 // Worker URLs resolve relative to the shipped JS entry, so this integration uses the built plugin.
 import { apply as applyBuilt } from '../lib/index.js'
@@ -28,11 +29,18 @@ const approvedCall = () => ({ signal: new AbortController().signal, callId: rand
 function plugin() {
   const bookPath = join(mkdtempSync(join(tmpdir(), 'qianlai-tools-')), 'book.sqlite')
   const tools = new Map<string, Tool>()
-  apply({ effect: (fn) => void fn(), tools: { register: (t) => (tools.set(t.name, t), () => {}) },
+  type Guard = Parameters<NonNullable<Parameters<typeof apply>[0]['tools']['guard']>>[0]
+  let guard: Guard | undefined
+  apply({ effect: (fn) => void fn(), tools: {
+    register: (t) => (tools.set(t.name, t), () => {}),
+    guard: check => { guard = check; return () => {} },
+  },
     get: name => name === 'approval' ? { request: async () => 'allowed-once' } : undefined,
   }, { bookPath })
   const call = (name: string, args: unknown) => tools.get(name)!.execute(args, approvedCall()) as Promise<Record<string, unknown>>
-  return { bookPath, call }
+  const ask = (questions: unknown, sessionId = approvedCall().agent.session.id) =>
+    guard?.({ name: 'ask_user_question', arguments: { questions }, agent: { session: { id: sessionId } } })
+  return { bookPath, call, ask }
 }
 
 async function ownBook() {
@@ -93,6 +101,46 @@ describe('工具入口', () => {
     expect(await call('moneycome_read_referenced_pdf', { fileIndex: '2' })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
     expect(await call('moneycome_read_referenced_pdf', { page: 0 })).toMatchObject({ accepted: false, code: 'POSITION_INVALID' })
     expect(await call('moneycome_record_entry', { ...ENTRY, facts: undefined })).toMatchObject({ accepted: false, code: 'ARGUMENT_INVALID' })
+  })
+
+  it('建档中的实际经营使用专用卡，明确说以上都没有时直接保存并继续', async () => {
+    const { call, bookPath, ask } = plugin()
+    const question = [{ id: 'business', header: '实际经营', question: '企业实际开展了哪些业务？' }]
+    expect(ask(question)).toBeUndefined()
+    await call('moneycome_onboarding', { action: 'start' })
+
+    const store = new BookStore(bookPath)
+    try {
+      const onboarding = new CompanyOnboarding(store)
+      const manual = onboarding.setMode(onboarding.status().revision, 'manual')
+      if (!manual.accepted) throw Error('Could not choose manual onboarding')
+      const saved = onboarding.save(1, manual.revision, {
+        companyName: '合成经营资料企业', taxId: '000000000000000094', establishedOn: '2026-01-01',
+        taxpayerIdentity: 'small-scale', business: [],
+      }, false)
+      expect(saved).toMatchObject({ accepted: true })
+      const fallback = ask(question)
+      expect(fallback).toContain('请用下方钱来建档表单完成当前步骤。')
+      expect(JSON.parse(fallback!.split('当前建档卡：')[1]!)).toMatchObject({
+        title: '确认实际经营', fields: [{ key: 'business', type: 'multi' }],
+      })
+      expect(ask(question, 'not-the-setup-session')).toBeUndefined()
+      expect(ask([{ question: '这笔账款是如何支付的？' }])).toBeUndefined()
+
+      // The conflicting legacy input is refused with a usable replacement form.
+      expect(await call('moneycome_onboarding', { action: 'fill', values: { business: ['goods', 'none'] } }))
+        .toMatchObject({ accepted: false, card: { title: '确认实际经营' } })
+      expect(await call('moneycome_onboarding', { action: 'fill', values: { business: ['none'] } }))
+        .toMatchObject({ accepted: true, draftSummary: { enterprise: { business: ['none'] } }, card: { title: '确认账户情况' } })
+      expect(store.company()).toBeUndefined()
+
+      await call('moneycome_onboarding', { action: 'fill', values: { bankStatus: 'none' } })
+      await call('moneycome_onboarding', { action: 'fill', values: { history: 'previous' } })
+      const month = ask([{ question: '旧账（会计或代账公司）已经记到哪个月？请写明年月。' }])
+      expect(JSON.parse(month!.split('当前建档卡：')[1]!)).toMatchObject({
+        title: '确认记账准备', fields: [{ key: 'lastMonth', type: 'month' }, { key: 'startMonth', type: 'month' }],
+      })
+    } finally { store.close() }
   })
 
   it('可选参数给 null 当没给，字符串参数给数字转成字符串', async () => {
