@@ -17,7 +17,9 @@ const enterprise = {
   city: '杭州市',
   taxpayerIdentity: 'small-scale',
   taxStatus: '正常',
-  taxAuthority: '',
+  taxAuthority: '合成主管税务机关',
+  incomeMethod: '查账征收',
+  accountingSystem: '小企业会计准则',
   business: ['none'],
   bankStatus: 'provided',
   accounts: [{ holder: '样例软件服务有限公司', number: '000000000000000002', bank: '样例银行', currency: 'CNY', openedOn: '' }],
@@ -154,15 +156,37 @@ describe('企业建档', () => {
     expect(updated.enterprise?.business).toEqual(['none'])
   })
 
-  it('待核实税务身份保存资料，完成建档前须补足身份', () => {
+  it('先保存税务草稿，补齐必填项后再完成建档', () => {
     const { store, wizard } = setup()
-    const review = ready(wizard, { ...enterprise, taxpayerIdentity: 'unknown', bankStatus: 'pending', accounts: [] })
-    expect(wizard.confirm(review.revision, false)).toMatchObject({ accepted: false, code: 'TAX_IDENTITY_UNCONFIRMED' })
+    const pending = { ...enterprise, taxpayerIdentity: 'unknown', bankStatus: 'pending', accounts: [] }
+    expect(wizard.save(1, 0, pending)).toMatchObject({ accepted: false, code: 'TAX_DETAILS_REQUIRED' })
+    const draft = accepted(wizard.save(1, 0, pending, false))
+    expect(draft).toMatchObject({ step: 1, completed: false, enterprise: { bankStatus: 'pending' } })
     expect(store.company()).toBeUndefined()
-    expect(wizard.status()).toMatchObject({ step: 4, completed: false, enterprise: { bankStatus: 'pending' } })
-    const fixed = accepted(wizard.save(1, review.revision, { ...enterprise, bankStatus: 'pending', accounts: [] }))
-    expect(fixed.step).toBe(4)
+    const review = ready(wizard, { ...pending, taxpayerIdentity: 'small-scale' })
+    expect(wizard.confirm(review.revision, false)).toMatchObject({ accepted: true, completed: true })
+  })
+
+  it('旧草稿返回缺少的税务资料，保留账户、账期和已完成账本', () => {
+    const { store, wizard } = setup()
+    const review = ready(wizard)
+    const old = store.companyOnboarding()!
+    delete old.enterprise!.incomeMethod
+    delete old.enterprise!.accountingSystem
+    old.enterprise!.taxStatus = '旧版自定义状态'
+    store.saveCompanyOnboarding(old)
+    expect(wizard.status()).toMatchObject({ step: 1, accounting, payroll, enterprise: {
+      taxStatus: '其他', taxStatusOther: '旧版自定义状态', incomeMethod: '', accountingSystem: '', accounts: [{ holder: enterprise.accounts[0]!.holder }],
+    } })
+    expect(wizard.confirm(review.revision, false)).toMatchObject({ accepted: false, code: 'DRAFT_STALE' })
+    const fixed = ready(wizard)
     expect(wizard.confirm(fixed.revision, false)).toMatchObject({ accepted: true, completed: true })
+    const completed = store.companyOnboarding()!
+    delete completed.enterprise!.incomeMethod
+    delete completed.enterprise!.accountingSystem
+    store.saveCompanyOnboarding(completed)
+    expect(wizard.status()).toMatchObject({ completed: true, step: 4 })
+    expect(store.company()).toMatchObject({ name: enterprise.companyName })
   })
 
   it('把官方查询结果关联到当前草稿，且只允许补未取得的字段', () => {

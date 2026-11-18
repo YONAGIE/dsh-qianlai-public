@@ -16,7 +16,9 @@ const LABELS = {
   registrationStatus: ['税务登记状态', '登记状态'],
   registrationDate: ['税务登记日期', '登记日期'],
   taxpayerStatus: ['纳税人状态'],
-  taxpayerQualification: ['增值税纳税人资格', '增值税纳税人类型', '纳税人资格'],
+  taxpayerQualification: ['增值税纳税人资格', '增值税纳税人类型', '纳税人资格', '纳税人身份'],
+  incomeMethod: ['企业所得税征收方式'],
+  accountingSystem: ['会计制度', '适用会计制度'],
 } as const
 const TAX_COLUMNS = {
   taxItem: ['征收项目', '税种', '税种名称', '税费种', '税费种名称'],
@@ -46,6 +48,8 @@ export interface TaxProfile extends TaxSubject {
   registrationDate?: string
   taxpayerStatus?: string
   taxpayerQualification?: string
+  incomeMethod?: string
+  accountingSystem?: string
   obligations: Obligation[]
   obligationCoverage: 'visible_page'
   observedAt: string
@@ -211,7 +215,7 @@ export function parseTaxProfile(
       if (isCalendarDate(establishedOn)) profile.establishedOn = establishedOn
     }
   }
-  for (const name of ['registrationStatus', 'registrationDate', 'taxpayerStatus', 'taxpayerQualification'] as const) {
+  for (const name of ['registrationStatus', 'registrationDate', 'taxpayerStatus', 'taxpayerQualification', 'incomeMethod', 'accountingSystem'] as const) {
     const value = readFact(basic, LABELS[name])
     if (value) profile[name] = value
   }

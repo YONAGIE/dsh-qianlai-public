@@ -1,5 +1,5 @@
 import { isCalendarDate, PERIOD_KEY } from './period.js'
-import { taxPortalFor, taxScanCities } from './tax-portals.js'
+import { taxPortalFor } from './tax-portals.js'
 
 export interface FormField {
   readonly key: string
@@ -7,6 +7,7 @@ export interface FormField {
   readonly type: 'text' | 'date' | 'month' | 'select' | 'multi'
   readonly maxLength?: number
   readonly required?: false
+  readonly requiredWhen?: string
   readonly options?: readonly { value: string; label: string }[]
 }
 
@@ -17,26 +18,40 @@ const input = (key: string, label: string, maxLength: number, type: FormField['t
   key, label, type, maxLength,
 })
 
-const regionOptions = Object.entries(taxScanCities()).flatMap(([province, cities]) => cities.map(city =>
-  [province + '|' + city, province === city ? city : province + ' ' + city]))
-
 const business = { ...selection('business', '企业实际开展的业务', {
   goods: '买卖商品或有库存', production: '生产或加工产品',
   'cross-border': '有境外客户、供应商或外币收付款', 'multiple-entities': '有分公司或多个经营主体', none: '以上都没有',
 }), type: 'multi' as const }
 
-export const taxStatusChoices = Object.fromEntries(
-  ['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'].map(value => [value, value]),
-)
+const options = (values: string[]) => Object.fromEntries(values.map(value => [value, value]))
+
+export const taxStatusChoices = options(['正常', '停业', '清算', '非正常', '注销', '非正常注销', '其他'])
+export const incomeMethodChoices = options(['查账征收', '核定征收'])
+export const accountingSystemChoices = options(['小企业会计准则', '企业会计准则（一般企业）', '其他'])
+
+export const taxFields: readonly FormField[] = [
+  selection('taxpayerIdentity', '纳税人身份', { 'small-scale': '小规模纳税人', general: '一般纳税人' }),
+  selection('taxStatus', '纳税人状态', taxStatusChoices),
+  { ...input('taxStatusOther', '具体纳税人状态', 160), requiredWhen: 'taxStatus' },
+  input('taxAuthority', '主管税务机关', 200),
+  selection('incomeMethod', '企业所得税征收方式', incomeMethodChoices),
+  selection('accountingSystem', '会计制度', accountingSystemChoices),
+  { ...input('accountingSystemOther', '具体会计制度', 160), requiredWhen: 'accountingSystem' },
+]
+
+export function missingTaxFields(current: Record<string, unknown>) {
+  return taxFields.filter(field => {
+    if (field.requiredWhen && current[field.requiredWhen] !== '其他') return false
+    const value = current[field.key]
+    return typeof value !== 'string' || !value.trim() || (field.options && !field.options.some(option => option.value === value))
+  })
+}
 
 export const onboardingFields = {
   1: [
     input('companyName', '企业全称', 200), input('taxId', '统一社会信用代码', 18),
     input('establishedOn', '成立日期', 10, 'date'),
-    selection('taxRegion', '税务地区', Object.fromEntries(regionOptions)),
-    input('taxAuthority', '主管税务机关', 200),
-    { ...selection('taxStatus', '税务状态', taxStatusChoices), maxLength: 60, required: false },
-    selection('taxpayerIdentity', '纳税人类型', { 'small-scale': '小规模纳税人', general: '一般纳税人', unknown: '待核实' }),
+    ...taxFields,
     business, selection('bankStatus', '银行账户情况', { provided: '有银行账户', none: '没有银行账户', pending: '账户资料待补' }),
   ],
   2: [
@@ -51,10 +66,11 @@ export const onboardingFields = {
 } satisfies Record<number, FormField[]>
 
 export function availableFields(step: 1 | 2 | 3, current: Record<string, unknown>) {
+  const missingTax = step === 1 ? new Set(missingTaxFields(current).map(field => field.key)) : undefined
   return onboardingFields[step].filter(({ key }) => {
     if (key === 'lastMonth') return current.history === 'previous' && !current.lastMonth
     if (key === 'payday') return current.payroll === 'scheduled' && !current.payday
-    if (key === 'taxRegion') return !current.province || !current.city
+    if (missingTax && taxFields.some(field => field.key === key)) return missingTax.has(key)
     if (key === 'business') return !Array.isArray(current.business) || !current.business.length
     return !current[key]
   })
@@ -72,15 +88,10 @@ export function fieldPatch(fields: readonly FormField[], values: Record<string, 
       patch[key] = [...new Set(raw)]
       continue
     }
-    if (key === 'taxStatus' && raw === '') {
-      patch[key] = ''
-      continue
-    }
     if (typeof raw !== 'string' || !raw.trim() || /\p{Cc}|\p{Cf}/u.test(raw)) throw Error('请按当前表单填写资料。')
     const value = raw.trim()
     if ((field.maxLength && value.length > field.maxLength)
-        // Older drafts and official materials may carry a status outside the manual choices.
-        || (field.options && key !== 'taxStatus' && !field.options.some(option => option.value === value))
+        || (field.options && !field.options.some(option => option.value === value))
         || (field.type === 'month' && !PERIOD_KEY.test(value))
         || (field.type === 'date' && (!isCalendarDate(value) || value > today))
         || (key === 'taxId' && !/^[A-Z0-9]{18}$/i.test(value))) throw Error(`请核对${field.label}。`)

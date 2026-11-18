@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { openBook } from './book.js'
-import { availableFields, fieldPatch, onboardingFields, type FormField } from './onboarding-fields.js'
+import { accountingSystemChoices, availableFields, fieldPatch, incomeMethodChoices, missingTaxFields, onboardingFields, taxFields, taxStatusChoices, type FormField } from './onboarding-fields.js'
 import { isCalendarDate, PERIOD_KEY, previousPeriod, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore } from './store.js'
 import regions from './tax-regions.json' with { type: 'json' }
@@ -34,6 +34,8 @@ interface OfficialTax {
   taxpayerIdentity: TaxpayerIdentity
   taxStatus: string
   taxAuthority: string
+  incomeMethod?: string
+  accountingSystem?: string
   obligations: TaxProfile['obligations']
   obligationCoverage: TaxProfile['obligationCoverage']
   observedAt: string
@@ -49,6 +51,10 @@ interface Enterprise {
   taxpayerIdentity: TaxpayerIdentity | ''
   taxStatus: string
   taxAuthority: string
+  taxStatusOther?: string
+  incomeMethod?: string
+  accountingSystem?: string
+  accountingSystemOther?: string
   business: Business[]
   bankStatus: BankStatus | ''
   accounts: Account[]
@@ -120,7 +126,6 @@ interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardRe
 export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct'
 
 const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
-const taxDocumentKeys = ['taxpayerIdentity', 'taxAuthority', 'taxStatus']
 
 const TAX_ID = /^[0-9A-Z]{18}$/
 const cities: Readonly<Record<string, readonly string[]>> = regions
@@ -137,7 +142,7 @@ const choices = Object.keys(businessLabels) as Business[]
 const normalizeCompanyName = (name: string) => name.normalize('NFKC').replace(/\s+/g, '')
 const editableSections = {
   company: { step: 1, keys: ['companyName', 'taxId', 'establishedOn', 'business'] },
-  tax: { step: 1, keys: ['province', 'city', 'taxAuthority', 'taxStatus', 'taxpayerIdentity'] },
+  tax: { step: 1, keys: taxFields.map(field => field.key) },
   bank: { step: 1, keys: ['bankStatus', 'accounts'] },
   accounting: { step: 2, keys: ['history', 'lastMonth', 'startMonth'] },
   payroll: { step: 3, keys: ['payroll', 'payday', 'social'] },
@@ -145,7 +150,7 @@ const editableSections = {
 
 const correctionSections = {
   companyName: 'company', establishedOn: 'company', business: 'company',
-  taxAuthority: 'tax', taxStatus: 'tax', taxpayerIdentity: 'tax',
+  taxAuthority: 'tax', taxStatus: 'tax', taxpayerIdentity: 'tax', incomeMethod: 'tax', accountingSystem: 'tax',
   lastMonth: 'accounting', startMonth: 'accounting',
 } as const satisfies Record<string, keyof typeof editableSections>
 type CorrectionField = keyof typeof correctionSections
@@ -161,6 +166,8 @@ function correctionPending() {
 function isOfficialField(key: string, profile?: OfficialTax) {
   return !!profile && (['companyName', 'taxId', 'province', 'city', 'taxAuthority'].includes(key) ||
     (key === 'taxStatus' && !!profile.taxStatus) ||
+    (key === 'incomeMethod' && !!profile.incomeMethod) ||
+    (key === 'accountingSystem' && !!profile.accountingSystem) ||
     (key === 'taxpayerIdentity' && profile.taxpayerIdentity !== 'unknown'))
 }
 
@@ -226,13 +233,20 @@ function parseEnterprise(input: unknown, previous?: Enterprise): Enterprise {
   if (business.includes('none') && business.length > 1)
     throw new InputError('请在「以上都没有」和实际经营项目之间选择。')
   const bankStatus = select(data.bankStatus, ['provided', 'none', 'pending'], '账户情况')
+  const taxStatus = officialTax?.taxStatus || select(data.taxStatus, Object.keys(taxStatusChoices), '纳税人状态')
+  const accountSystem = officialTax?.accountingSystem || select(data.accountingSystem, Object.keys(accountingSystemChoices), '会计制度')
   return {
     companyName, taxId, province, city,
     establishedOn: text(data.establishedOn, '成立日期', 10),
     taxpayerIdentity: officialTax && officialTax.taxpayerIdentity !== 'unknown'
-      ? officialTax.taxpayerIdentity : select(data.taxpayerIdentity, identities, '纳税人类型'),
-    taxStatus: officialTax?.taxStatus || text(data.taxStatus, '税务状态', 60),
+      ? officialTax.taxpayerIdentity : select(data.taxpayerIdentity, identities, '纳税人身份'),
+    taxStatus: taxStatus && !Object.hasOwn(taxStatusChoices, taxStatus) ? '其他' : taxStatus,
+    taxStatusOther: taxStatus === '其他' ? text(data.taxStatusOther, '具体纳税人状态', 160)
+      : !Object.hasOwn(taxStatusChoices, taxStatus) ? taxStatus : '',
     taxAuthority: officialTax?.taxAuthority || text(data.taxAuthority, '主管税务机关'),
+    incomeMethod: officialTax?.incomeMethod || select(data.incomeMethod, Object.keys(incomeMethodChoices), '企业所得税征收方式'),
+    accountingSystem: accountSystem,
+    accountingSystemOther: accountSystem === '其他' ? text(data.accountingSystemOther, '具体会计制度', 160) : '',
     business,
     bankStatus,
     accounts: bankStatus === 'none' ? [] : parseAccounts(data.accounts,
@@ -273,11 +287,12 @@ function validateEnterprise(data: Enterprise | undefined, today: string): Refusa
   }
   const reason = [
     ...(data.taxpayerIdentity === 'general' ? ['增值税一般纳税人'] : []),
-    ...(isBlockedStatus(data.taxStatus) ? [`税务状态为${data.taxStatus}`] : []),
+    ...(isBlockedStatus(data.taxStatus) ? [`纳税人状态为${data.taxStatus}`] : []),
     ...data.business.filter(value => value !== 'none').map(value => businessLabels[value]),
   ]
   if (reason.length) return refuse('ENTERPRISE_UNSUPPORTED', `当前版本暂不能承接${reason.join('、')}的企业。请核对这一步的资料。`, { step: 1 })
-  if (!data.taxpayerIdentity) return refuse('TAX_IDENTITY_REQUIRED', '请确认纳税人类型，暂未查到可选待核实。')
+  const missingTax = missingTaxFields({ ...data })
+  if (missingTax.length) return refuse('TAX_DETAILS_REQUIRED', '请补齐' + missingTax.map(field => field.label).join('、') + '。', { step: 1 })
   if (!data.business.includes('none')) return refuse('BUSINESS_REQUIRED', '请确认企业目前实际开展的业务。')
   if (!data.bankStatus) return refuse('BANK_STATUS_REQUIRED', '请确认银行账户情况，资料未齐可以选待补。')
   if (data.bankStatus === 'provided' && (!data.accounts.length || data.accounts.some(account => !account.holder || !account.number || !account.bank || !account.currency)))
@@ -375,6 +390,19 @@ export class CompanyOnboarding {
       if (enterprise?.business.includes('none') && enterprise.business.some(value => value !== 'none')) {
         enterprise.business = enterprise.business.filter(value => value !== 'none')
       }
+      if (enterprise && !Object.hasOwn(enterprise, 'incomeMethod')) {
+        if (enterprise.taxStatus && !Object.hasOwn(taxStatusChoices, enterprise.taxStatus)) {
+          enterprise.taxStatusOther = enterprise.taxStatus
+          enterprise.taxStatus = '其他'
+        }
+        enterprise.incomeMethod = ''
+        enterprise.accountingSystem ??= ''
+        if (!saved.completedAt && (saved.mode !== 'scan' || enterprise.officialTax || saved.step > 1)) {
+          saved.step = 1
+          saved.revision++
+        }
+        this.store.saveCompanyOnboarding(saved)
+      }
       return saved
     }
     const record: OnboardingRecord = { draftId: randomUUID(), revision: 0, step: 1 }
@@ -456,9 +484,7 @@ export class CompanyOnboarding {
           if (current[key] === value) continue
           if (isOfficialField(key, record.enterprise?.officialTax))
             throw new InputError('这是从税务机关读取的资料。如需更正，请核对税务资料。')
-          if (key === 'province' || key === 'city') {
-            patch[key] = text(value, key === 'province' ? '省份' : '城市或地区', key === 'province' ? 30 : 50)
-          } else if (key === 'accounts') {
+          if (key === 'accounts') {
             if (!Array.isArray(value) || value.some(account => Object.keys(object(account))
               .some(field => !['id', 'holder', 'number', 'bank', 'currency', 'openedOn'].includes(field))))
               throw new InputError('请核对银行账户资料。')
@@ -477,12 +503,6 @@ export class CompanyOnboarding {
             }, today))
           }
         }
-        if (Object.hasOwn(patch, 'province') || Object.hasOwn(patch, 'city')) {
-          const { province = '', city = '' } = { ...current, ...patch }
-          if ((province || city) && (typeof province !== 'string' || typeof city !== 'string' ||
-              !Object.hasOwn(cities, province) || !cities[province]?.includes(city)))
-            throw new InputError('请选择有效的省份和城市或地区。')
-        }
       } catch (error) {
         return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
       }
@@ -492,7 +512,7 @@ export class CompanyOnboarding {
         previous.taxId !== patch.taxId.toUpperCase()
       if (changesCompany && previous.accounts.length)
         return refuse('COMPANY_ACCOUNT_MISMATCH', '请先核对并移除已有银行账户，再更正信用代码。')
-      const tax = changesCompany ? { province: '', city: '', taxAuthority: '', taxStatus: '', taxpayerIdentity: '' } : {}
+      const tax = changesCompany ? { province: '', city: '', ...Object.fromEntries(taxFields.map(field => [field.key, ''])) } : {}
       const saved = this.save(step, revision, { ...current, ...tax, ...patch }, false, true)
       if (saved.accepted && record.correction && patch[record.correction]) {
         const updated = this.record()
@@ -518,7 +538,7 @@ export class CompanyOnboarding {
 
   private editCard(record: OnboardingRecord, step: EditableStep): CardContent {
     const current = this.stepValues(record, step)
-    const fields = onboardingFields[step].filter(({ key }) => key !== 'taxRegion' &&
+    const fields = onboardingFields[step].filter(({ key }) =>
       !isOfficialField(key, record.enterprise?.officialTax) &&
       (key !== 'lastMonth' || current.history === 'previous') &&
       (key !== 'payday' || current.payroll === 'scheduled'))
@@ -530,10 +550,12 @@ export class CompanyOnboarding {
   private correctionCard(record: OnboardingRecord, key: CorrectionField) {
     const { step } = editableSections[correctionSections[key]]
     const field = onboardingFields[step].find(field => field.key === key)!
+    const fields = [field, ...taxFields.filter(item => item.requiredWhen === key)]
+    const current = this.stepValues(record, step)
     return {
       kind: 'fields' as const, step, correction: true as const,
-      title: '更正' + field.label, fields: [field],
-      initialValues: { [key]: this.stepValues(record, step)[key] ?? (field.type === 'multi' ? [] : '') },
+      title: '更正' + field.label, fields,
+      initialValues: Object.fromEntries(fields.map(item => [item.key, current[item.key] ?? (item.type === 'multi' ? [] : '')])),
     }
   }
 
@@ -568,10 +590,17 @@ export class CompanyOnboarding {
     const company = onboardingFields[1].filter(field =>
       companyDocumentKeys.includes(field.key) && missingCompany[field.key as keyof typeof missingCompany])
     if (company.length) return { kind: 'document', documentKind: 'license', fields: company }
-    if (!record.enterprise?.taxpayerIdentity) return {
-      kind: 'document', documentKind: 'tax',
-      fields: availableFields(1, this.stepValues(record)).filter(field => taxDocumentKeys.includes(field.key)),
+    const current = this.stepValues(record)
+    const missing = new Set(missingTaxFields(current).map(field => field.key))
+    if (!missing.size) return
+    for (const field of taxFields) {
+      if (missing.has(field.key) && field.requiredWhen && !isOfficialField(field.requiredWhen, record.enterprise?.officialTax))
+        missing.add(field.requiredWhen)
     }
+    const fields = taxFields.filter(field => missing.has(field.key) || (field.requiredWhen && missing.has(field.requiredWhen)))
+    const initialValues = Object.fromEntries(taxFields.filter(field => (missing.has(field.key) ||
+      fields.some(item => item.requiredWhen === field.key)) && current[field.key]).map(field => [field.key, current[field.key]]))
+    return { kind: 'document', documentKind: 'tax', fields, ...(Object.keys(initialValues).length ? { initialValues } : {}) }
   }
 
   private documentPreview(record: OnboardingRecord, card: DocumentCard, values: Record<string, unknown>) {
@@ -766,8 +795,8 @@ export class CompanyOnboarding {
       const draftSummary = {
         ...(enterprise ? { enterprise: {
           companyName: enterprise.companyName, establishedOn: enterprise.establishedOn,
-          province: enterprise.province, city: enterprise.city, taxAuthority: enterprise.taxAuthority,
-          taxStatus: enterprise.taxStatus, taxpayerIdentity: enterprise.taxpayerIdentity,
+          ...(latest.mode === 'scan' ? { province: enterprise.province, city: enterprise.city } : {}),
+          ...Object.fromEntries(taxFields.map(field => [field.key, enterprise[field.key as keyof Enterprise]])),
           business: enterprise.business, bankStatus: enterprise.bankStatus,
         } } : {}),
         ...(accounting ? { accounting } : {}),
@@ -801,7 +830,7 @@ export class CompanyOnboarding {
 
   cardStatus(sessionId: string, cardId: string) {
     return this.store.transaction(() => {
-      const record = this.store.companyOnboarding()
+      const record = this.store.companyOnboarding() && this.record()
       const item = record?.cards?.find(item => item.sessionId === sessionId && item.card.id === cardId)
       if (!record || !item) return { accepted: true as const, stale: true }
       if (item.receipt) return this.cardResult(record, item)
@@ -848,6 +877,8 @@ export class CompanyOnboarding {
         try {
           patch = fieldPatch(card.fields, object(values), todayInChina(this.now()))
           if (!Object.hasOwn(patch, key)) throw Error('请填写要核对的资料。')
+          const missing = card.fields.find(field => field.requiredWhen === key && patch[key] === '其他' && !patch[field.key])
+          if (missing) throw Error('请填写' + missing.label + '。')
         } catch (error) {
           return refuse('DRAFT_INPUT_INVALID', error instanceof Error ? error.message : '请核对当前资料。')
         }
@@ -884,8 +915,7 @@ export class CompanyOnboarding {
             const stored = latest.cards!.find(candidate => candidate.card.id === cardId)!
             stored.card = {
               ...remaining, id: cardId, draftId: latest.draftId, revision: latest.revision,
-              message: '已保存本次填写。还需补齐' + remaining.fields
-                .filter(field => remaining.documentKind === 'license' || field.key === 'taxpayerIdentity')
+              message: '已保存本次填写。还需补齐' + (remaining.documentKind === 'tax' ? missingTaxFields(this.stepValues(latest)) : remaining.fields)
                 .map(field => field.label).join('、') + '。',
             }
             this.store.saveCompanyOnboarding(latest)
@@ -925,7 +955,8 @@ export class CompanyOnboarding {
           return next({ labels: ['请核对要更正的资料'] }, this.editCard(record, step))
       }
       if (card.kind === 'blocked' && choice === 'edit' && record.step === 1) {
-        const fields = onboardingFields[1].filter(({ key }) => ['business', 'bankStatus', 'taxpayerIdentity', 'taxStatus'].includes(key))
+        const fields = onboardingFields[1].filter(({ key }) => ['business', 'bankStatus', 'taxpayerIdentity', 'taxStatus', 'taxStatusOther'].includes(key) &&
+          !isOfficialField(key, record.enterprise?.officialTax))
         record.revision++
         this.store.saveCompanyOnboarding(record)
         return next({ labels: ['重新核对资料'] }, { kind: 'fields', title: '核对企业情况', fields })
@@ -1001,14 +1032,32 @@ export class CompanyOnboarding {
       const statuses = [profile.taxpayerStatus, profile.registrationStatus]
         .filter((status): status is string => !!status && !['待核实', '尚未读取', '未知'].includes(status))
       const taxStatus = statuses.find(isBlockedStatus) ?? statuses[0] ?? ''
+      const incomeMethod = profile.incomeMethod && Object.hasOwn(incomeMethodChoices, profile.incomeMethod)
+        ? profile.incomeMethod : undefined
+      const accountingSystem = profile.accountingSystem && Object.hasOwn(accountingSystemChoices, profile.accountingSystem)
+        ? profile.accountingSystem : undefined
       enterprise.officialTax = {
         province, city,
         taxpayerIdentity, taxStatus, taxAuthority: profile.authority,
+        ...(incomeMethod ? { incomeMethod } : {}), ...(accountingSystem ? { accountingSystem } : {}),
         obligations: profile.obligations, obligationCoverage: profile.obligationCoverage,
         observedAt: profile.observedAt, sourceUrl: profile.sourceUrl,
       }
       if (taxpayerIdentity !== 'unknown') enterprise.taxpayerIdentity = taxpayerIdentity
-      if (taxStatus) enterprise.taxStatus = taxStatus
+      if (taxStatus) {
+        if (Object.hasOwn(taxStatusChoices, taxStatus)) {
+          enterprise.taxStatus = taxStatus
+          if (taxStatus !== '其他') enterprise.taxStatusOther = ''
+        } else {
+          enterprise.taxStatus = '其他'
+          enterprise.taxStatusOther = taxStatus
+        }
+      }
+      if (incomeMethod) enterprise.incomeMethod = incomeMethod
+      if (accountingSystem) {
+        enterprise.accountingSystem = accountingSystem
+        if (accountingSystem !== '其他') enterprise.accountingSystemOther = ''
+      }
       enterprise.taxAuthority = profile.authority
       const today = todayInChina(this.now())
       if (validateEnterprise(enterprise, today)) record.step = 1

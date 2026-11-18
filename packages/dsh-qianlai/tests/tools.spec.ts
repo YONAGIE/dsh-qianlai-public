@@ -116,7 +116,8 @@ describe('工具入口', () => {
       if (!manual.accepted) throw Error('Could not choose manual onboarding')
       const saved = onboarding.save(1, manual.revision, {
         companyName: '合成经营资料企业', taxId: '000000000000000094', establishedOn: '2026-01-01',
-        taxpayerIdentity: 'small-scale', business: [],
+        taxpayerIdentity: 'small-scale', taxStatus: '正常', taxAuthority: '合成主管机关',
+        incomeMethod: '查账征收', accountingSystem: '小企业会计准则', business: [],
       }, false)
       expect(saved).toMatchObject({ accepted: true })
       const fallback = ask(question)

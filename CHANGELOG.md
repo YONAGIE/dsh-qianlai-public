@@ -12,7 +12,7 @@
 
 - Show editable draft fields directly in DSH’s right-hand panel. Open the panel in the current conversation when the user starts or explicitly resumes company setup. Keep unsaved input while chat updates the other fields and show conflicting changes before saving. Lay out short fields side by side when the card is wide enough. Align primary card actions to the right and keep bank account save/defer buttons in one wrapping row.
 
-- Select an optional tax status from the available choices in both company setup forms. Keep previously saved and recognized statuses available for review.
+- Align both setup forms with the web tax profile fields and options. Require a specific description for “Other” tax statuses and accounting systems. Ask for province and city when selecting a tax portal.
 
 - Improve the visual hierarchy of company setup cards and sidebar forms. Emphasize the current action and give confirmation and field errors clear treatment.
 

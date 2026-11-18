@@ -292,9 +292,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct'] },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
           documentKind: { type: 'string', enum: ['license', 'tax'], description: '仅 review-document 使用。license 为营业执照，tax 为税务资料。' },
-          fields: { type: 'array', items: { type: 'string' }, description: 'correct 只传一个明确要更正的字段：companyName、establishedOn、taxAuthority、taxpayerIdentity、taxStatus、business、lastMonth 或 startMonth。其他动作可省略。' },
+          fields: { type: 'array', items: { type: 'string' }, description: 'correct 只传一个明确要更正的字段：companyName、establishedOn、taxAuthority、taxpayerIdentity、taxStatus、incomeMethod、accountingSystem、business、lastMonth 或 startMonth。其他动作可省略。' },
           values: {
-            ...stringMap('fill、review-document 或 correct 的明确值。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general / unknown）、taxStatus。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。其他：bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
+            ...stringMap('fill、review-document 或 correct 的明确值。营业执照用 companyName、taxId、establishedOn，税务资料可再用 taxAuthority、taxpayerIdentity（small-scale / general）、taxStatus、incomeMethod（查账征收 / 核定征收）、accountingSystem。taxStatus 或 accountingSystem 选其他时分别提供 taxStatusOther 或 accountingSystemOther 的具体说明。正在确认扫码地区时，只传 province 和对应的 city（北京两者均为北京市）。其他：bankStatus（provided / none / pending）、history（previous / unrecorded / new）、lastMonth、startMonth（YYYY-MM）、payroll（scheduled / none）、payday（数字字符串）、social（all / partial / none / unknown）。'),
             properties: {
               business: {
                 type: 'array', items: { type: 'string', enum: ['goods', 'production', 'cross-border', 'multiple-entities', 'none'] },
