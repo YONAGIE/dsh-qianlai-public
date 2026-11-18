@@ -1,9 +1,9 @@
-name: Cross-platform verification for a30af68
+name: macOS Intel verification for a30af68 and Node 22.19
 
 on:
   push:
     branches:
-      - validation/cross-platform-a30af68
+      - validation/cross-platform-a30af68-macos22
 
 permissions:
   contents: read
@@ -16,8 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
-        node: ['22.19', '24']
+        os: [macos-15-intel]
+        node: ['22.19']
     steps:
       - uses: actions/checkout@v7.0.1
         with:
