@@ -145,6 +145,7 @@ try {
   await rightMonth.click()
   assert.equal(await dialog.getByRole('button', { name: '10 月', exact: true }).isDisabled(), true)
   await dialog.getByRole('button', { name: '下一年' }).click()
+  assert.equal(await dialog.getByRole('button', { name: '12 月', exact: true }).getAttribute('aria-pressed'), 'false')
   await screenshot('calendar-month')
   await dialog.getByRole('button', { name: '2 月', exact: true }).click()
   await dialog.waitFor({ state: 'hidden' })
