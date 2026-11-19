@@ -336,7 +336,7 @@ export function createOnboardingDateInput({ jsx, useState, useRef, useEffect }, 
                 return jsx('button', {
                   type: 'button', 'data-cell': index, disabled: !allowed, tabIndex: option === focusedCell ? 0 : -1,
                   'aria-label': isDayView ? year + ' 年 ' + month + ' 月 ' + number + ' 日' : undefined,
-                  'aria-pressed': isDayView ? option.value === value : option.current,
+                  'aria-pressed': isDayView || (!isDay && !isYearView) ? option.value === value : option.current,
                   'aria-current': isDayView && option.value === todayValue ? 'date' : undefined,
                   onClick: () => choose(option), children: isYearView ? number + ' 年' : isDayView ? number : number + ' 月',
                 }, index)
