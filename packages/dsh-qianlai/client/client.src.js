@@ -1,4 +1,4 @@
-/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError */
+/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -378,19 +378,25 @@ window.__ModuleLoader__.load({
           value = locked ? current[name] : input[name], set = next => change(name, next) } = options
         const fieldError = !locked && ((reviewed[name] && errors[name]) || (serverIssue?.name === name && serverIssue.message))
         const errorId = errorPrefix + '-' + name + '-error'
-        const props = { name, value: value ?? '', 'aria-required': required || undefined,
+        const fieldId = errorPrefix + '-' + name
+        const isDate = type === 'date' || type === 'month'
+        const props = { id: fieldId, name, value: value ?? '', 'aria-required': required || undefined,
           disabled: saving || Boolean(list && !Object.keys(list).length),
           onChange: event => set(event.target.value), onBlur: () => setReviewed(previous => ({ ...previous, [name]: true })),
           'aria-invalid': fieldError ? true : undefined, 'aria-describedby': fieldError ? errorId : undefined,
           style: fieldError ? { ...panelInput, borderColor: 'var(--dsw-alias-label-danger, #ad3939)' } : panelInput }
-        return jsx('label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0,
+        return jsx(isDate ? 'div' : 'label', { style: { display: 'grid', alignContent: 'start', gap: 4, minWidth: 0,
           ...(fullWidth ? { gridColumn: '1 / -1' } : {}) }, children: [
-          jsx('span', { style: { color: muted, fontSize: 12 }, children: label }),
+          jsx(isDate && !locked ? 'label' : 'span', { htmlFor: isDate && !locked ? fieldId : undefined,
+            style: { color: muted, fontSize: 12 }, children: label }),
           locked ? jsx('span', { title: '来自已核对的税务资料', style: { overflowWrap: 'anywhere' }, children: value || '待补' }) : list ? jsx('select', { ...props, children: [
             jsx('option', { value: '', disabled: required, children: placeholder || '请选择' }),
             ...Object.entries(list).map(([key, text]) => jsx('option', { value: key, children: text }, key)),
-          ] }) : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off',
-            inputMode: name.endsWith('-number') ? 'numeric' : undefined }),
+          ] }) : isDate
+            ? jsx(OnboardingDateInput, { ...props, type, label, establishedOn: view.enterprise?.establishedOn,
+              lastMonth: input.history === 'previous' ? input.lastMonth : undefined })
+            : jsx('input', { ...props, type, placeholder, maxLength, autoComplete: 'off',
+              inputMode: name.endsWith('-number') ? 'numeric' : undefined }),
           fieldError ? jsx('span', { id: errorId, role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #ad3939)', fontSize: 12 }, children: fieldError }) : null,
           !locked && conflicts.has(name) ? jsx('span', { style: { color: muted, fontSize: 12, overflowWrap: 'anywhere' },
             children: '草稿当前值 · ' + (list?.[current[name]] || current[name] || '待补') }) : null,
@@ -780,7 +786,11 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /* onboarding-date-client */
     /* onboarding-chat-client */
+
+    const OnboardingDateInput = createOnboardingDateInput({ jsx, useState, useRef, useEffect },
+      typeof window.HTMLElement?.prototype.showPopover === 'function')
 
     const inject = ['slots']
 
@@ -824,7 +834,7 @@ window.__ModuleLoader__.load({
         ), 'dsh-qianlai: onboarding tab body')
       })
       registerOnboardingChat(ctx, {
-        jsx, useEffect, useRef, useState, usePreset, openOnboarding, refreshOnboarding, onboardingRequest,
+        jsx, useEffect, useRef, useState, usePreset, OnboardingDateInput, openOnboarding, refreshOnboarding, onboardingRequest,
         sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
         taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })
