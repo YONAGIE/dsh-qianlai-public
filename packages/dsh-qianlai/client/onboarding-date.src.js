@@ -68,15 +68,18 @@ const datePickerStyles = [
   '  box-shadow: inset 0 0 0 2px currentColor; outline: 1px solid var(--ql-accent); outline-offset: 0;',
   '}',
   '.qianlai-date-picker .ql-date-bar { display: flex; align-items: center; justify-content: space-between; gap: 4px; }',
+  '.qianlai-date-picker .ql-date-heading { border-bottom: 1px solid var(--ql-border); padding-bottom: 6px; }',
+  '.qianlai-date-picker .ql-date-heading strong { display: flex; align-items: center; gap: 7px; }',
   '.qianlai-date-picker .ql-date-nav { margin: 8px 0 6px; }',
   '.qianlai-date-picker .ql-date-nav button[data-step], .qianlai-date-picker .ql-date-close { min-width: 30px; font-size: 17px; }',
   '.qianlai-date-picker .ql-date-jump {',
-  '  margin: 0 2px; border-color: var(--ql-border); font-weight: 620; min-height: 28px;',
+  '  margin: 0 2px; color: var(--ql-accent); font-weight: 650; min-height: 28px;',
   '}',
   '.qianlai-date-picker .ql-date-grid { display: grid; gap: 3px; text-align: center; }',
   '.qianlai-date-picker .ql-date-grid button { min-width: 0; padding-inline: 2px; font-variant-numeric: tabular-nums; }',
   '.qianlai-date-picker .ql-date-week { font-size: 11px; margin-bottom: 3px; }',
   '.qianlai-date-picker .ql-date-footer { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--ql-border); }',
+  '.qianlai-date-picker .ql-date-footer button { color: var(--ql-accent); }',
 ].join('\n')
 
 const dateProxy = {
@@ -302,8 +305,8 @@ export function createOnboardingDateInput({ jsx, useState, useRef, useEffect }, 
         ref: popover, id: popupId, popover: 'manual', role: 'dialog', 'aria-labelledby': popupId + '-title',
         className: 'qianlai-date-picker', onKeyDown: onEscape, children: [
           jsx('style', { children: datePickerStyles }),
-          jsx('div', { className: 'ql-date-bar', children: [
-            jsx('strong', { id: popupId + '-title', children: popupTitle }),
+          jsx('div', { className: 'ql-date-bar ql-date-heading', children: [
+            jsx('strong', { id: popupId + '-title', children: [icon, popupTitle] }),
             action('×', () => close(true), { 'aria-label': '关闭日期选择', className: 'ql-date-close' }),
           ] }),
           hasChoices ? [
