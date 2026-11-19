@@ -1,0 +1,61 @@
+name: Onboarding interactions 170 and 171
+
+on:
+  push:
+    branches: [validation/onboarding-interactions-170-171]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Node 24
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 16
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v6.1.1
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Typecheck and lint
+        shell: bash
+        run: |
+          pnpm typecheck
+          pnpm lint
+      - name: Onboarding regressions
+        run: pnpm --filter dsh-qianlai exec vitest run tests/client.spec.mjs tests/onboarding-card-projection.spec.mjs tests/onboarding-chat-client.spec.mjs tests/onboarding-date-client.spec.mjs tests/company-onboarding.spec.ts tests/onboarding-rpc.spec.ts
+      - name: Verify built client in Chromium with synthetic RPC
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          pnpm --filter dsh-qianlai exec playwright-core install chromium --with-deps
+          npm install --prefix "$RUNNER_TEMP/qianlai-ui" --no-save --no-audit --no-fund react@19.2.0 react-dom@19.2.0 esbuild@0.27.3
+          node .github/onboarding-interactions-browser.mjs "$RUNNER_TEMP/qianlai-ui" "$RUNNER_TEMP/onboarding-evidence"
+      - name: Save screenshots of the tested interaction
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: onboarding-interaction-screenshots
+          path: ${{ runner.temp }}/onboarding-evidence/*.png
+          if-no-files-found: ignore
+          retention-days: 21
+      - name: DSH launcher and installed plugin
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/qianlai-dsh" --no-save --no-audit --no-fund '@deepseek-ai/dsh@0.2.2-rc.1'
+          node packages/dsh-qianlai/scripts/check-dsh-wechat.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
+      - name: Full test suite
+        if: matrix.os != 'windows-latest'
+        run: pnpm test
