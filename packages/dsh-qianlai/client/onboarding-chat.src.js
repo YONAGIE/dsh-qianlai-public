@@ -759,7 +759,8 @@ export function registerOnboardingChat(ctx, {
           ref: documentArea, role: 'group', tabIndex: 0, 'aria-label': '添加' + documentName, 'aria-describedby': uploadHintId,
           'data-qianlai-document-file': recognition?.phase ?? 'empty',
           style: { ...actions, gap: '8px 12px', padding: '12px 14px', background: tintedSurface,
-            border: '1px dashed color-mix(in srgb, ' + accent + ' 42%, transparent)', borderRadius: 12 },
+            border: '1px ' + (recognition?.name ? 'solid' : 'dashed') + ' color-mix(in srgb, ' + accent + ' 25%, transparent)',
+            borderRadius: 12 },
           onKeyDown: event => {
             if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
             event.preventDefault()
