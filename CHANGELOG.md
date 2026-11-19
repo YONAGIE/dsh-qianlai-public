@@ -35,6 +35,8 @@
 
 - Combine typing, file selection, dropping, and pasting a license or tax document on one chat card. Preview extracted fields on the card and update the draft after confirmation. Documents sent in chat also get a review card. Close the host drag overlay when a file reaches the card, and show recognition progress inside the card.
 
+- Show recognition progress and errors next to the selected license, tax or bank document. Keep the form editable while reading, and offer to retry or replace a failed file from the same row.
+
 - Keep the “none of the above” business choice mutually exclusive in company setup and reject conflicting values before saving.
 
 - Recover the current setup card when a generic question or invalid answer would interrupt onboarding. Accept an explicit business selection in chat and use native month controls for the handoff and opening months.

@@ -115,6 +115,7 @@ function find(tree, test) {
 
 const named = label => node => node.type === 'button' && node.props.children === label
 const info = node => node.type === 'p' && node.props.role === 'status'
+const fileRow = phase => node => node.props['data-qianlai-document-file'] === phase
 const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve() }
 const next = (index, data) => ({ id: 'e8e802ae-6616-45b5-98b4-1b487cc03c1' + index, draftId, revision: 5 + index, ...data })
 const section = (tree, card) => find(tree, node => node.props['data-qianlai-onboarding-card'] === card.id)
@@ -375,12 +376,19 @@ describe('建档对话卡', () => {
     find(active.render(companyChoice), node => node.props.name === 'companyName').props.onChange({ target: { value: '已经手填的合成企业' } })
     const file = { name: '示例营业执照.png', type: 'image/png', size: 4 }
     pick([file])
-    expect(find(active.render(companyChoice), info).props.children).toBe('正在识别「示例营业执照.png」…')
-    expect(find(active.render(companyChoice), named('选择营业执照')).props.disabled).toBe(true)
+    const reading = active.render(companyChoice)
+    const row = find(reading, fileRow('reading'))
+    expect(find(row, node => node.type === 'strong').props.children).toBe(file.name)
+    expect(find(row, info).props.children).toBe('文件已接收，结果会先请你核对。')
+    expect(find(row, named('选择营业执照'))).toBeUndefined()
+    const companyInput = find(reading, node => node.props.name === 'companyName').props
+    expect(companyInput.disabled).toBe(false)
+    companyInput.onChange({ target: { value: '识别期间继续手填的合成企业' } })
+    expect(find(reading, named('保存到草稿')).props.disabled).toBe(true)
     await settle()
     let preview = active.render(companyChoice)
     expect(find(preview, info).props.children).toBe('保留了原先填写的企业全称。请对照资料核对后确认。')
-    expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('已经手填的合成企业')
+    expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('识别期间继续手填的合成企业')
     expect(find(preview, node => node.props.name === 'taxId').props.value).toBe('111111111111111111')
     expect(find(preview, node => node.props.name === 'establishedOn').props.value).toBe('')
     expect(active.refreshOnboarding).not.toHaveBeenCalled()
@@ -394,7 +402,7 @@ describe('建档对话卡', () => {
     pick([{ ...file, name: '更清晰的合成执照.png' }])
     await settle()
     preview = active.render(companyChoice)
-    expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('已经手填的合成企业')
+    expect(find(preview, node => node.props.name === 'companyName').props.value).toBe('识别期间继续手填的合成企业')
     expect(find(preview, node => node.props.name === 'taxId').props.value).toBe('111111111111111122')
     expect(find(preview, named('保存到草稿'))).toBeDefined()
     find(preview, node => node.props.name === 'establishedOn').props.onChange({ target: { value: '2026-01-01' } })
@@ -404,7 +412,7 @@ describe('建档对话卡', () => {
     await settle()
     expect(request).toHaveBeenCalledWith(sessionId, 'submit-card', {
       cardId: companyChoice.id, draftId, revision: companyChoice.revision,
-      values: { companyName: '已经手填的合成企业', taxId: '111111111111111122', establishedOn: '2026-01-01' },
+      values: { companyName: '识别期间继续手填的合成企业', taxId: '111111111111111122', establishedOn: '2026-01-01' },
     })
     expect(active.refreshOnboarding).toHaveBeenCalledWith(sessionId, recognizedView)
     expect(active.sendOnboardingReply.mock.calls).toEqual([
@@ -445,9 +453,13 @@ describe('建档对话卡', () => {
     expect(active.sendOnboardingReply).not.toHaveBeenCalled()
   })
 
-  it('拖到卡片收起宿主遮罩并显示识别进度，失败后可重新选文件', async () => {
+  it('拖到卡片收起宿主遮罩，识别失败后可在原文件行重试', async () => {
+    let attempts = 0
     const request = vi.fn(async (_session, action) => {
-      if (action === 'recognize') throw Error('没有识别到公司资料，请换一份更清晰的营业执照。')
+      if (action === 'recognize') {
+        if (++attempts === 1) throw Error('未能识别这份资料，请重试。')
+        return { accepted: true, fields: { companyName: '合成服务有限公司' } }
+      }
       return { accepted: true }
     })
     const readOnboardingFile = vi.fn(async () => 'dGVzdA==')
@@ -477,8 +489,8 @@ describe('建档对话卡', () => {
     expect(globalMask).toBe(false)
     const reading = active.render(companyChoice)
     expect(reading.props.style.outline).toBeUndefined()
-    expect(find(reading, node => node.type === 'progress')).toBeDefined()
-    expect(find(reading, info).props.children).toBe('正在识别「合成营业执照.pdf」…')
+    expect(find(find(reading, fileRow('reading')), node => node.type === 'strong').props.children).toBe(file.name)
+    expect(find(reading, node => node.props.className === 'qianlai-document-reading')).toBeDefined()
     await settle()
     expect(event.preventDefault).toHaveBeenCalledTimes(3)
     expect(event.stopPropagation).toHaveBeenCalledTimes(3)
@@ -486,10 +498,16 @@ describe('建档对话卡', () => {
       cardId: companyChoice.id, draftId, revision: companyChoice.revision,
       file: { name: file.name, mimeType: file.type, base64: 'dGVzdA==' },
     })
-    expect(find(active.render(companyChoice), node => node.props.role === 'alert').props.children)
-      .toBe('没有识别到公司资料，请换一份更清晰的营业执照。')
-    expect(find(active.render(companyChoice), node => node.type === 'progress')).toBeUndefined()
-    expect(find(active.render(companyChoice), named('选择营业执照')).props.disabled).toBe(false)
+    const errorRow = find(active.render(companyChoice), fileRow('error'))
+    expect(find(errorRow, node => node.props.role === 'alert').props.children).toBe('未能识别这份资料，请重试。')
+    expect(find(errorRow, named('更换文件')).props.disabled).toBe(false)
+    const retry = find(errorRow, named('重试这份文件')).props.onClick
+    retry()
+    retry()
+    expect(find(active.render(companyChoice), fileRow('reading'))).toBeDefined()
+    await settle()
+    expect(readOnboardingFile.mock.calls).toEqual([[file], [file]])
+    expect(find(active.render(companyChoice), fileRow('ready'))).toBeDefined()
     expect(active.refreshOnboarding).not.toHaveBeenCalled()
     expect(active.sendOnboardingReply).not.toHaveBeenCalled()
   })
@@ -525,7 +543,7 @@ describe('建档对话卡', () => {
     expect(readOnboardingFile).not.toHaveBeenCalled()
 
     current.props.onPaste(event)
-    expect(find(active.render(card), info).props.children).toBe('正在识别「合成截图.png」…')
+    expect(find(find(active.render(card), fileRow('reading')), node => node.type === 'strong').props.children).toBe(image.name)
     await settle()
     expect(event.preventDefault).toHaveBeenCalledTimes(2)
     expect(event.stopPropagation).toHaveBeenCalledTimes(2)
