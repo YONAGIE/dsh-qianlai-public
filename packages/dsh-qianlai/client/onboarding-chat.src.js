@@ -313,6 +313,7 @@ export function registerOnboardingChat(ctx, {
           }, field.key)
         }
         const value = values[field.key] ?? ''
+        const isDate = field.type === 'date' || field.type === 'month'
         const error = (reviewed[field.key] && onboardingFieldError(field.key, value, values)) ||
           (serverIssue?.field === field.key ? serverIssue.message : '')
         const fieldId = errorPrefix + '-' + field.key
@@ -325,16 +326,16 @@ export function registerOnboardingChat(ctx, {
           'aria-describedby': error ? errorId : undefined,
           style: error ? { ...inputStyle, borderColor: 'var(--dsw-alias-label-danger, #ad3939)' } : inputStyle,
         }
-        return jsx('div', {
+        return jsx(isDate ? 'div' : 'label', {
           style: { display: 'grid', alignContent: 'start', gap: 5, minWidth: 0,
             ...(['companyName', 'taxAuthority'].includes(field.key) || field.requiredWhen ? { gridColumn: '1 / -1' } : {}) }, children: [
-            jsx('label', { htmlFor: fieldId, children: field.label }),
+            isDate ? jsx('label', { htmlFor: fieldId, children: field.label }) : field.label,
             field.type === 'select'
               ? jsx('select', { ...input, disabled: saving || !field.options.length, children: [
                 jsx('option', { value: '', disabled: true, children: '请选择' }),
                 ...field.options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
               ] })
-              : field.type === 'date' || field.type === 'month'
+              : isDate
                 ? jsx(OnboardingDateInput, { ...input, type: field.type, label: field.label, establishedOn,
                   lastMonth: values.history && values.history !== 'previous' ? undefined : values.lastMonth ?? lastMonth })
                 : jsx('input', { ...input, type: field.type, maxLength: field.maxLength,
