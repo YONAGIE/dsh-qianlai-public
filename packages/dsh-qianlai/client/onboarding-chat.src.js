@@ -23,7 +23,7 @@ export function onboardingFieldError(key, value, { savedNumber = false, lastMont
 }
 
 export function registerOnboardingChat(ctx, {
-  jsx, useEffect, useRef, useState, usePreset,
+  jsx, useEffect, useRef, useState, usePreset, OnboardingDateInput = 'input',
   openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, subscribeOnboarding,
   readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
 }) {
@@ -255,7 +255,7 @@ export function registerOnboardingChat(ctx, {
   }
 
   function form({ fields, values, change, saving, onSubmit, label = '保存到草稿', secondaryAction,
-    reviewed, review, serverIssue, errorPrefix }) {
+    reviewed, review, serverIssue, errorPrefix, establishedOn, lastMonth }) {
     const inputStyle = {
       ...controlStyle,
       background: 'var(--dsw-alias-fill-primary, transparent)',
@@ -305,27 +305,31 @@ export function registerOnboardingChat(ctx, {
         const value = values[field.key] ?? ''
         const error = (reviewed[field.key] && onboardingFieldError(field.key, value, values)) ||
           (serverIssue?.field === field.key ? serverIssue.message : '')
-        const errorId = errorPrefix + '-' + field.key + '-error'
+        const fieldId = errorPrefix + '-' + field.key
+        const errorId = fieldId + '-error'
         const input = {
-          name: field.key, required: Boolean(field.requiredWhen) || field.required !== false, disabled: saving, value,
+          id: fieldId, name: field.key, required: Boolean(field.requiredWhen) || field.required !== false, disabled: saving, value,
           onChange: event => change(field.key, event.target.value),
           onBlur: () => review([field.key]),
           'aria-invalid': error ? true : undefined,
           'aria-describedby': error ? errorId : undefined,
           style: error ? { ...inputStyle, borderColor: 'var(--dsw-alias-label-danger, #ad3939)' } : inputStyle,
         }
-        return jsx('label', {
+        return jsx('div', {
           style: { display: 'grid', alignContent: 'start', gap: 5, minWidth: 0,
             ...(['companyName', 'taxAuthority'].includes(field.key) || field.requiredWhen ? { gridColumn: '1 / -1' } : {}) }, children: [
-            field.label,
+            jsx('label', { htmlFor: fieldId, children: field.label }),
             field.type === 'select'
               ? jsx('select', { ...input, disabled: saving || !field.options.length, children: [
                 jsx('option', { value: '', disabled: true, children: '请选择' }),
                 ...field.options.map(({ value, label }) => jsx('option', { value, children: label }, value)),
               ] })
-              : jsx('input', { ...input, type: field.type, maxLength: field.maxLength,
-                inputMode: ['number', 'accountTail'].includes(field.key) ? 'numeric' : undefined,
-                ...(field.requiredWhen ? { placeholder: '请按税务登记资料填写' } : {}) }),
+              : field.type === 'date' || field.type === 'month'
+                ? jsx(OnboardingDateInput, { ...input, type: field.type, label: field.label, establishedOn,
+                  lastMonth: values.history && values.history !== 'previous' ? undefined : values.lastMonth ?? lastMonth })
+                : jsx('input', { ...input, type: field.type, maxLength: field.maxLength,
+                  inputMode: ['number', 'accountTail'].includes(field.key) ? 'numeric' : undefined,
+                  ...(field.requiredWhen ? { placeholder: '请按税务登记资料填写' } : {}) }),
             error ? jsx('span', { id: errorId, role: 'alert', style: { color: 'var(--dsw-alias-label-danger, #ad3939)', fontSize: '0.875em' }, children: error }) : null,
           ],
         }, field.key)
@@ -456,6 +460,8 @@ export function registerOnboardingChat(ctx, {
     const viewOnly = card.kind === 'fields' && card.fields.length === 0
     const buildForm = props => form({
       ...props, reviewed, serverIssue, errorPrefix: 'onboarding-' + cardId,
+      establishedOn: status?.view?.enterprise?.establishedOn,
+      lastMonth: status?.view?.accounting?.history === 'previous' ? status.view.accounting.lastMonth : undefined,
       review: keys => setReviewed(previous => ({ ...previous, ...Object.fromEntries(keys.map(key => [key, true])) })),
     })
     function applyStatus(result) {
