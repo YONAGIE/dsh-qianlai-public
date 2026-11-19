@@ -59,6 +59,7 @@ export function registerOnboardingChat(ctx, {
   const controlBorder = '1px solid color-mix(in srgb, currentColor 18%, transparent)'
   const accent = 'var(--dsw-static-deepseek-500, #1f8a5b)'
   const accentStrong = 'var(--dsw-static-deepseek-600, #1b6f4a)'
+  const danger = 'var(--dsw-alias-label-danger, #ad3939)'
   const tintedSurface = 'color-mix(in srgb, ' + accent + ' 6%, transparent)'
   const cardStyle = {
     border: controlBorder, borderRadius: 16, padding: '18px clamp(12px, 4%, 24px)',
@@ -78,6 +79,15 @@ export function registerOnboardingChat(ctx, {
   const cardHeading = { fontSize: '1.05em', lineHeight: 1.45, fontWeight: 670, margin: 0 }
   const formColumns = 'repeat(auto-fit, minmax(min(100%, max(10rem, 45%)), 1fr))'
   const startingTaxFlows = new Map()
+  const documentReadingStyle = [
+    '.qianlai-document-reading::before {',
+    '  content: ""; width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;',
+    '  border: 2px solid color-mix(in srgb, currentColor 28%, transparent); border-top-color: currentColor;',
+    '  animation: qianlai-document-spin .85s linear infinite;',
+    '}',
+    '@keyframes qianlai-document-spin { to { transform: rotate(1turn); } }',
+    '@media (prefers-reduced-motion: reduce) { .qianlai-document-reading::before { animation: none; } }',
+  ].join('\n')
 
   function validField(field) {
     return typeof field?.key === 'string' && /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(field.key)
@@ -254,7 +264,7 @@ export function registerOnboardingChat(ctx, {
     }
   }
 
-  function form({ fields, values, change, saving, onSubmit, label = '保存到草稿', secondaryAction,
+  function form({ fields, values, change, saving, onSubmit, label = '保存到草稿', secondaryAction, submitDisabled,
     reviewed, review, serverIssue, errorPrefix }) {
     const inputStyle = {
       ...controlStyle,
@@ -331,7 +341,7 @@ export function registerOnboardingChat(ctx, {
         }, field.key)
       }), jsx('div', {
         style: { ...footerActions, gridColumn: '1 / -1', marginTop: 0 },
-        children: [secondaryAction, button(label, undefined, saving, 'submit', true)],
+        children: [secondaryAction, button(label, undefined, saving || submitDisabled, 'submit', true)],
       })],
     })
   }
@@ -441,7 +451,7 @@ export function registerOnboardingChat(ctx, {
     const [statusAttempt, setStatusAttempt] = useState(0)
     const [error, setError] = useState('')
     const [saving, setSaving] = useState(false)
-    const [readingDocument, setReadingDocument] = useState('')
+    const [recognition, setRecognition] = useState(null)
     const [documentPreview, setDocumentPreview] = useState(null)
     const [dropActive, setDropActive] = useState(false)
     const [obsolete, setObsolete] = useState(false)
@@ -449,6 +459,7 @@ export function registerOnboardingChat(ctx, {
     const submitting = useRef(false)
     const sending = useRef(false)
     const documentInput = useRef(null)
+    const documentArea = useRef(null)
     const currentRevision = useRef(projectedCard.revision)
     const statusVersion = useRef(0)
     const card = status?.card ?? reopenedCard ?? projectedCard
@@ -512,6 +523,7 @@ export function registerOnboardingChat(ctx, {
       if (result.incomplete && result.card) {
         setValues({})
         setDocumentPreview(null)
+        setRecognition(null)
         return
       }
       if (!result.receipt) throw Error('未能确认资料已保存，请重试。')
@@ -571,27 +583,35 @@ export function registerOnboardingChat(ctx, {
 
     async function loadDocument(file) {
       if (!file || submitting.current || !status || status.receipt || status.stale || obsolete) return
+      const name = file.name.slice(0, 120) || '所选文件'
+      if (!file.size || file.size > 8 * 1024 * 1024) {
+        setRecognition({ phase: 'error', name, message: '请选择不超过 8 MB 的 PDF 或图片。' })
+        return
+      }
       submitting.current = true
       setError('')
-      setSaving(true)
-      setReadingDocument(file.name.slice(0, 120) || '所选文件')
+      const area = documentArea.current
+      if (area?.contains(area.ownerDocument.activeElement)) area.focus({ preventScroll: true })
+      const version = statusVersion.current
+      setRecognition({ phase: 'reading', name })
       try {
-        if (!file.size || file.size > 8 * 1024 * 1024) throw Error('请选择不超过 8 MB 的 PDF 或图片。')
         const result = await onboardingRequest(sessionId, 'recognize', {
           cardId, draftId, revision,
           file: { name: file.name, mimeType: file.type, base64: await readOnboardingFile(file) },
         })
-        const current = { ...card.initialValues, ...values }
-        const fields = card.kind === 'bank' ? bankFields : card.fields
-        const held = fields.filter(({ key }) => current[key]?.trim() &&
-          Object.hasOwn(result.fields, key) && current[key].trim() !== result.fields[key]).map(({ label }) => label)
-        setDocumentPreview({ fields: result.fields, held })
+        if (version !== statusVersion.current) return
+        setDocumentPreview(result.fields)
+        setRecognition({ phase: 'ready', name })
       } catch (error) {
-        setError(shownError(error, '这份资料暂时无法识别，可以继续填写。'))
+        if (version !== statusVersion.current) return
+        const stale = ['DRAFT_STALE', 'CARD_UNAVAILABLE', 'ONBOARDING_CHANGED'].includes(error?.code)
+        const retryFile = stale || ['DOCUMENT_INVALID', 'DOCUMENT_TYPE'].includes(error?.code) ? undefined : file
+        setRecognition({ phase: 'error', name, retryFile,
+          message: shownError(error, '这份资料暂时无法识别，可以重试或继续填写。') })
+        if (stale) setStatusAttempt(attempt => attempt + 1)
       } finally {
         submitting.current = false
-        setSaving(false)
-        setReadingDocument('')
+        if (version !== statusVersion.current) setRecognition(current => current?.phase === 'reading' ? null : current)
       }
     }
 
@@ -602,8 +622,9 @@ export function registerOnboardingChat(ctx, {
     }
 
     function loadSingleDocument(files) {
+      if (submitting.current) return
       if (files.length === 1) void loadDocument(files[0])
-      else if (files.length > 1) setError('一次只能识别一份资料。请选择其中一份。')
+      else if (files.length > 1) setRecognition({ phase: 'error', message: '一次只能识别一份资料。请选择其中一份。' })
     }
 
     function pasteDocument(event) {
@@ -614,7 +635,7 @@ export function registerOnboardingChat(ctx, {
       if (!files.length) return
       event.preventDefault()
       event.stopPropagation()
-      if (!submitting.current) loadSingleDocument(files)
+      loadSingleDocument(files)
     }
 
     function handleDocumentDrag(event, phase) {
@@ -638,8 +659,8 @@ export function registerOnboardingChat(ctx, {
         loadSingleDocument(transfer.files)
         return
       }
-      transfer.dropEffect = saving ? 'none' : 'copy'
-      setDropActive(!saving)
+      transfer.dropEffect = submitting.current ? 'none' : 'copy'
+      setDropActive(!submitting.current)
     }
 
     function change(key, value) {
@@ -707,8 +728,10 @@ export function registerOnboardingChat(ctx, {
       const documentName = sourceText(bankCard ? 'bank' : card.documentKind)
       const label = '选择' + documentName
       const uploadHintId = 'qianlai-document-upload-hint-' + cardId
+      const reading = recognition?.phase === 'reading'
       const defaults = bankCard ? { currency: 'CNY', holder: status.view?.enterprise?.companyName ?? '' } : {}
-      const documentValues = { ...defaults, ...documentPreview?.fields, ...prefilled, ...values }
+      const manualValues = { ...prefilled, ...values }
+      const documentValues = { ...defaults, ...documentPreview, ...manualValues }
       const fields = bankCard ? bankFields.map(field => {
         if (field.key !== 'currency' || field.options.some(option => option.value === documentValues.currency)) return field
         return { ...field, options: [...field.options, { value: documentValues.currency, label: documentValues.currency }] }
@@ -716,34 +739,62 @@ export function registerOnboardingChat(ctx, {
       const complete = !bankCard && fields.every(field => (field.requiredWhen && documentValues[field.requiredWhen] !== '其他') ||
         documentValues[field.key]?.trim())
       const confirm = complete ? (wantsTax ? '确认税务资料' : '确认公司资料') : '保存到草稿'
-      const prefilledText = documentPreview?.held.length
-        ? '保留了原先填写的' + documentPreview.held.join('、') + '。请对照资料核对后确认。'
-        : '请核对预填内容，补齐缺项后确认。'
+      const held = documentPreview ? fields.filter(({ key }) => Object.hasOwn(manualValues, key) &&
+        Object.hasOwn(documentPreview, key) && manualValues[key]?.trim() !== documentPreview[key]).map(({ label }) => label) : []
+      const hint = reading ? '文件已接收，结果会先请你核对。'
+        : documentPreview ? held.length
+          ? '保留了原先填写的' + held.join('、') + '。请对照资料核对后确认。'
+          : '已识别 ' + Object.keys(documentPreview).length + ' 项，请核对后确认。'
+          : Object.keys(prefilled).length ? '请核对预填内容，补齐缺项后确认。'
+            : '可选择、拖入或粘贴 PDF 或图片，单份不超过 8 MB。'
       body = [
         jsx('div', {
-          role: 'group', tabIndex: 0, 'aria-label': '添加' + documentName, 'aria-describedby': uploadHintId,
-          style: { ...actions, gap: '8px 12px', padding: '12px 14px', background: tintedSurface, border: '1px dashed color-mix(in srgb, ' + accent + ' 42%, transparent)', borderRadius: 10 },
+          ref: documentArea, role: 'group', tabIndex: 0, 'aria-label': '添加' + documentName, 'aria-describedby': uploadHintId,
+          'data-qianlai-document-file': recognition?.phase ?? 'empty',
+          style: { ...actions, gap: '8px 12px', padding: '12px 14px', background: tintedSurface,
+            border: '1px ' + (recognition?.name ? 'solid' : 'dashed') + ' color-mix(in srgb, ' + accent + ' 25%, transparent)',
+            borderRadius: 12 },
+          onKeyDown: event => {
+            if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return
+            event.preventDefault()
+            if (!saving && !submitting.current) documentInput.current?.click()
+          },
           children: [
-            button(label, () => documentInput.current?.click(), saving),
-            jsx('span', { id: uploadHintId, style: secondary, children: '也可拖入文件，或点这里按 Ctrl+V（Mac 上按 ⌘V）粘贴。' }),
+            jsx('span', { 'aria-hidden': true, style: { display: 'grid', placeItems: 'center', width: 34, height: 36,
+              flex: 'none', borderRadius: 8, color: accentStrong, background: 'color-mix(in srgb, currentColor 10%, transparent)' },
+              children: jsx('span', { style: { width: 13, height: 17, display: 'grid', alignContent: 'center', gap: 3,
+                border: '1.5px solid currentColor', borderRadius: 3, paddingInline: 2, boxSizing: 'border-box' },
+                children: [
+                  jsx('span', { style: { borderTop: '1px solid currentColor' } }),
+                  jsx('span', { style: { borderTop: '1px solid currentColor', width: '75%' } }),
+                ] }) }),
+            jsx('div', { style: { flex: '1 1 11rem', minWidth: 0 }, children: [
+              jsx('strong', { style: { display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                fontWeight: 620 }, title: recognition?.name, children: recognition?.name || documentName }),
+              jsx('p', { id: uploadHintId, role: 'status', style: { ...secondary, margin: 0, overflowWrap: 'anywhere' },
+                children: hint }),
+            ] }),
+            reading ? jsx('span', {
+              className: 'qianlai-document-reading', style: { display: 'inline-flex', alignItems: 'center', gap: 6,
+                color: accentStrong, fontSize: '0.875em', padding: '5px 9px', borderRadius: 99, fontWeight: 620,
+                background: 'color-mix(in srgb, currentColor 9%, transparent)' },
+              children: [jsx('style', { children: documentReadingStyle }), '读取中'],
+            }) : jsx('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginInlineStart: 'auto' }, children: [
+              recognition?.retryFile ? button('重试这份文件', () => void loadDocument(recognition.retryFile), saving) : null,
+              button(recognition?.name ? '更换文件' : label, () => documentInput.current?.click(), saving),
+            ] }),
+            recognition?.phase === 'error' ? jsx('p', {
+              role: 'alert', style: { ...secondary, color: danger, flexBasis: '100%', margin: 0 }, children: recognition.message,
+            }) : null,
             jsx('input', {
               ref: documentInput, type: 'file', accept: '.pdf,.png,.jpg,.jpeg,.webp',
-              hidden: true, disabled: saving, onChange: selectDocument,
+              hidden: true, disabled: saving || reading, onChange: selectDocument,
             }),
           ],
         }),
-        jsx('div', { style: { display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }, children: [
-          readingDocument ? jsx('progress', { 'aria-hidden': true, style: { width: '3rem', height: 8, accentColor: accent, flex: 'none' } }) : null,
-          jsx('p', {
-            role: readingDocument || documentPreview || Object.keys(prefilled).length ? 'status' : undefined,
-            style: { ...secondary, margin: 0, overflowWrap: 'anywhere' },
-            children: readingDocument ? '正在识别「' + readingDocument + '」…' : documentPreview || Object.keys(prefilled).length
-              ? prefilledText : 'PDF 或图片，单份不超过 8 MB。',
-          }),
-        ] }),
         buildForm({ fields: bankCard ? fields : fields.map(field => ({ ...field, required: false })), values: documentValues,
-          change, saving, label: confirm,
-          secondaryAction: bankCard ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving) : undefined,
+          change, saving, label: confirm, submitDisabled: reading,
+          secondaryAction: bankCard ? button('稍后补账户资料', () => void submit({ choice: 'skip' }), saving || reading) : undefined,
           onSubmit: input => {
             if (bankCard) saveFields(fields, input)
             else void submit({ values: Object.fromEntries(
