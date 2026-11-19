@@ -3,6 +3,7 @@ import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
 import { onboardingFieldError } from '../client/onboarding-chat.src.js'
+import { createOnboardingDateInput } from '../client/onboarding-date.src.js'
 import { taxFields } from '../src/onboarding-fields.js'
 import { taxRegionCities, taxScanCities } from '../src/tax-portals.js'
 
@@ -11,6 +12,7 @@ function makeClient() {
     .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
     .replace('/* tax-fields */ []', JSON.stringify(taxFields))
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
+    .replace('/* onboarding-date-client */', () => createOnboardingDateInput.toString())
     .replace('/* onboarding-chat-client */', () => onboardingFieldError.toString() +
       '\nfunction registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
   const fibers = new Map()
