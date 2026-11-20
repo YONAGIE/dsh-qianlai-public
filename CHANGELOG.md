@@ -29,6 +29,8 @@
 
 - After company setup, guide the owner through the next bookkeeping action using the recorded handoff period and opening-balance status. Offer the DSH file picker for the current handoff document and reuse payroll and social insurance arrangements when gathering materials.
 
+- Review the specific historical months that still need evidence, keep covered months and the agreed start month, and carry unresolved bank differences or owner advances forward until matching settlement evidence is available.
+
 - Show the same onboarding card only once per reply, including when multiple tool calls return the same tax scan or a document step.
 
 - Show editable draft fields directly in DSH’s right-hand panel. Open the panel in the current conversation when the user starts or explicitly resumes company setup. Keep unsaved input while chat updates the other fields and show conflicting changes before saving. Lay out short fields side by side when the card is wide enough. Align primary card actions to the right and keep bank account save/defer buttons in one wrapping row.
