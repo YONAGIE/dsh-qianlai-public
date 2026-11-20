@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { readFileSync, realpathSync, statSync } from 'node:fs'
-import { extname, join, sep } from 'node:path'
+import { basename, extname, join, sep } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
 import { refuse } from './period.js'
@@ -12,8 +13,20 @@ export interface UploadResult {
   images?: UploadImage[]
 }
 
+export interface MaterialSource { fingerprint: string; name: string }
+
+export function materialSource(bytes: Uint8Array, ext: string, name: string): MaterialSource {
+  return {
+    fingerprint: createHash('sha256').update(ext).update('\0').update(bytes).digest('hex'),
+    name: name.replace(/[\p{C}]/gu, '').trim().slice(0, 200) || '未命名材料',
+  }
+}
+
 /** Read only received attachments. Parsing never runs inside a book write transaction. */
-export async function readUpload(dshHome: string, path: string, options: UploadOptions = {}, signal?: AbortSignal): Promise<UploadResult> {
+export async function readUpload(
+  dshHome: string, path: string, options: UploadOptions = {}, signal?: AbortSignal,
+  onSource?: (source: MaterialSource) => void,
+): Promise<UploadResult> {
   if (signal?.aborted) return refuse('FILE_PARSE_CANCELLED', '文件读取已取消，没有导入或记账。')
   for (const [key, value] of Object.entries(options)) {
     if (!Number.isSafeInteger(value) || value < (key === 'offset' ? 0 : 1))
@@ -33,7 +46,12 @@ export async function readUpload(dshHome: string, path: string, options: UploadO
   const ext = extname(real).toLowerCase()
   if (!['.csv', '.tsv', '.txt', '.xls', '.xlsx', '.pdf'].includes(ext))
     return refuse('FILE_TYPE_UNSUPPORTED', '支持 CSV、TSV、TXT、XLS、XLSX 和 PDF；图片可以直接上传查看。')
-  return parseUpload(readFileSync(real), ext, options, signal)
+  let bytes: Buffer
+  try { bytes = readFileSync(real) }
+  catch { return refuse('FILE_NOT_FOUND', '找不到可读取的附件。请重新发送这份材料。') }
+  if (bytes.length > 8 * 1024 * 1024) return refuse('FILE_TOO_LARGE', '文件超过 8 MB，请按月份或页码拆分后上传。')
+  onSource?.(materialSource(bytes, ext, basename(real)))
+  return parseUpload(bytes, ext, options, signal)
 }
 
 /** The caller has already authorized and bounded the referenced PDF bytes. */

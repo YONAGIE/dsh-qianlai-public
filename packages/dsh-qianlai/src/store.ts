@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -128,6 +129,27 @@ const MIGRATIONS: readonly string[] = [
     payload_json TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE work_material (
+    id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('read', 'failed')),
+    failure_code TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE work_matter (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    period TEXT,
+    missing_json TEXT NOT NULL,
+    material_links_json TEXT NOT NULL DEFAULT '[]',
+    revision INTEGER NOT NULL DEFAULT 1,
+    voucher_no TEXT UNIQUE REFERENCES voucher(voucher_no),
+    posting_hash TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ]
 
 export interface Company {
@@ -143,6 +165,48 @@ export interface WorkEvent {
   readonly request: Record<string, unknown>
   readonly result: Record<string, unknown>
   readonly createdAt: string
+}
+
+export interface WorkMaterial {
+  readonly id: number
+  readonly name: string
+  readonly status: 'read' | 'failed'
+  readonly code: string | null
+  readonly updatedAt: string
+}
+
+export interface WorkMaterialLink {
+  readonly materialId: number
+  readonly replacesMaterialId?: number
+}
+
+export interface WorkMatter {
+  readonly id: number
+  readonly title: string
+  readonly period: string | null
+  readonly missing: readonly string[]
+  readonly materialLinks: readonly WorkMaterialLink[]
+  readonly revision: number
+  readonly voucherNo: string | null
+  readonly postingHash: string | null
+  readonly updatedAt: string
+}
+
+type WorkMatterRow = Omit<WorkMatter, 'missing' | 'materialLinks'> & { missingJson: string; linksJson: string }
+
+const MATERIAL_COLUMNS = 'id, display_name AS name, status, failure_code AS code, updated_at AS updatedAt'
+const MATTER_COLUMNS = `id, title, period, missing_json AS missingJson, material_links_json AS linksJson,
+  revision, voucher_no AS voucherNo, posting_hash AS postingHash, updated_at AS updatedAt`
+
+// IDs can be carried across chats; independent local books should not share a sequence.
+const workId = () => randomInt(1, 2 ** 48)
+
+function matterFromRow({ missingJson, linksJson, ...row }: WorkMatterRow): WorkMatter {
+  return {
+    ...row,
+    missing: JSON.parse(missingJson) as string[],
+    materialLinks: JSON.parse(linksJson) as WorkMaterialLink[],
+  }
 }
 
 export interface SubjectMovement {
@@ -304,6 +368,8 @@ export class BookStore {
     for (const table of [
       'tool_receipt',
       'work_event',
+      'work_matter',
+      'work_material',
       'opening_balance',
       'statement_line',
       'statement_import',
@@ -335,6 +401,57 @@ export class BookStore {
       id: row.id, operation: row.operation, request: JSON.parse(row.request_json) as Record<string, unknown>,
       result: JSON.parse(row.result_json) as Record<string, unknown>, createdAt: row.created_at,
     }))
+  }
+
+  workMaterial(id: number): WorkMaterial | undefined {
+    return this.db.prepare(`SELECT ${MATERIAL_COLUMNS} FROM work_material WHERE id = ?`).get(id) as unknown as WorkMaterial | undefined
+  }
+
+  recentWorkMaterials(): WorkMaterial[] {
+    return this.db.prepare(`SELECT ${MATERIAL_COLUMNS} FROM work_material ORDER BY updated_at DESC, id DESC LIMIT 20`).all() as unknown as WorkMaterial[]
+  }
+
+  saveWorkMaterial(fingerprint: string, name: string, status: WorkMaterial['status'], code: string | null): WorkMaterial {
+    return this.db.prepare(`
+      INSERT INTO work_material (id, fingerprint, display_name, status, failure_code, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(fingerprint) DO UPDATE SET status = excluded.status, failure_code = excluded.failure_code, updated_at = excluded.updated_at
+      RETURNING ${MATERIAL_COLUMNS}
+    `).get(workId(), fingerprint, name, status, code, new Date().toISOString()) as unknown as WorkMaterial
+  }
+
+  workMatter(id: number): WorkMatter | undefined {
+    const row = this.db.prepare(`SELECT ${MATTER_COLUMNS} FROM work_matter WHERE id = ?`).get(id) as unknown as WorkMatterRow | undefined
+    return row && matterFromRow(row)
+  }
+
+  pendingWorkMatters(): WorkMatter[] {
+    return (this.db.prepare(`
+      SELECT ${MATTER_COLUMNS} FROM work_matter WHERE voucher_no IS NULL ORDER BY updated_at DESC, id DESC LIMIT 20
+    `).all() as unknown as WorkMatterRow[]).map(matterFromRow)
+  }
+
+  createWorkMatter(title: string, period: string | null, missing: readonly string[]): WorkMatter {
+    return matterFromRow(this.db.prepare(`
+      INSERT INTO work_matter (id, title, period, missing_json, updated_at) VALUES (?, ?, ?, ?, ?) RETURNING ${MATTER_COLUMNS}
+    `).get(workId(), title, period, JSON.stringify(missing), new Date().toISOString()) as unknown as WorkMatterRow)
+  }
+
+  updateWorkMatter(matter: WorkMatter): WorkMatter {
+    const updated = this.db.prepare(`
+      UPDATE work_matter
+      SET missing_json = ?, material_links_json = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND revision = ?
+    `).run(JSON.stringify(matter.missing), JSON.stringify(matter.materialLinks), new Date().toISOString(), matter.id, matter.revision)
+    if (updated.changes !== 1) throw new Error('待办事项已更新')
+    return this.workMatter(matter.id)!
+  }
+
+  finishWorkMatter(id: number, revision: number, voucherNo: string, postingHash: string): void {
+    const updated = this.db.prepare(`
+      UPDATE work_matter SET voucher_no = ?, posting_hash = ?, revision = revision + 1, updated_at = ?
+      WHERE id = ? AND revision = ? AND voucher_no IS NULL
+    `).run(voucherNo, postingHash, new Date().toISOString(), id, revision)
+    if (updated.changes !== 1) throw new Error('待办事项在写入凭证时发生变化')
   }
 
   /** 录过期初余额的时间，没录过为 undefined。录的是空表（新成立的公司）也算录过。 */

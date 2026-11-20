@@ -282,19 +282,35 @@ describe('记账的可信批准与调用重试', () => {
     expect(second.request).not.toHaveBeenCalled()
     expect(second.count()).toBe(1)
   })
-  it('旧版账本追加迁移后保留已有凭证与业务记录', async () => {
+  it.each([4, 6])('旧版账本 v%i 追加迁移后保留已有凭证与业务记录', async legacyVersion => {
     const old = fixture()
-    expect(await old.call(entry, execution())).toMatchObject({ accepted: true })
+    const oldCall = execution()
+    const original = await old.call(entry, oldCall)
+    expect(original).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-001' })
     disposers.pop()!()
     const db = new DatabaseSync(old.bookPath)
-    const version = Number(db.prepare('PRAGMA user_version').get()!.user_version)
-    db.exec(`DROP TABLE company_onboarding; DROP TABLE tool_receipt; PRAGMA user_version = ${version - 2}`)
-    db.close()
+    try {
+      db.exec('DROP TABLE work_matter; DROP TABLE work_material')
+      if (legacyVersion === 4) db.exec('DROP TABLE company_onboarding; DROP TABLE tool_receipt')
+      db.exec(`PRAGMA user_version = ${legacyVersion}`)
+    } finally {
+      db.close()
+    }
     const migrated = fixture(async () => 'allowed-once', old.bookPath)
     expect(migrated.count()).toBe(1)
+    if (legacyVersion === 6) {
+      expect(await migrated.call(entry, oldCall)).toEqual(original)
+      expect(migrated.request).not.toHaveBeenCalled()
+    }
     expect(await migrated.call(entry, execution())).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-002' })
     const store = new BookStore(old.bookPath)
-    try { expect(store.workEvents()).toHaveLength(2) } finally { store.close() }
+    try {
+      expect(store.workEvents()).toHaveLength(2)
+      expect(store.pendingWorkMatters()).toEqual([])
+      expect(store.recentWorkMaterials()).toEqual([])
+    } finally {
+      store.close()
+    }
   })
   it('并发重试同一调用只提交一份账务结果', async () => {
     const resolve: (() => void)[] = []
