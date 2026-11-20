@@ -33,4 +33,21 @@ describe('current business action', () => {
       second.close()
     }
   })
+  it('offers a generic payroll action until payment is matched', () => {
+    const store = new BookStore(':memory:')
+    try {
+      store.createCompany({ name: '合成公司', accountingStartMonth: '2026-11', isSample: false })
+      store.setOpeningBalances([], now)
+      store.recordWork('local-work:payroll-draft', { periodKey: '2026-11' },
+        { rows: [{ employeeId: 'private-id', name: '合成员工', net: '3200.00' }] }, now)
+      const current = currentWork(store, pack, now)
+      expect(current.nextAction.kind).toBe('payroll')
+      expect(JSON.stringify(current)).not.toMatch(/合成员工|3200|private-id/)
+      store.recordWork('local-work:payroll-payment', { periodKey: '2026-11' },
+        { employeeId: 'private-id', amount: '3200.00' }, now)
+      expect(currentWork(store, pack, now).nextAction.kind).toBe('ready')
+    } finally {
+      store.close()
+    }
+  })
 })
