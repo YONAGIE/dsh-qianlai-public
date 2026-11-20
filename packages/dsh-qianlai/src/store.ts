@@ -398,16 +398,20 @@ export class BookStore {
     ).run(operation, json(request), json(result), now.toISOString()).lastInsertRowid)
   }
 
-  workEvents(beforeId?: number, limit = 20): WorkEvent[] {
+  workEvents(beforeId?: number, limit = 20, operation?: string): WorkEvent[] {
     const rows = this.db.prepare(
-      'SELECT id, operation, request_json, result_json, created_at FROM work_event WHERE id < ? ORDER BY id DESC LIMIT ?',
-    ).all(beforeId ?? Number.MAX_SAFE_INTEGER, limit) as {
+      "SELECT id, operation, request_json, result_json, created_at FROM work_event WHERE id < ? AND ((? IS NULL AND operation NOT LIKE 'local-work:%') OR operation = ?) ORDER BY id DESC LIMIT ?",
+    ).all(beforeId ?? Number.MAX_SAFE_INTEGER, operation ?? null, operation ?? null, limit) as {
       id: number; operation: string; request_json: string; result_json: string; created_at: string
     }[]
     return rows.map(row => ({
       id: row.id, operation: row.operation, request: JSON.parse(row.request_json) as Record<string, unknown>,
       result: JSON.parse(row.result_json) as Record<string, unknown>, createdAt: row.created_at,
     }))
+  }
+
+  workEventsByOperation(operation: string): WorkEvent[] {
+    return this.workEvents(undefined, Number.MAX_SAFE_INTEGER, operation)
   }
 
   workMaterial(id: number): WorkMaterial | undefined {
