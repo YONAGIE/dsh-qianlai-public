@@ -36,6 +36,7 @@ import { exportReviewPack } from './review-pack.js'
 import { importStatement, readUpload, renameBankAccount, unrecordedStatementLines, type ImportStatementInput } from './statements.js'
 import { BookStore } from './store.js'
 import { registerTaxOnboarding } from './tax-onboarding.js'
+import { taxKinds, taxWork } from './tax-work.js'
 import { checkMatterPosting, readWorkMatter, saveWorkMatter, saveWorkNote, workProgress, WORK_OPERATIONS } from './work-progress.js'
 import { materialSource, parseReferencedPdf, type MaterialSource, type UploadOptions, type UploadResult } from './uploads.js'
 import { isIntroductionSession, isWechatSession, loginControl, type LoginAction } from './wechat/control.js'
@@ -624,6 +625,59 @@ export function apply(ctx: Context, config: Config = {}): void {
         { quarter: str('季度，YYYY-Qn，如 2026-Q3') },
         ['quarter'],
         (a) => quarterFilingPrep(store, pack, String(a.quarter ?? ''), new Date()),
+      ),
+      tool(
+        'moneycome_tax_work',
+        '按当前公司、税种和实际所属期核对本地税务资料。prepare 或 status 查看覆盖月份、版本、凭据、原申报和缴款待核状态。attach 只在材料读取成功时按原件的抬头、税种和期间关联，收据日期与所属期分别传。review 只用最新准备结果的 fingerprint，通过 DSH 选择卡核对本地资料，没有提交或缴款权限。回执结果待核时沿原申报或缴款查询，不再次发起。不要自行计算税款、填充未知金额、把上传的原件说成官方核验成功。',
+        {
+          action: { type: 'string', enum: ['status', 'prepare', 'attach', 'review'] },
+          kind: { type: 'string', enum: [...taxKinds], description: 'vat 增值税；income-prepayment 企业所得税预缴；income-annual 企业所得税年度；payroll-withholding 工资个人所得税' },
+          periodKey: str('实际所属期，月 YYYY-MM，整季度 YYYY-Qn，完整年度 YYYY。工资个税按实际发放月'),
+          sourceCompany: str('attach 使用，从原件读取的实际公司抬头'),
+          sourcePeriod: str('attach 使用，从原件读取归一化的实际所属期'),
+          sourceTaxKind: { type: 'string', enum: [...taxKinds] },
+          materialId: { type: 'integer', description: '本账本成功读取的原件 ID' },
+          evidenceKind: { type: 'string', enum: ['tax-form', 'filing-receipt', 'payment-receipt'] },
+          evidenceDate: str('原件所载实际申报日或缴款日，YYYY-MM-DD'),
+          evidenceAmount: str('原件所载金额，元；没有或不清楚时省略'),
+          fingerprint: str('review 使用。当前准备资料返回的 fingerprint，禁止沿用旧版本'),
+        },
+        ['action', 'kind', 'periodKey'],
+        async (a, signal, execution) => {
+          if (isIntroductionSession(execution?.agent?.session.id) && (a.action === 'attach' || a.action === 'review'))
+            return refuse('INTRODUCTION_READ_ONLY', '请在当前公司的业务会话继续核对。')
+          const now = new Date()
+          const prior = store.transaction(() => taxWork(store, pack, a, now))
+          if (a.action !== 'review' || !prior.accepted || prior.alreadyReviewed) return prior
+          const agent = execution?.agent
+          const session = agent?.session
+          const host = ctx.get?.('userQuestions') as UserQuestions | undefined
+          if (!host?.ask || !agent || !session?.id || !execution?.callId || !signal || isWechatSession(session.id))
+            return refuse('TAX_REVIEW_UNAVAILABLE', '可在 DSH 会话里核对这份准备资料。当前资料仍待核对。')
+          if (entryQuestions.has(session.id) || questionTurns.get(session)?.question || questionTurns.get(session)?.profileCard)
+            return refuse('TAX_REVIEW_PENDING', '有一项选择正在等待处理，请先完成当前操作。')
+          const id = createHash('sha256').update(canonical([session.id, execution.callId, a.fingerprint])).digest('hex')
+          const confirm = '确认本地资料'
+          entryQuestions.set(session.id, { receiptKey: id, argsHash: canonical(a) })
+          try {
+            const result = await host.ask({ agent, signal, questions: [{ id, header: '核对税务资料',
+              question: '这份税务准备资料核对好了吗？', detail: questionDetail([
+                String(prior.company), String(prior.title) + ' · ' + String(prior.periodKey),
+                '保存本期本地核对版本，供后续办理。',
+              ].join('\n')), options: [{ label: confirm }, { label: '稍后核对' }],
+            }] })
+            const answer = result.answers.length === 1 ? result.answers[0] : undefined
+            if (signal.aborted || disposed || answer?.id !== id || answer.custom !== undefined ||
+                answer.selected.length !== 1 || answer.selected[0] !== confirm)
+              return refuse('TAX_REVIEW_DEFERRED', '当前资料仍待核对。')
+            return store.transaction(() => taxWork(store, pack, a, new Date(), true))
+          } catch {
+            return refuse('TAX_REVIEW_DEFERRED', '当前资料仍待核对。')
+          } finally {
+            entryQuestions.delete(session.id)
+          }
+        },
+        true,
       ),
       tool(
         'moneycome_posting_guide',
