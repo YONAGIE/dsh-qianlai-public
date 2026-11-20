@@ -43,6 +43,48 @@ describe('发票不可读字段优先级', () => {
     expect(store.invoice(invoice.invoiceNumber)?.totalCents).toBe(130000n)
   })
 
+  it('抬头不符时直接要求换票，且换来的票核对通过后仍需正式记账', () => {
+    const store = ownBook()
+    expect(checkInvoice(store, { ...invoice, buyerName: '合成他方企业' }, now)).toMatchObject({
+      recordable: false, direction: 'subjectMismatch',
+      nextAction: { kind: 'replace_invoice', message: '发票抬头与本公司登记资料不符，这张票没有入账。请上传抬头正确的发票。' },
+    })
+    expect(store.pendingInvoices()).toEqual([])
+    expect(store.vouchers({ periodKey: '2026-01' })).toEqual([])
+
+    expect(checkInvoice(store, invoice, now)).toMatchObject({
+      recordable: true, nextAction: { kind: 'prepare_posting' },
+    })
+    const entry = {
+      date: invoice.issueDate, summary: '合成办公用品', eventKind: 'office_supply',
+      facts: { 'settlement.method': 'cash' },
+      amounts: { invoice_total: '1300.00' },
+      invoiceNumber: invoice.invoiceNumber,
+    }
+    const pack = loadPack()
+    expect(recordEntry(store, pack, { ...entry, preview: true }, now))
+      .toMatchObject({ accepted: true, preview: true })
+    expect(store.vouchers({ periodKey: '2026-01' })).toEqual([])
+    expect(recordEntry(store, pack, entry, now)).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-001' })
+    expect(checkInvoice(store, invoice, now)).toMatchObject({
+      alreadyRecorded: 'PZ-202601-001',
+      nextAction: { kind: 'already_recorded', message: expect.stringContaining('PZ-202601-001') },
+    })
+    expect(recordEntry(store, pack, entry, now)).toMatchObject({ accepted: false, code: 'INVOICE_ALREADY_RECORDED' })
+    const mismatched = checkInvoice(store, { ...invoice, buyerName: '合成他方企业' }, now)
+    expect(mismatched).not.toHaveProperty('alreadyRecorded')
+    expect(mismatched).toMatchObject({ nextAction: { kind: 'replace_invoice' } })
+    expect(store.vouchers({ periodKey: '2026-01' })).toHaveLength(1)
+  })
+
+  it('不可读的发票号不使用模型猜测的候选值', () => {
+    const store = ownBook()
+    expect(checkInvoice(store, { ...invoice, unreadable: ['invoiceNumber'] }, now)).toMatchObject({
+      recordable: false, nextAction: { kind: 'upload_clearer_invoice' },
+    })
+    expect(store.invoice(invoice.invoiceNumber)).toBeUndefined()
+  })
+
   it('可读合计不能让不可读净额进入已核票据或被后续销售记账使用', () => {
     const store = ownBook()
     expect(checkInvoice(store, {

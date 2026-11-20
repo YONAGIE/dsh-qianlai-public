@@ -15,6 +15,8 @@
 
 - Format WeChat replies as readable paragraphs. Expand each Markdown table row into a labeled record and split long replies at paragraph or line boundaries where possible.
 
+- Show the next step after checking an invoice and the existing receipt when it was already posted. Let users add a replacement or clearer copy with the conversation's file picker.
+
 - Read and correct one field of a completed company profile in chat. Keep bank numbers masked and preserve leading zeros when correcting a registered tail. Show the saved value in the profile without reopening setup.
 
 - Open a fresh form when a company profile correction is requested again. Reopen saved or expired correction cards using the latest profile values.

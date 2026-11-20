@@ -631,7 +631,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_check_invoice',
-        '核一张发票：老板发来发票照片、截图，或口述票面内容时用。把票面上读到的要素原样填进来：金额用元（如 1287.13）；看得见但读不清的字段，把参数名本身放进 unreadable；票上本来没有的不填；都不猜。工具核价税合计、大小写、税率、号码位数、开票日期，判断咱们是买方还是卖方，查这张票有没有记过。这一步不记账：recordable 为 true 才能记，记账时在 moneycome_record_entry 里带上 invoiceNumber，金额照这里返回的 amounts 填。recordable 为 false 时把 problems 告诉老板，不要记。核票不验真：结果里的 authenticity 在这次会话第一次核票时转告老板一次，之后不必每张都说。',
+        '核一张发票。将照片、截图、文件或老板口述中读到的票面要素照实填入，金额用元，读不清的参数名放入 unreadable，票面没有的字段留空。核票阶段只核对并保存可用的票面资料。按 nextAction.message 说明结果和当前动作。replace_invoice 请老板直接补发本公司抬头正确的发票，upload_clearer_invoice 请补发清晰原件，review_original 指出 problems 中实际未通过的项目并请核对原件。这三种结果均不预演、不写入当前发票。already_recorded 只告知原凭证号。只有 prepare_posting 可继续核对必要收付款事实，资料齐全后用 moneycome_posting_guide 和 moneycome_record_entry 预演，再走现有记账确认。预演和确认沿用本张票的 invoiceNumber 和已核对金额。首次核票时说明 authenticity，后续无需逐张重复。',
         {
           invoiceNumber: str('发票号码，逐位照抄。抄完按四位一组再对一遍票面，尤其是连着好几个 0 的地方；电子发票是 20 位'),
           issueDate: str('开票日期，YYYY-MM-DD'),

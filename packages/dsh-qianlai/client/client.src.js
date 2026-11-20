@@ -1,4 +1,4 @@
-/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput */
+/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput, registerInvoiceUpload */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -810,6 +810,7 @@ window.__ModuleLoader__.load({
 
     /* onboarding-date-client */
     /* onboarding-chat-client */
+    /* invoice-chat-client */
 
     const OnboardingDateInput = createOnboardingDateInput({ jsx, useState, useRef, useEffect },
       typeof window.HTMLElement?.prototype.showPopover === 'function')
@@ -870,6 +871,7 @@ window.__ModuleLoader__.load({
           ZhangjieQuestionHistory,
         ),
       )
+      registerInvoiceUpload(ctx, { jsx, useState, usePreset, toolResultText, buttonStyle, panelSectionStyle })
     }
 
     module.exports.apply = apply
