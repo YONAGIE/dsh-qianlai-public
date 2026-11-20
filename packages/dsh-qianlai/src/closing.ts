@@ -50,7 +50,7 @@ function validPeriod(store: BookStore, periodKey: string, now: Date) {
  * 每个账户的月末余额 = 盖住月末那份流水的期初余额 + 这份流水里月末及以前的收支。
  * 流水没交齐时先不核，免得同一个缺口报两遍。
  */
-function bankBalanceCheck(store: BookStore, bankSubject: string, periodKey: string, statementsComplete: boolean) {
+export function bankBalanceCheck(store: BookStore, bankSubject: string, periodKey: string, statementsComplete: boolean) {
   const blockers: Record<string, unknown>[] = []
   if (!statementsComplete) {
     blockers.push({ kind: 'bank_balance_pending', message: '银行流水交齐以后再核对余额。' })

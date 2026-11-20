@@ -107,7 +107,7 @@ function ready(store: BookStore, input: HistoricalBackfillInput) {
 }
 
 function expectNoPosting(store: BookStore) {
-  expect(store.vouchers()).toEqual([])
+  expect(store.postedPeriods()).toEqual([])
   expect(store.historicalPeriods()).toEqual([])
   expect(store.statementCoverage()).toEqual([])
   expect(store.lockedPeriods()).toEqual([])
@@ -170,6 +170,11 @@ describe('历史缺月正式补账', () => {
     expect(prepareHistoricalBackfill(store, pack, input, now)).toMatchObject({ code: 'HISTORY_MONTH_OUTSIDE_SCOPE' })
     const octoberInput = input.periods[1]!
     const one = { ...input, periods: [{ ...octoberInput, opening: { materialId: material('october-opening'), balances: [] } }] }
+    const statement = octoberInput.statements![0]!
+    expect(prepareHistoricalBackfill(store, pack, { ...one, periods: [{ ...one.periods[0]!, statements: [{
+      ...statement, printedOpeningBalance: '1.00', printedClosingBalance: '102.00',
+      rows: [{ ...statement.rows[0]!, balanceAfter: '102.00' }],
+    }] }] }, now)).toMatchObject({ code: 'HISTORY_BANK_BALANCE_DIFFERENCE', details: { bookBalance: '101.00', statementBalance: '102.00' } })
     expect(prepareHistoricalBackfill(store, pack, { ...one, periods: [{ ...one.periods[0]!, entries: [] }] }, now))
       .toMatchObject({ code: 'HISTORY_ACTIVITY_SOURCE_REQUIRED' })
     expect(prepareHistoricalBackfill(store, pack, { ...one, periods: [{ ...one.periods[0]!, entries: [{

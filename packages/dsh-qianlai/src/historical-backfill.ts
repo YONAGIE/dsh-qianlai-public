@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto'
 
 import { formatCents } from '@moneycome/fintax-core'
 
+import { bankRegistrationView } from './bank-accounts.js'
 import { firstBalanceDifference, validateOpeningRows, type OpeningBalanceInput } from './book.js'
-import { postBalanceTransfers } from './closing.js'
+import { bankBalanceCheck, postBalanceTransfers } from './closing.js'
 import { packParameter, recordEntry, type RecordEntryInput } from './entries.js'
 import { historicalHandoffProgress, readHistoricalHandoff } from './historical-handoff.js'
 import type { LoadedPack } from './pack.js'
@@ -88,6 +89,23 @@ function compareBoundary(
   return refuse('HISTORY_BALANCE_DIFFERENCE',
     `${month} 的${first.subjectName}算出 ${first.actual} 元，${target}为 ${first.expected} 元，相差 ${first.difference} 元。请先核对这一项的原件。`,
     { month, target, ...first })
+}
+
+function reconcileBankBalance(store: BookStore, bankSubject: string, month: string, now: Date) {
+  const range = monthRange(month)
+  const statements = store.statementCoverage().filter(item => item.from <= range.to && item.to >= range.from)
+  const throughMonthEnd = new Set(statements.filter(item => item.to >= range.to).map(item => item.accountRef))
+  const accounts = bankRegistrationView(store, todayInChina(now)).accounts.filter(account => !account.openedOn || account.openedOn <= range.to)
+  if (statements.some(item => !throughMonthEnd.has(item.accountRef)) || accounts.some(account => !throughMonthEnd.has(account.accountRef)))
+    return undefined
+  const check = bankBalanceCheck(store, bankSubject, month, true)
+  const first = check.blockers[0]
+  if (!first) return undefined
+  if (first.kind === 'bank_balance_mismatch')
+    return refuse('HISTORY_BANK_BALANCE_DIFFERENCE',
+      `${month} 账上银行存款是 ${String(first.bookBalance)} 元，月末流水是 ${String(first.statementBalance)} 元。请先核对银行存款的期初资料。`,
+      { ...first, month })
+  return refuse('HISTORY_BANK_BALANCE_UNKNOWN', `请补一份能核实 ${month} 月末余额的银行资料。`, { ...first, month })
 }
 
 function previewView(
@@ -246,6 +264,10 @@ function applyHistoricalBatch(store: BookStore, pack: LoadedPack, input: Histori
     } else if (!nextIsInBatch && !closingSource) {
       return refuse('HISTORY_CLOSING_REQUIRED',
         `请发能证明 ${key} 月末余额的科目表。我会用它核对补账后的期末。`, { month: key })
+    }
+    if (bankSubject && statementIds.size) {
+      const difference = reconcileBankBalance(store, bankSubject, key, now)
+      if (difference) return difference
     }
 
     store.lockPeriod(key, now)

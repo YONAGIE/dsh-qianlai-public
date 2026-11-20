@@ -63,6 +63,8 @@ function financialTables(store: BookStore, pack: LoadedPack, month: string): Tab
   const { month: current, yearToDate } = report.profit
   const lines = new Set([...current.lines, ...yearToDate.lines].map(line => line.lineName))
   const value = (list: typeof current.lines, name: string) => amount(list.find(line => line.lineName === name)?.amount ?? '0.00')
+  const cumulativeLabel = yearToDate.from.endsWith('-01')
+    ? '本年累计（元）' : `累计（${yearToDate.from} 至 ${yearToDate.to}，元）`
   return [
     { name: '资产负债表', rows: [
       ['资产', '余额（元）', '负债和所有者权益', '余额（元）'],
@@ -74,7 +76,7 @@ function financialTables(store: BookStore, pack: LoadedPack, month: string): Tab
       ['资产合计', amount(balance.assetsTotal), '负债和所有者权益合计', amount(balance.liabilitiesAndEquityTotal)],
     ] },
     { name: '利润表', rows: [
-      ['项目', '本月（元）', '本年累计（元）'],
+      ['项目', '本月（元）', cumulativeLabel],
       ...[...lines].map(name => [name, value(current.lines, name), value(yearToDate.lines, name)]),
       ...(current.totals && yearToDate.totals ? [
         ['收入合计', amount(current.totals.revenue), amount(yearToDate.totals.revenue)],
