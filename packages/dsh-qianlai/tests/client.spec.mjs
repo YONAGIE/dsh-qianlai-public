@@ -15,6 +15,8 @@ function makeClient() {
     .replace('/* onboarding-date-client */', () => createOnboardingDateInput.toString())
     .replace('/* onboarding-chat-client */', () => onboardingFieldError.toString() +
       '\nfunction registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
+    .replace('/* invoice-chat-client */', () =>
+      readFileSync(new URL('../client/invoice-chat.src.js', import.meta.url), 'utf8').replace(/^export /gm, ''))
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
@@ -108,7 +110,9 @@ function makeClient() {
       if (dependencies[0] === 'connection') callback({ connection, effect() {} })
       else if (dependencies.includes('sessions') && dependencies.includes('conversation')) callback({ sessions, effect() {} })
       else if (dependencies[0] === 'theme') callback({ theme: { overrideTokens: () => () => {} }, effect() {} })
-      else if (dependencies[0] === 'uiConversation') callback({ uiConversation: { events: { register() {}, entries: () => [] } } })
+      else if (dependencies[0] === 'uiConversation') callback({
+        uiConversation: { events: { register() {}, entries: () => [] } }, effect: install => install(),
+      })
       else if (dependencies[0] === 'sidebarRight') callback({ sidebarRight, sidebarRightTabs, effect: install => install() })
     },
     slots: {

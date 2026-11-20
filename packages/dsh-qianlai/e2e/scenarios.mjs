@@ -281,16 +281,21 @@ export const scenarios = [
   },
   {
     name: 'invoice-wrong-buyer',
-    description: '抬头不是本公司的票不记。',
+    description: '抬头不符直接引导补发正确发票，错误票不会进入预演、确认或入账。',
     turns: [
       ...OPEN,
       {
         say: '这张复印纸的票帮我记一下，银行卡付的。',
         image: 'inv-wrong-buyer.png',
-        expect: { noCalls: { tool: T('record_entry'), unless: /"preview":\s*true/ }, says: /抬头|购买方|买方|不是咱们|不是我们|不是您/ },
+        expect: {
+          calls: T('check_invoice'),
+          noCalls: [T('record_entry'), 'ask_user_question'],
+          says: [/抬头|购买方|买方/, /补发|重发|上传|重新发|换一张|发来正确/],
+          notSays: /还是记|照样记|回复[「“]?换票/,
+        },
       },
     ],
-    book: [{ ...vouchers, equals: 0 }],
+    book: [{ ...vouchers, equals: 0 }, { what: '抬头不符的发票未存入账本', sql: 'SELECT count(*) FROM invoice', equals: 0 }],
   },
   {
     name: 'invoice-blurry',
