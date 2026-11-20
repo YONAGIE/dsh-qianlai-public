@@ -79,8 +79,15 @@ try {
   assert.equal(calls[1][1].id, 'synthetic-report')
   assert.equal(calls[2][1].matterId, 24)
   assert.equal(calls[2][1].materialId, 77)
+  await page.evaluate(() => window.mountAction('moneycome-payroll-schedule-form', {
+    kind: 'schedule', earliestMonth: '2026-10', currentMonth: '2026-11', periodKey: '2026-11',
+  }))
+  await page.getByRole('combobox', { name: '发薪方式' }).selectOption('recurring')
+  await page.getByRole('combobox', { name: '每月发薪日' }).selectOption('31')
+  await page.getByRole('button', { name: '核对安排' }).click()
+  await page.waitForFunction(() => /生效月份 2026-11.*发薪日 31 日/.test(window.lastSent))
   assert.deepEqual(errors, [])
-  console.log('PASS: the built report and archive cards downloaded exact session-scoped artifacts in Chromium')
+  console.log('PASS: exact report and original materials downloaded; the payroll form sent the selected month and payday')
 } finally {
   await browser.close()
 }
