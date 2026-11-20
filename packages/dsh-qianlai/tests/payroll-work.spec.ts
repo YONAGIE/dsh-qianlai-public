@@ -100,4 +100,23 @@ describe('工资安排、准备稿和实际发放', () => {
     expect(store.workEvents()).toEqual([])
     expect(store.vouchers({ periodKey })).toEqual([])
   })
+
+  it('只使用该员工本期已实缴的个人扣款，差异需单项核对', () => {
+    const official = { rows: [{ employeeId: '01', name: employee.name, companyAmount: '600.00', personalAmount: '300.00' }],
+      paid: { paidOn: '2026-03-10', materialId: material('合成回执.pdf'), reference: '合成社保 A', paidTotal: '900.00' } }
+    const original = store.recordWork('local-work:benefit-contribution', { benefit: 'insurance', periodKey: '2026-01' }, official)
+    store.recordWork('local-work:benefit-contribution', { benefit: 'insurance', periodKey }, { ...official, originId: original })
+    store.recordWork('local-work:benefit-contribution', { benefit: 'housing', periodKey }, { rows: [
+      { employeeId: '01', name: employee.name, companyAmount: '100.00', personalAmount: '99.00' },
+    ] })
+    const pending = { action: 'draft', revision: 0, rows: [{ ...employee, personalSocial: '' }] }
+    expect(inspect(pending)).toMatchObject({ value: { rows: [{ personalSocial: '300.00', personalHousing: '100.00', net: '2550.00' }] } })
+    expect(inspect({ ...pending, periodKey: '2026-01' })).toMatchObject({ code: 'PAYROLL_ROW_INVALID' })
+    const correction = { ...employee, personalSocial: '280', net: '2570' }
+    expect(inspect({ ...pending, rows: [correction] })).toMatchObject({
+      code: 'PAYROLL_DEDUCTION_CONFLICT', details: { employeeId: '01', field: 'personalSocial', contributionAmount: '300.00', payrollAmount: '280.00' },
+    })
+    expect(approve({ ...pending, rows: [{ ...correction, personalSocialOverrideReason: '合成工资表实扣差异已核对' }] })).toMatchObject({ accepted: true })
+    expect(status()).toMatchObject({ rows: [{ personalSocial: '280.00', deductionOverrides: { personalSocial: '合成工资表实扣差异已核对' } }] })
+  })
 })

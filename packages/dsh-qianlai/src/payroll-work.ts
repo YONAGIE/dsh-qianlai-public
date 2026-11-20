@@ -14,7 +14,12 @@ const PAYMENT_STATUS = 'local-work:payroll-payment-status'
 
 const amounts = ['gross', 'personalSocial', 'personalHousing', 'individualTax', 'otherDeduction', 'net'] as const
 type AmountKey = typeof amounts[number]
-type PayrollRow = Readonly<Record<AmountKey, string>> & { employeeId: string; name: string }
+const contributionFields = { insurance: 'personalSocial', housing: 'personalHousing' } as const
+const deductionLabels = { personalSocial: '个人社保扣款', personalHousing: '个人公积金扣款' } as const
+type DeductionField = keyof typeof deductionLabels
+type PayrollRow = Readonly<Record<AmountKey, string>> & {
+  employeeId: string; name: string; deductionOverrides?: Partial<Record<DeductionField, string>>
+}
 interface Draft { materialId?: number; rows: PayrollRow[] }
 interface Schedule { mode: 'recurring' | 'once' | 'paused'; payday?: number }
 interface Payment { employeeId: string; paidOn: string; amount: string; statementLineId?: number; materialId?: number; reference?: string }
@@ -103,7 +108,60 @@ function readRow(input: unknown): PayrollRow | undefined {
     gross !== net + personalSocial + personalHousing + individualTax + otherDeduction) return undefined
   return { employeeId, name, gross: formatCents(gross), personalSocial: formatCents(personalSocial),
     personalHousing: formatCents(personalHousing), individualTax: formatCents(individualTax),
-    otherDeduction: formatCents(otherDeduction), net: formatCents(net) }
+    otherDeduction: formatCents(otherDeduction), net: formatCents(net),
+    ...(data.deductionOverrides ? { deductionOverrides: data.deductionOverrides as PayrollRow['deductionOverrides'] & object } : {}),
+  }
+}
+
+function verifiedDeductions(store: BookStore, periodKey: string) {
+  const seen = new Set<number>()
+  const results = new Map<string, Partial<Record<DeductionField, bigint>>>()
+  for (const event of events(store, 'local-work:benefit-contribution')) {
+    const origin = positiveId(event.result.originId) ? event.result.originId : event.id
+    if (seen.has(origin)) continue
+    seen.add(origin)
+    const benefit = event.request.benefit
+    if ((benefit !== 'insurance' && benefit !== 'housing') || event.request.periodKey !== periodKey
+      || !event.result.paid || !Array.isArray(event.result.rows)) continue
+    const source = contributionFields[benefit]
+    for (const row of event.result.rows as Record<string, unknown>[]) {
+      const id = keyText(row.employeeId, 64)
+      const personal = money(row.personalAmount)
+      if (!id || personal === undefined) continue
+      results.set(id, { ...results.get(id), [source]: personal })
+    }
+  }
+  return results
+}
+
+function reviewDeductions(input: unknown, deductions: ReturnType<typeof verifiedDeductions>) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { normalized: input }
+  const data = input as Record<string, unknown>
+  const normalized = { ...data }
+  delete normalized.deductionOverrides
+  const employeeId = keyText(data.employeeId, 64)
+  const known = deductions.get(employeeId)
+  if (!known) return { normalized }
+  const overrides: Partial<Record<DeductionField, string>> = {}
+  for (const field of ['personalSocial', 'personalHousing'] as const) {
+    const expected = known[field]
+    if (expected === undefined) continue
+    const actual = data[field]
+    if (actual === undefined || typeof actual === 'string' && !actual.trim()) {
+      normalized[field] = formatCents(expected)
+      continue
+    }
+    const offered = money(actual)
+    if (offered === undefined || offered === expected) continue
+    const override = keyText(data[field + 'OverrideReason'], 180)
+    if (!override) return { conflict: refuse('PAYROLL_DEDUCTION_CONFLICT',
+      deductionLabels[field] + '与同一员工、同月的已核对缴费资料不同。请只核对这一项的扣款来源。', {
+        employeeId, field, label: deductionLabels[field], payrollAmount: formatCents(offered), contributionAmount: formatCents(expected),
+      }) }
+    overrides[field] = override
+  }
+  if (Object.keys(overrides).length) normalized.deductionOverrides = overrides
+  return { normalized }
 }
 
 function proposeSchedule(store: BookStore, periodKey: string, input: Record<string, unknown>) {
@@ -132,8 +190,11 @@ function proposeDraft(store: BookStore, periodKey: string, input: Record<string,
   if (!Array.isArray(input.rows) || !input.rows.length || input.rows.length > 100)
     return refuse('PAYROLL_ROWS_INVALID', '请填写 1 至 100 名员工的工资资料。')
   const supplied = new Map<string, PayrollRow>()
+  const deductions = verifiedDeductions(store, periodKey)
   for (const [index, item] of input.rows.entries()) {
-    const row = readRow(item)
+    const reviewed = reviewDeductions(item, deductions)
+    if (reviewed.conflict) return reviewed.conflict
+    const row = readRow(reviewed.normalized)
     if (!row) return refuse('PAYROLL_ROW_INVALID', '请核对这一行。应发工资须等于实发与所有已确认扣款之和，空金额不能按零处理。', { row: index + 1 })
     if (supplied.has(row.employeeId)) return refuse('PAYROLL_EMPLOYEE_DUPLICATE', '同一份工资表中员工编号重复。', { row: index + 1 })
     supplied.set(row.employeeId, row)
