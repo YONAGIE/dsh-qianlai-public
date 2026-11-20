@@ -13,12 +13,14 @@ export interface UploadResult {
   images?: UploadImage[]
 }
 
-export interface MaterialSource { fingerprint: string; name: string }
+export const MAX_MATERIAL_BYTES = 8 * 1024 * 1024
+export interface MaterialSource { fingerprint: string; name: string; bytes: Uint8Array }
 
 export function materialSource(bytes: Uint8Array, ext: string, name: string): MaterialSource {
   return {
     fingerprint: createHash('sha256').update(ext).update('\0').update(bytes).digest('hex'),
     name: name.replace(/[\p{C}]/gu, '').trim().slice(0, 200) || '未命名材料',
+    bytes,
   }
 }
 
@@ -39,18 +41,30 @@ export async function readUpload(
     if (!real.startsWith(root + sep)) return refuse('FILE_OUTSIDE_UPLOADS', '只能读老板在对话里上传的文件。')
     const stat = statSync(real)
     if (!stat.isFile()) return refuse('FILE_NOT_FOUND', '附件路径不是文件。')
-    if (stat.size > 8 * 1024 * 1024) return refuse('FILE_TOO_LARGE', '文件超过 8 MB，请按月份或页码拆分后上传。')
+    if (stat.size > MAX_MATERIAL_BYTES) return refuse('FILE_TOO_LARGE', '文件超过 8 MB，请按月份或页码拆分后上传。')
   } catch {
     return refuse('FILE_NOT_FOUND', '找不到这个文件。只能读老板在对话里上传的文件。')
   }
   const ext = extname(real).toLowerCase()
-  if (!['.csv', '.tsv', '.txt', '.xls', '.xlsx', '.pdf'].includes(ext))
-    return refuse('FILE_TYPE_UNSUPPORTED', '支持 CSV、TSV、TXT、XLS、XLSX 和 PDF；图片可以直接上传查看。')
+  const picture = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext)
+  if (!picture && !['.csv', '.tsv', '.txt', '.xls', '.xlsx', '.pdf'].includes(ext))
+    return refuse('FILE_TYPE_UNSUPPORTED', '支持 CSV、TSV、TXT、XLS、XLSX、PDF、PNG、JPEG 和 WebP。')
   let bytes: Buffer
   try { bytes = readFileSync(real) }
   catch { return refuse('FILE_NOT_FOUND', '找不到可读取的附件。请重新发送这份材料。') }
-  if (bytes.length > 8 * 1024 * 1024) return refuse('FILE_TOO_LARGE', '文件超过 8 MB，请按月份或页码拆分后上传。')
+  if (bytes.length > MAX_MATERIAL_BYTES) return refuse('FILE_TOO_LARGE', '文件超过 8 MB，请按月份或页码拆分后上传。')
   onSource?.(materialSource(bytes, ext, basename(real)))
+  if (picture) {
+    const png = ext === '.png'
+    const webp = ext === '.webp'
+    const valid = png ? bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+      : webp ? bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+        : bytes.subarray(0, 3).equals(Buffer.from('ffd8ff', 'hex'))
+    if (!valid) return refuse('FILE_FORMAT_MISMATCH', '图片内容与扩展名不符，请重新发送原图。')
+    return { accepted: true, format: ext.slice(1), images: [{
+      type: 'image', mediaType: png ? 'image/png' : webp ? 'image/webp' : 'image/jpeg', data: bytes.toString('base64'),
+    }] }
+  }
   return parseUpload(bytes, ext, options, signal)
 }
 
