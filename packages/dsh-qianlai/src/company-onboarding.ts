@@ -386,7 +386,8 @@ function handoffFor(store: BookStore, { history, lastMonth, startMonth }: Accoun
   if (history === 'previous') {
     const statementMonth = previousPeriod(startMonth)
     if (lastMonth !== statementMonth) {
-      const [year, month] = lastMonth.split('-').map(Number)
+      const year = Number(lastMonth.slice(0, 4))
+      const month = Number(lastMonth.slice(5))
       const gapFrom = month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, '0')}`
       const gap = gapFrom === statementMonth ? gapFrom : `${gapFrom} 至 ${statementMonth}`
       return {
