@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { openBook } from './book.js'
+import { confirmHistoricalHandoff, readHistoricalHandoff } from './historical-handoff.js'
 import { accountingSystemChoices, availableFields, fieldPatch, incomeMethodChoices, missingTaxFields, onboardingFields, profileAccountFields, profilePayrollField, taxFields, taxStatusChoices, type FormField } from './onboarding-fields.js'
 import { isCalendarDate, PERIOD_KEY, previousPeriod, refuse, todayInChina, type Refusal } from './period.js'
 import type { BookStore } from './store.js'
@@ -142,7 +143,7 @@ type CardContent = (
 type OnboardingCard = CardBase & CardContent
 interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
 interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; autoStartClaimed?: true }
-export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile' | 'add-bank-account'
+export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile' | 'add-bank-account' | 'review-handoff'
 
 const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
 const profileFields = [...onboardingFields[1], ...onboardingFields[2], ...onboardingFields[3]]
@@ -933,6 +934,7 @@ export class CompanyOnboarding {
         return refuse('CARD_UNAVAILABLE', '这张卡无法重新打开企业档案更正。')
       const { field, accountId } = previous.maintenance
       if (field === 'addBankAccount') return this.bankAccountCard(sessionId)
+      if (field === 'historicalHandoff') return this.historyScopeCard(sessionId, previous.maintenance.proposed?.handoffId)
       return this.maintainProfile(sessionId, true, [field], undefined, undefined, accountId)
     })
   }
@@ -986,6 +988,28 @@ export class CompanyOnboarding {
     return this.transition(sessionId, card.id, {
       labels: ['银行账户'], choice: 'account-added', notice: `已登记${accountLabel(account)}。${next}`,
     }, () => undefined)
+  }
+
+  private historyScopeCard(sessionId: string, raw: unknown) {
+    const id = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)
+      return refuse('HISTORICAL_HANDOFF_NOT_FOUND', '请先核对本公司的历史交接范围。')
+    const review = readHistoricalHandoff(this.store, id)
+    if (!review.accepted) return review
+    const { plan } = review
+    if (plan.state === 'confirmed') return { accepted: true as const, completed: true, handoff: plan }
+    const message = [
+      plan.missingMonths.length ? '待核对 ' + plan.missingMonths.join('、') + '。' : '资料范围内没有缺失的旧账月份。',
+      ...(plan.overlapMonths.length ? ['与起账后重复的月份 ' + plan.overlapMonths.join('、') + ' 将单独留作核对。'] : []),
+      '原账与起账月保留。确认范围后仍需逐项核对余额及凭据。',
+    ].join('')
+    return { accepted: true as const, completed: true, cardState: 'active' as const, card: this.issueCard(sessionId, {
+      kind: 'fields', title: '核对历史交接月份', message,
+      fields: [{ key: 'historyScopeDecision', label: '这个交接范围怎么处理', type: 'select', options: [
+        { value: 'confirmed', label: '按这个范围继续核对' }, { value: 'deferred', label: '稍后处理' },
+      ] }],
+      maintenance: { field: 'historicalHandoff', proposed: { handoffId: id } },
+    }, { reissue: true }) }
   }
 
   private validProfileProposal(field: FormField, value: unknown) {
@@ -1042,6 +1066,19 @@ export class CompanyOnboarding {
     const maintenance = card.maintenance
     if (!record || !maintenance) return refuse('PROFILE_UNAVAILABLE', '当前账本没有可维护的企业档案。')
     if (maintenance.field === 'addBankAccount') return this.saveNewBankAccount(sessionId, card, record, values)
+    if (maintenance.field === 'historicalHandoff') {
+      const input = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
+      const decision = input.historyScopeDecision
+      const handoffId = maintenance.proposed?.handoffId
+      if (Object.keys(input).length !== 1 || (decision !== 'confirmed' && decision !== 'deferred') || typeof handoffId !== 'number')
+        return refuse('HISTORICAL_DECISION_REQUIRED', '请选择继续核对或稍后处理。', { field: 'historyScopeDecision' })
+      const result = confirmHistoricalHandoff(this.store, handoffId, decision, this.now())
+      if (!result.accepted) return result
+      return this.transition(sessionId, card.id, {
+        labels: ['历史交接范围'], choice: 'history-' + result.state,
+        notice: result.state === 'confirmed' ? '已确认交接范围，核对完余额和凭据后再处理。' : '历史交接已暂缓，当前业务可以继续。',
+      }, () => undefined)
+    }
     const { enterprise } = record
     const key = maintenance.field
     const field = card.fields[0]!
@@ -1112,6 +1149,10 @@ export class CompanyOnboarding {
       if (action === 'read-profile' || action === 'edit-profile')
         return this.maintainProfile(sessionId, action === 'edit-profile', fields, values, currentAccountTail)
       if (action === 'add-bank-account') return this.bankAccountCard(sessionId, values)
+      if (action === 'review-handoff') {
+        const raw = values && typeof values === 'object' ? (values as Record<string, unknown>).handoffId : undefined
+        return this.historyScopeCard(sessionId, raw)
+      }
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
       let content: CardContent | undefined

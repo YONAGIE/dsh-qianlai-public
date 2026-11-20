@@ -22,6 +22,7 @@ import {
 } from './entries.js'
 import { currentFundsArrangements, saveFundsArrangement } from './funds-arrangements.js'
 import { checkInvoice, type InvoiceReading } from './invoices.js'
+import { historicalHandoffProgress, planHistoricalHandoff, recordHandoffBalance } from './historical-handoff.js'
 import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessions } from './onboarding-rpc.js'
 import { loadPack } from './pack.js'
 import { reviewPayroll, savePayroll } from './payroll-work.js'
@@ -461,7 +462,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         'moneycome_onboarding',
         '在桌面或网页的钱来张姐对话里继续企业建档或维护档案。完成建档后用 read-profile 查询所问的一项，edit-profile 给一项更正卡，需要补登记对公账户时用 add-bank-account 给登记卡。登记可用 values 预填核实的 holder、bank、accountTail、currency、openedOn。只有用户在卡上保存才写入。例如更正登记尾号用 fields: ["accountTail"]，values.accountTail 传新尾号的四位字符串。明确提到的原尾号用 currentAccountTail；没指定且有多个账户时用卡片选择。保留开头的零，不索要完整账号。建档中 start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前卡。有一个明确卡点时，直接展示返回的表单。枚举字段用表单上的完整选项，用户在表单选择并保存一次即可。真实不支持的状态保留，不能为了继续而改成正常。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新资料，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具不启用账本或代替卡片确认。',
         {
-          action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct', 'read-profile', 'edit-profile', 'add-bank-account'] },
+          action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct', 'read-profile', 'edit-profile', 'add-bank-account', 'review-handoff'], description: 'review-handoff 使用已生成的 values.handoffId（数字字符串）显示历史交接范围确认卡' },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
           documentKind: { type: 'string', enum: ['license', 'tax'], description: '仅 review-document 使用。license 为营业执照，tax 为税务资料。' },
           fields: { type: 'array', items: { type: 'string' }, description: 'correct、read-profile、edit-profile 只传一个字段。公司和税务：companyName、taxId、establishedOn、business、taxAuthority、taxpayerIdentity、taxStatus、taxStatusOther、incomeMethod、accountingSystem、accountingSystemOther。银行：bankAccounts（仅查询已登记的账户列表）、bankStatus、accountTail、holder、bank、currency、openedOn。记账和工资社保：history、lastMonth、startMonth、payroll、payday、social。以工具返回的可编辑范围为准。' },
@@ -482,7 +483,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!session?.id || isWechatSession(session.id) || isIntroductionSession(session.id))
             return refuse('ONBOARDING_SESSION', '请在桌面或网页的钱来张姐对话中继续建档。')
           const turn = questionTurns.get(session)
-          const profileEdit = args.action === 'edit-profile' || args.action === 'add-bank-account'
+          const profileEdit = args.action === 'edit-profile' || args.action === 'add-bank-account' || args.action === 'review-handoff'
           if (profileEdit && turn?.profileCard)
             return refuse('PROFILE_CARD_OPEN', '本轮已给出一项更正卡，请等老板保存当前项目。')
           const result = onboarding.guide(session.id, args.action as OnboardingGuideAction, args.fields, args.values, args.mode, args.documentKind, args.currentAccountTail)
@@ -519,20 +520,22 @@ export function apply(ctx: Context, config: Config = {}): void {
         (a) => {
           if (typeof a.matterId === 'number') return readWorkMatter(store, a.matterId)
           const progress = workProgress(store, a.beforeId as number | undefined)
-          return progress.accepted ? { ...progress, fundsArrangements: currentFundsArrangements(store) } : progress
+          return progress.accepted ? {
+            ...progress, fundsArrangements: currentFundsArrangements(store), historicalHandoff: historicalHandoffProgress(store),
+          } : progress
         },
       ),
       tool(
         'moneycome_save_work_note',
         '保存同一账本的待办，便于换会话续办。create-matter 新建一笔待记业务，update-matter 按最新版本更新缺项，attach-material 关联现有读取记录。重传替换时传被替换的 materialId，之前的材料仍可查。对已核对的未来收付款用 schedule-funds 记安排，需取消时用 cancel-funds 和已有安排 ID。未来安排只表示计划，现金和收入费用不变。省略 action 时可用 note 写未核实的简短笔记。只存业务摘要，不传材料内容、密码或验证码。待办与笔记不等于批准，也不生成凭证。',
         {
-          action: { type: 'string', enum: ['create-matter', 'update-matter', 'attach-material', 'schedule-funds', 'cancel-funds'] },
+          action: { type: 'string', enum: ['create-matter', 'update-matter', 'attach-material', 'schedule-funds', 'cancel-funds', 'plan-handoff', 'record-handoff-balance'] },
           title: str('create-matter 使用。待办简短名称，最多 120 字'),
           period: str('create-matter 使用。可确认的所属月份 YYYY-MM，未知可省略'),
           missing: { type: 'array', items: { type: 'string' }, description: 'create-matter 或 update-matter 使用。实际未核实的资料或条件，无缺项时用空列表' },
           matterId: { type: 'integer', description: 'update-matter 或 attach-material 使用。进度返回的事项 ID' },
           revision: { type: 'integer', description: 'update-matter 或 attach-material 使用。进度返回的最新事项版本' },
-          materialId: { type: 'integer', description: 'attach-material 使用。读取工具返回的 material.id' },
+          materialId: { type: 'integer', description: 'attach-material、plan-handoff 和 record-handoff-balance 使用。读取工具返回的 material.id' },
           replacesMaterialId: { type: 'integer', description: 'attach-material 使用。被替换的旧 material.id，新增补件时省略' },
           scheduledOn: str('schedule-funds 使用。未来收款或付款日期，YYYY-MM-DD'),
           fundsAmount: str('schedule-funds 使用。计划金额，单位元'),
@@ -540,10 +543,18 @@ export function apply(ctx: Context, config: Config = {}): void {
           arrangementId: { type: 'integer', description: 'cancel-funds 使用。原收付款安排 ID，从资金安排查询中取得' },
           note: str('省略 action 时填写，简述待补资料、待确认事项与下一步'),
           sourceEventIds: { type: 'array', items: { type: 'integer' }, description: '保存笔记时可引用的本账本工具记录 ID' },
+          firstOperatingMonth: str('plan-handoff 用于已经营但未做过旧账的公司。明确核实的实际经营起月，YYYY-MM'),
+          coveredMonths: { type: 'array', items: { type: 'string' }, description: 'plan-handoff 使用。已由旧账原件核实做过账的月份，YYYY-MM' },
+          handoffBalanceKind: { type: 'string', enum: ['bank_difference', 'owner_advance'], description: 'record-handoff-balance 使用。银行差额或老板垫款' },
+          handoffAmount: str('record-handoff-balance 使用。核实的金额，未知时省略，不填零'),
+          adjustmentId: { type: 'integer', description: 'record-handoff-balance 使用。补交材料时填原交接记录 ID' },
+          handoffVoucherNo: str('record-handoff-balance 使用。已经按真实回款或垫款归还生成并关联流水的凭证，尚无凭证时省略'),
         },
         [],
         (a) => {
           if (a.action === 'schedule-funds' || a.action === 'cancel-funds') return saveFundsArrangement(store, a, new Date())
+          if (a.action === 'plan-handoff') return planHistoricalHandoff(store, a, new Date())
+          if (a.action === 'record-handoff-balance') return recordHandoffBalance(store, a, new Date())
           if (a.action === undefined) return saveWorkNote(store, String(a.note ?? ''), (a.sourceEventIds ?? []) as number[])
           return saveWorkMatter(store, a)
         },

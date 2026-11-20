@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus, type OnboardingView } from '../src/company-onboarding.js'
+import { historicalHandoffProgress, planHistoricalHandoff, recordHandoffBalance } from '../src/historical-handoff.js'
 import { BookStore } from '../src/store.js'
 import type { TaxProfile } from '../src/tax-portal.js'
 
@@ -325,6 +326,56 @@ describe('企业建档', () => {
     expect(wizard.confirm(fixed.revision, false)).toMatchObject({ completed: true, nextAction: 'bookkeeping' })
     expect(store.companyFacts()).toEqual({ 'prior-confirmation': 'yes' })
     expect(store.openingBalancesSetAt()).toBe(now().toISOString())
+  })
+})
+
+describe('旧账交接', () => {
+  it('只核对实际缺月，原件和已做月份仍在，暂缓或确认均不改已有账', () => {
+    const { store, wizard } = setup()
+    accepted(wizard.confirm(ready(wizard, enterprise, { ...accounting, lastMonth: '2026-08' }).revision, false))
+    const material = store.saveWorkMaterial('synthetic-coverage', '合成交接资料.pdf', 'read', null)
+    const args = { materialId: material.id, coveredMonths: ['2026-09', '2026-11'] }
+    const preview = planHistoricalHandoff(store, args, now())
+    if (!preview.accepted || !('handoffId' in preview)) throw Error('Expected durable history plan')
+    expect(preview).toMatchObject({
+      missingMonths: ['2026-10'], coveredMonths: ['2026-09'], overlapMonths: ['2026-11'],
+      accountingStartMonth: '2026-11', state: 'awaiting_confirmation', affectsLedger: false,
+    })
+    const values = { handoffId: String(preview.handoffId) }
+    const first = wizard.guide('owner', 'review-handoff', undefined, values)
+    if (!first.accepted || !('card' in first) || !first.card) throw Error('Expected history scope card')
+    expect(wizard.submitCard('other', first.card.id, first.card.revision, undefined, { historyScopeDecision: 'confirmed' }))
+      .toMatchObject({ accepted: false })
+    expect(wizard.submitCard('owner', first.card.id, first.card.revision, undefined, { historyScopeDecision: 'deferred' }))
+      .toMatchObject({ receipt: { choice: 'history-deferred' } })
+    expect(historicalHandoffProgress(store).plans[0]?.state).toBe('deferred')
+    const second = wizard.guide('owner', 'review-handoff', undefined, values)
+    if (!second.accepted || !('card' in second) || !second.card) throw Error('Expected resumed scope card')
+    expect(wizard.submitCard('owner', second.card.id, second.card.revision, undefined, { historyScopeDecision: 'confirmed' }))
+      .toMatchObject({ receipt: { choice: 'history-confirmed' } })
+    expect(planHistoricalHandoff(store, args, now())).toMatchObject({ handoffId: preview.handoffId, state: 'confirmed' })
+    expect(store.company()?.accountingStartMonth).toBe('2026-11')
+    expect(store.vouchers({})).toEqual([])
+  })
+
+  it('曾经营未记账按实际经营月规划，未知余额保留为空，凭证不匹配不能结清', () => {
+    const { store, wizard } = setup()
+    accepted(wizard.confirm(ready(wizard, enterprise, { ...accounting, history: 'unrecorded', lastMonth: '' }).revision, false))
+    const material = store.saveWorkMaterial('synthetic-prior-activity', '合成存续期资料.pdf', 'read', null)
+    expect(planHistoricalHandoff(store, { materialId: material.id }, now()))
+      .toMatchObject({ code: 'HISTORICAL_FIRST_OPERATING_MONTH_REQUIRED' })
+    expect(planHistoricalHandoff(store, { materialId: material.id, firstOperatingMonth: '2026-09' }, now()))
+      .toMatchObject({ missingMonths: ['2026-09', '2026-10'], accountingStartMonth: '2026-11', affectsLedger: false })
+    const balance = recordHandoffBalance(store, { handoffBalanceKind: 'owner_advance', materialId: material.id }, now())
+    if (!balance.accepted) throw Error('Expected unresolved handoff balance')
+    expect(balance.adjustment).toMatchObject({ amount: null, state: 'waiting' })
+    const evidence = { adjustmentId: balance.adjustment.id, handoffBalanceKind: 'owner_advance', handoffAmount: '2000.00' }
+    expect(recordHandoffBalance(store, evidence, now())).toMatchObject({ adjustment: { amount: '2000.00', state: 'waiting' } })
+    expect(recordHandoffBalance(store, { ...evidence, handoffVoucherNo: 'PZ-202611-099' }, now()))
+      .toMatchObject({ code: 'HISTORICAL_SETTLEMENT_UNVERIFIED' })
+    expect(historicalHandoffProgress(store).balances).toHaveLength(1)
+    expect(store.openingBalancesSetAt()).toBeUndefined()
+    expect(store.vouchers({})).toEqual([])
   })
 })
 

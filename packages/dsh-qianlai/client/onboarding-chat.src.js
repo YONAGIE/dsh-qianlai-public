@@ -542,6 +542,7 @@ export function registerOnboardingChat(ctx, {
       setValues({})
       if (card.maintenance) {
         if (result.receipt.choice === 'account-added') await sendReply('我已在表单登记银行账户。')
+        else if (result.receipt.choice === 'history-confirmed') await sendReply('我已确认历史交接范围。')
         return
       }
       if (card.kind === 'mode') void openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
@@ -874,7 +875,9 @@ export function registerOnboardingChat(ctx, {
       body = buildForm({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
         ...(card.maintenance || card.correction ? {
-          label: card.maintenance?.field === 'addBankAccount' ? '保存账户' : fields[0]?.key === 'accountChoice' ? '确认账户' : '保存更正',
+          label: card.maintenance?.field === 'addBankAccount' ? '保存账户'
+            : card.maintenance?.field === 'historicalHandoff' ? '确认选择'
+              : fields[0]?.key === 'accountChoice' ? '确认账户' : '保存更正',
         } : {}),
       })
     }
