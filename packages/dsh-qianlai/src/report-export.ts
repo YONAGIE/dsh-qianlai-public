@@ -1,15 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 
-import { formatCents } from '@moneycome/fintax-core'
+import { formatCents, parseAmountToCents } from '@moneycome/fintax-core'
 import type * as SheetJS from 'xlsx'
 
 import { readBalances } from './balances.js'
 import { closingCheck } from './closing.js'
-import { listVouchers } from './entries.js'
+import { listVouchers, packParameter, recordEntry } from './entries.js'
 import type { LoadedPack } from './pack.js'
 import { monthRange, PERIOD_KEY, refuse } from './period.js'
-import { readStatements } from './reports.js'
+import { readProfit, readStatements } from './reports.js'
 import type { BookStore, ReportArtifact } from './store.js'
 
 export const REPORT_TITLES = {
@@ -190,4 +190,56 @@ export function generateReport(store: BookStore, pack: LoadedPack, periodKey: st
     store.saveReportArtifact(artifact, content)
     return { accepted: true as const, artifact, reused: false }
   })
+}
+
+/** Compare the pack's two equipment treatments without changing amounts or posting new entries. */
+export function compareEquipmentReport(
+  store: BookStore, pack: LoadedPack, periodKey: string, invoiceNumber: string, settlement: string,
+  treatments: readonly string[], now: Date,
+) {
+  const invoice = store.invoice(invoiceNumber)
+  if (!PERIOD_KEY.test(periodKey) || !invoice?.issueDate?.startsWith(periodKey + '-') || invoice.direction !== 'input'
+    || invoice.totalCents === null || invoice.voucherNo)
+    return refuse('REPORT_EQUIPMENT_UNAVAILABLE', '请先核对本月尚未入账的设备购买发票。', { periodKey })
+  if (!treatments.length || treatments.some(treatment => !['expense', 'capitalize'].includes(treatment)))
+    return refuse('REPORT_EQUIPMENT_POLICY', '请先核实这笔设备采购适用的会计处理。', { periodKey })
+  const revenue = packParameter(pack.payload, 'headline.revenue.lines')?.split('|')
+  const expense = packParameter(pack.payload, 'headline.expense.lines')?.split('|')
+  if (!revenue || !expense) return refuse('REPORT_REVIEW_REQUIRED', '当前会计包无法计算处理方案的利润影响。')
+  const lines = pack.payload.reportLines.filter(line => line.reportId === 'report.profit')
+  const chart = new Map(pack.payload.catalogs[0]!.subjects.map(row => [row.subjectCode, row.normalBalance]))
+  const current = readProfit(store, pack, periodKey)
+  const base = current.accepted && current.month.totals ? parseAmountToCents(current.month.totals.profit) : undefined
+  const options = []
+  const confirmedTotal = formatCents(invoice.totalCents)
+  for (const treatment of new Set(treatments)) {
+    const preview = recordEntry(store, pack, {
+      date: invoice.issueDate, summary: '预览设备采购', eventKind: 'equipment_purchase',
+      facts: { 'settlement.method': settlement, 'asset.treatment': treatment },
+      invoiceNumber, amounts: { invoice_total: confirmedTotal }, preview: true,
+    }, now)
+    if (!preview.accepted) return preview
+    if (preview.missingEvidence.length) return refuse('REPORT_EQUIPMENT_EVIDENCE', '设备采购还缺会计凭据。', { periodKey, missing: preview.missingEvidence })
+    let delta = 0n
+    for (const line of lines) {
+      const multiplier = BigInt(Number(revenue.includes(line.lineId)) - Number(expense.includes(line.lineId)))
+      for (const leg of preview.legs) {
+        if (!line.subjectCodes.includes(leg.subjectCode)) continue
+        const natural = (leg.side === '借') === (chart.get(leg.subjectCode) === 'debit') ? 1n : -1n
+        const sign = line.sign === 'negative' ? -1n : 1n
+        delta += (parseAmountToCents(leg.amount) ?? 0n) * multiplier * sign * natural
+      }
+    }
+    options.push({
+      treatment, label: preview.treatment, legs: preview.legs,
+      monthlyProfitChange: formatCents(delta), monthlyProfitAfter: base === undefined ? null : formatCents(base + delta),
+      futureExpense: treatment === 'capitalize' ? '从下月起按确认的固定资产资料核对折旧。' : '本笔按该规则一次进费用，没有后续分期费用。',
+    })
+  }
+  const credit = options[0]!.legs.filter(leg => leg.side === '贷')
+  if (options.some(option => JSON.stringify(option.legs.filter(leg => leg.side === '贷')) !== JSON.stringify(credit)))
+    return refuse('REPORT_REVIEW_REQUIRED', '不同方案的收付分录有差异，请先核对实际付款。')
+  return { accepted: true as const, periodKey, invoiceNumber, options, currentProfit: base === undefined ? null : formatCents(base),
+    actualPayment: ['unsettled', 'personal_card'].includes(settlement) ? '0.00' : confirmedTotal,
+    cashDifference: '0.00', preview: true, message: '这是根据同一笔采购和同一付款方式的预演，没有入账。' }
 }
