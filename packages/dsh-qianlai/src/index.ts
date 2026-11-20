@@ -479,7 +479,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_book_status',
-        '查看北京时间业务日（businessDate）、建档状态和账本进度。首次单纯问候时，只用结果判断是否引导建档，不主动播报账本信息或申报期限。处理账务或老板问账务进度时用于核对公司、期初、已记和已结月份、待记发票与流水。问余额用 moneycome_read_balances，问利润用 moneycome_read_profit，问申报或结账期限用 moneycome_upcoming。',
+        '查看北京时间业务日（businessDate）、建档状态和账本进度。首次单纯问候时，只用结果判断是否引导建档，不主动播报账本信息或申报期限。收到建档确认回执后，用 onboarding.handoff 和 openingBalancesEntered 主动引导当前的一步。onboarding.routineMaterialExclusions 仅指通常无需再索取的材料，不能替代本期账务事实。处理账务或老板问账务进度时用于核对公司、期初、已记和已结月份、待记发票与流水。问余额用 moneycome_read_balances，问利润用 moneycome_read_profit，问申报或结账期限用 moneycome_upcoming。',
         {},
         [],
         () => {
@@ -508,7 +508,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_set_opening_balances',
-        '录期初余额：建账那个月月初，各会计科目已经有的余额。开账以后、记第一个月的账之前问老板：公司是这个月新成立的，还是之前就在经营。新成立、月初账上什么都没有的，传空列表。之前就在经营的，向老板要上一任会计或代账公司给的科目余额表，按表逐个科目录；老板只说得出银行里有多少钱时，跟他商量另一边记哪个科目（如实收资本、利润分配—未分配利润、其他应付款），他认可了再录。科目代号用 moneycome_posting_guide 和会计包里的，损益类科目不录。借方合计必须等于贷方合计。每次调用整体替换之前录的期初；建账那个月结账以后不能再改。结账时要拿账上银行存款和银行流水的余额核对，期初没录对就对不上。',
+        '录期初余额，即起账月初各会计科目已有的余额。先读 moneycome_book_status：建档中核实的旧账情况和起账月份直接沿用。期初已录则继续账务，除非老板明确要求更正。只有老板明确确认期初全为零才传空列表。旧账的科目余额表按核实后的月份、科目和金额录入；只有银行余额时，先用实际材料核对另一边应记哪个科目，不能猜。科目代号用 moneycome_posting_guide 和会计包里的，损益类科目不录。借方合计必须等于贷方合计。每次调用整体替换之前录的期初；建账那个月结账以后不能再改。',
         {
           balances: {
             type: 'array',
