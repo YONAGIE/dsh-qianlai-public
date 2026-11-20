@@ -157,7 +157,7 @@ export function checkInvoice(store: BookStore, reading: InvoiceReading, now: Dat
   const recordable =
     !!invoiceNumber && readability !== 'unreadable' && failed.length === 0
     && (direction.direction === 'input' || direction.direction === 'output')
-  const alreadyRecorded = recordable ? store.invoice(invoiceNumber)?.voucherNo : undefined
+  const alreadyRecorded = recordable ? (store.invoice(invoiceNumber)?.voucherNo ?? undefined) : undefined
   if (recordable && !alreadyRecorded) {
     const total = facts.totalInclTaxCents.state === 'present' ? BigInt(facts.totalInclTaxCents.value!) : null
     store.saveInvoice({
