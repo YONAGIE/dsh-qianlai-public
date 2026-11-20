@@ -124,13 +124,19 @@ export function upcomingDeadlines(store: BookStore, pack: LoadedPack, now: Date)
   return { accepted: true as const, today, isSampleBook: company.isSample, companyFacts: store.companyFacts(), items }
 }
 
-/** 账本现状里带上的近期提醒：没办的、10 天内到期的。 */
+/** Surface only an evidenced source and the three-day or overdue window. */
 export function dueSoon(store: BookStore, pack: LoadedPack, now: Date) {
   const all = upcomingDeadlines(store, pack, now)
   if (!all.accepted) return []
   return all.items
-    .filter((i) => i.done !== true && i.daysLeft <= 10)
-    .map((i) => ({ title: i.title, period: i.period, dueDate: i.dueDate, daysLeft: i.daysLeft }))
+    .filter((item) => item.done !== true && item.daysLeft <= 3 && (item.done === false || item.basis !== undefined))
+    .map((item) => ({
+      title: item.title, period: item.period, dueDate: item.dueDate, daysLeft: item.daysLeft,
+      source: item.basis ?? { document: '当前账本的结账安排' },
+      label: item.done === null
+        ? item.title + '（' + item.period + '）截止 ' + item.dueDate + '，办理结果待核对。'
+        : item.title + '（' + item.period + '）' + (item.daysLeft < 0 ? '已逾期，' : '将到期，') + '截止 ' + item.dueDate + '。',
+    }))
 }
 
 /**
