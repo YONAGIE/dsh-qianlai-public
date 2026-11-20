@@ -90,8 +90,8 @@ describe('可下载的报表版本', () => {
       if (!first.accepted) throw Error(JSON.stringify(first))
       expect(generateReport(store, pack, month, 'financial', preview.fingerprint, today))
         .toEqual({ accepted: true, artifact: first.artifact, reused: true })
-      const original = store.reportArtifact(first.artifact.id)!.content
-      const workbook = XLSX.read(original, { type: 'array' })
+      const original = Buffer.from(store.reportArtifact(first.artifact.id)!.content)
+      const workbook = XLSX.read(Uint8Array.from(original), { type: 'array' })
       expect(workbook.SheetNames).toEqual(['报表说明', '资产负债表', '利润表'])
       expect(workbook.Sheets['报表说明']?.B1?.v).toBe(companyName)
       expect(workbook.Sheets['报表说明']?.B2?.v).toBe(month)
@@ -105,7 +105,8 @@ describe('可下载的报表版本', () => {
       const newer = XLSX.read(store.reportArtifact(second.artifact.id)!.content, { type: 'array' })
       expect(XLSX.utils.sheet_to_json(newer.Sheets['利润表']!, { header: 1 })).toContainEqual(['利润', 300, 300])
       expect(second.artifact.version).toBe(2)
-      expect(store.reportArtifact(first.artifact.id)?.content).toEqual(original)
+      const stillStored = Buffer.from(store.reportArtifact(first.artifact.id)!.content)
+      expect(Buffer.compare(stillStored, original)).toBe(0)
       expect(listReports(store, month, 'financial', 1)).toMatchObject({ versions: [first.artifact] })
       expect(listReports(store, '2026-02', 'financial')).toMatchObject({ versions: [] })
     } finally { store.close() }
