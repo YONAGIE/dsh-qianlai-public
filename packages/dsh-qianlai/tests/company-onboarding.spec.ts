@@ -355,7 +355,7 @@ describe('旧账交接', () => {
       .toMatchObject({ receipt: { choice: 'history-confirmed' } })
     expect(planHistoricalHandoff(store, args, now())).toMatchObject({ handoffId: preview.handoffId, state: 'confirmed' })
     expect(store.company()?.accountingStartMonth).toBe('2026-11')
-    expect(store.vouchers({})).toEqual([])
+    expect(store.postedPeriods()).toEqual([])
   })
 
   it('曾经营未记账按实际经营月规划，未知余额保留为空，凭证不匹配不能结清', () => {
@@ -375,7 +375,7 @@ describe('旧账交接', () => {
       .toMatchObject({ code: 'HISTORICAL_SETTLEMENT_UNVERIFIED' })
     expect(historicalHandoffProgress(store).balances).toHaveLength(1)
     expect(store.openingBalancesSetAt()).toBeUndefined()
-    expect(store.vouchers({})).toEqual([])
+    expect(store.postedPeriods()).toEqual([])
   })
 })
 
