@@ -47,8 +47,10 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/qianlai-ui" --no-save --no-audit --no-fund react@19.2.0 react-dom@19.2.0 esbuild@0.27.3
           node .github/zhangjie-phase-one-browser.mjs "$RUNNER_TEMP/qianlai-ui"
       - name: Full test suite
-        if: matrix.os != 'windows-latest'
-        run: pnpm test
+        shell: bash
+        run: |
+          pnpm --filter @moneycome/fintax-core exec vitest run --testTimeout 20000
+          pnpm --filter dsh-qianlai exec vitest run --testTimeout 20000
       - name: Real DSH install and activation with synthetic data
         if: matrix.os == 'ubuntu-latest'
         shell: bash
