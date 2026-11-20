@@ -12,6 +12,8 @@
 
 - Preview monthly financial reports and ledger details, then generate and download readable XLSX files. Keep historical report files and return the same version when the underlying report is unchanged.
 
+- Review social insurance and housing-fund records separately. Keep individual enrollment results and link payment proof while preserving corrected contribution months.
+
 - Use one structured interaction at a time for Zhangjie's desktop and web follow-ups. Reuse known facts and receipts, use a choice for decisions or a form for missing fields, and keep unresolved items pending when a control is unavailable.
 
 - Show the entry in a native choice card in full-access conversations or an approval card when the workspace requires permission. A ready-to-post voucher waits for one confirmation.
