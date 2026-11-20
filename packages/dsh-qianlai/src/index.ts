@@ -32,6 +32,8 @@ import {
   type PdfReferenceSession,
 } from './referenced-pdf.js'
 import { balanceTransferItems, readProfit, readStatements } from './reports.js'
+import { isReportKind, listReports, previewReport } from './report-export.js'
+import { registerCompanyReport } from './report-rpc.js'
 import { exportReviewPack } from './review-pack.js'
 import { importStatement, readUpload, renameBankAccount, unrecordedStatementLines, type ImportStatementInput } from './statements.js'
 import { BookStore } from './store.js'
@@ -181,8 +183,9 @@ export function apply(ctx: Context, config: Config = {}): void {
           agentDefaultModel: scope.get?.('agentDefaultModel') as OnboardingHostServices['agentDefaultModel'],
         })
         const stopCompany = registerCompanyOnboarding(connection, onboarding, sessions, services)
+        const stopReport = registerCompanyReport(connection, store, loadPack(), sessions)
         const stopTax = registerTaxOnboarding(connection, dshHome(), companyTaxDraftAccess(onboarding, sessions))
-        return () => { stopTax(); stopCompany(); store.close() }
+        return () => { stopTax(); stopReport(); stopCompany(); store.close() }
       })
     })
     return
@@ -610,6 +613,19 @@ export function apply(ctx: Context, config: Config = {}): void {
         periodKey,
         ['periodKey'],
         (a) => exportReviewPack(store, pack, String(a.periodKey ?? ''), join(dirname(config.bookPath ?? defaultBookPath()), 'exports'), new Date()),
+      ),
+      tool(
+        'moneycome_company_report',
+        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮；list 查已生成版本，可用 version 指定较早版本。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。只有用户点击实际按钮才生成，不能先说文件已生成。微信没有下载卡时说明可在桌面打开。',
+        { ...periodKey, action: str('preview 核对并显示生成，list 查看历史版本'), kind: str('financial 月度财务报表，ledger-review 账务明细'),
+          version: { type: 'integer', minimum: 1, description: '查询指定旧版本，仅 list 使用' } },
+        ['periodKey', 'action', 'kind'],
+        a => {
+          if (!isReportKind(a.kind)) return refuse('REPORT_KIND_INVALID', '请选择月度财务报表或账务明细。')
+          if (a.action === 'list') return listReports(store, String(a.periodKey), a.kind, a.version as number | undefined)
+          if (a.action === 'preview') return previewReport(store, pack, String(a.periodKey), a.kind, new Date())
+          return refuse('REPORT_ACTION_INVALID', '请先核对该月材料，或查看已经生成的文件。')
+        },
       ),
       tool(
         'moneycome_upcoming',

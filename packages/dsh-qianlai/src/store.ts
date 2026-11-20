@@ -150,6 +150,19 @@ const MIGRATIONS: readonly string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  `
+  CREATE TABLE report_artifact (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    period_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    content BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (kind, period_key, version)
+  );
+  `,
 ]
 
 export interface Company {
@@ -158,6 +171,18 @@ export interface Company {
   readonly accountingStartMonth: string
   readonly isSample: boolean
 }
+
+export interface ReportArtifact {
+  readonly id: string
+  readonly kind: string
+  readonly periodKey: string
+  readonly version: number
+  readonly fingerprint: string
+  readonly fileName: string
+  readonly createdAt: string
+}
+
+const REPORT_COLUMNS = 'id, kind, period_key AS periodKey, version, fingerprint, file_name AS fileName, created_at AS createdAt'
 
 export interface WorkEvent {
   readonly id: number
@@ -353,6 +378,26 @@ export class BookStore {
       .run(requestKey, operation, argsHash, JSON.stringify(result))
   }
 
+  reportArtifacts(periodKey: string, kind: string, version?: number): ReportArtifact[] {
+    if (version !== undefined) {
+      return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM report_artifact
+        WHERE period_key = ? AND kind = ? AND version = ?`).all(periodKey, kind, version) as unknown as ReportArtifact[]
+    }
+    return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM report_artifact
+      WHERE period_key = ? AND kind = ? ORDER BY version DESC LIMIT 20`).all(periodKey, kind) as unknown as ReportArtifact[]
+  }
+
+  reportArtifact(id: string): (ReportArtifact & { content: Uint8Array }) | undefined {
+    return this.db.prepare(`SELECT ${REPORT_COLUMNS}, content FROM report_artifact WHERE id = ?`)
+      .get(id) as unknown as (ReportArtifact & { content: Uint8Array }) | undefined
+  }
+
+  saveReportArtifact(artifact: ReportArtifact, content: Uint8Array): void {
+    this.db.prepare(`INSERT INTO report_artifact (id, kind, period_key, version, fingerprint, file_name, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(artifact.id, artifact.kind, artifact.periodKey,
+      artifact.version, artifact.fingerprint, artifact.fileName, content, artifact.createdAt)
+  }
+
   createCompany(company: Company): void {
     this.db
       .prepare('INSERT INTO company (id, name, tax_id, accounting_start_month, is_sample) VALUES (1, ?, ?, ?, ?)')
@@ -370,6 +415,7 @@ export class BookStore {
       'work_event',
       'work_matter',
       'work_material',
+      'report_artifact',
       'opening_balance',
       'statement_line',
       'statement_import',
@@ -428,6 +474,15 @@ export class BookStore {
     return (this.db.prepare(`
       SELECT ${MATTER_COLUMNS} FROM work_matter WHERE voucher_no IS NULL ORDER BY updated_at DESC, id DESC LIMIT 20
     `).all() as unknown as WorkMatterRow[]).map(matterFromRow)
+  }
+
+  reportPendingMatter(periodKey: string): WorkMatter | undefined {
+    const row = this.db.prepare(`
+      SELECT ${MATTER_COLUMNS} FROM work_matter
+      WHERE period_key = ? AND voucher_no IS NULL AND json_array_length(missing_json) > 0
+      ORDER BY id ASC LIMIT 1
+    `).get(periodKey) as unknown as WorkMatterRow | undefined
+    return row && matterFromRow(row)
   }
 
   createWorkMatter(title: string, period: string | null, missing: readonly string[]): WorkMatter {

@@ -1,0 +1,127 @@
+import * as XLSX from 'xlsx'
+import { describe, expect, it } from 'vitest'
+
+import { openBook, setCompanyFacts, setOpeningBalances } from '../src/book.js'
+import { closingCheck } from '../src/closing.js'
+import { recordEntry } from '../src/entries.js'
+import { checkInvoice } from '../src/invoices.js'
+import { loadPack } from '../src/pack.js'
+import { generateReport, listReports, previewReport } from '../src/report-export.js'
+import { registerCompanyReport } from '../src/report-rpc.js'
+import { importStatement } from '../src/statements.js'
+import { BookStore } from '../src/store.js'
+import type { RpcConnection } from '../src/wechat/control.js'
+
+const month = '2026-01'
+const companyName = '合成报表测试企业'
+const today = new Date('2026-03-04T08:00:00Z')
+const pack = loadPack()
+
+function newBook() {
+  const store = new BookStore(':memory:')
+  expect(openBook(store, { companyName, accountingStartMonth: month })).toMatchObject({ accepted: true })
+  expect(setOpeningBalances(store, pack, [], today)).toMatchObject({ accepted: true })
+  return store
+}
+
+function cashSale(store: BookStore, date: string, number: string, net: string, total: string, tax: string) {
+  expect(checkInvoice(store, { invoiceNumber: number, issueDate: date, sellerName: companyName, buyerName: '合成买方',
+    amountExclTax: net, taxAmount: tax, totalInclTax: total, taxRate: '1%' }, today)).toMatchObject({ recordable: true })
+  expect(recordEntry(store, pack, { date, summary: '=合成收入', eventKind: 'sale_service', facts: { 'settlement.method': 'cash' },
+    invoiceNumber: number, amounts: { invoice_total: total, invoice_net: net, invoice_tax: tax } }, today)).toMatchObject({ accepted: true })
+}
+
+function resolveKnownNo(store: BookStore, period = month) {
+  const state = closingCheck(store, pack, period, today)
+  if (!('checks' in state)) return
+  const keys = state.checks.flatMap(c => c.blockers).flatMap(b => ('factKey' in b ? [String(b.factKey)] : []))
+  expect(setCompanyFacts(store, pack, Object.fromEntries(keys.map(key => [key, 'no'])))).toMatchObject({ accepted: true })
+}
+
+function approvedPreview(store: BookStore, period = month) {
+  const preview = previewReport(store, pack, period, 'financial', today)
+  if (!preview.accepted) throw Error(JSON.stringify(preview))
+  return preview
+}
+
+describe('可下载的报表版本', () => {
+  it('无业务材料和只有流水优先给当月实际缺项', () => {
+    const store = newBook()
+    try {
+      expect(previewReport(store, pack, month, 'financial', today))
+        .toMatchObject({ code: 'REPORT_NO_BUSINESS', periodKey: month, nextAction: 'upload' })
+      expect(importStatement(store, { accountRef: '合成银行 尾号 0012', periodStart: '2026-01-01', periodEnd: '2026-01-31',
+        rows: [{ rowNumber: 1, occurredAt: '2026-01-10', direction: '收入', amount: '100.00', balanceAfter: '100.00' }] }, today))
+        .toMatchObject({ accepted: true })
+      expect(previewReport(store, pack, month, 'financial', today)).toMatchObject({
+        code: 'REPORT_PREP_REQUIRED', periodKey: month, details: { blocker: { kind: 'unexplained_transaction' } },
+      })
+      expect(store.reportArtifacts(month, 'financial')).toEqual([])
+    } finally { store.close() }
+  })
+
+  it('点击前不落文件，重复确认沿用同一文件，账款变化可保留新旧版', () => {
+    const store = newBook()
+    try {
+      cashSale(store, '2026-01-10', '26000000000123456781', '100.00', '101.00', '1.00')
+      resolveKnownNo(store)
+      const preview = approvedPreview(store)
+      expect(store.reportArtifacts(month, 'financial')).toEqual([])
+      const first = generateReport(store, pack, month, 'financial', preview.fingerprint, today)
+      if (!first.accepted) throw Error(JSON.stringify(first))
+      expect(generateReport(store, pack, month, 'financial', preview.fingerprint, today))
+        .toEqual({ accepted: true, artifact: first.artifact, reused: true })
+      const original = store.reportArtifact(first.artifact.id)!.content
+      const workbook = XLSX.read(original, { type: 'array' })
+      expect(workbook.SheetNames).toEqual(['报表说明', '资产负债表', '利润表'])
+      expect(workbook.Sheets['报表说明']?.B1?.v).toBe(companyName)
+      expect(workbook.Sheets['报表说明']?.B2?.v).toBe(month)
+      expect(workbook.Sheets['报表说明']?.B4?.v).toBe(1)
+      expect(XLSX.utils.sheet_to_json(workbook.Sheets['利润表']!, { header: 1 })).toContainEqual(['利润', 100, 100])
+
+      cashSale(store, '2026-01-12', '26000000000123456782', '200.00', '202.00', '2.00')
+      expect(generateReport(store, pack, month, 'financial', preview.fingerprint, today)).toMatchObject({ code: 'REPORT_CHANGED' })
+      const second = generateReport(store, pack, month, 'financial', approvedPreview(store).fingerprint, today)
+      if (!second.accepted) throw Error(JSON.stringify(second))
+      const newer = XLSX.read(store.reportArtifact(second.artifact.id)!.content, { type: 'array' })
+      expect(XLSX.utils.sheet_to_json(newer.Sheets['利润表']!, { header: 1 })).toContainEqual(['利润', 300, 300])
+      expect(second.artifact.version).toBe(2)
+      expect(store.reportArtifact(first.artifact.id)?.content).toEqual(original)
+      expect(listReports(store, month, 'financial', 1)).toMatchObject({ versions: [first.artifact] })
+      expect(listReports(store, '2026-02', 'financial')).toMatchObject({ versions: [] })
+    } finally { store.close() }
+  })
+
+  it('只允许通过匹配原会话与工具结果的操作读写该文件', async () => {
+    const store = newBook()
+    try {
+      cashSale(store, '2026-01-10', '26000000000123456781', '100.00', '101.00', '1.00')
+      resolveKnownNo(store)
+      const preview = approvedPreview(store)
+      const callId = 'exact-report-call'
+      let handler!: Parameters<RpcConnection['fetch']['register']>[0]['fetch']
+      const connection: RpcConnection = { fetch: { register(route) { handler = route.fetch; return async () => {} } } }
+      registerCompanyReport(connection, store, pack, {
+        async inspect(id) {
+          return { meta: { agentPreset: 'moneycome-zhangjie' }, events: id === 'current' ? [
+            { type: 'tool/call', data: { name: 'moneycome_company_report', callId } },
+            { type: 'tool/result', data: { message: { source: { kind: 'tool', callId }, content: [{ type: 'text', text: JSON.stringify(preview) }] } } },
+          ] : [] }
+        },
+      })
+      const request = async (payload: Record<string, unknown>) =>
+        (await (await handler(new Request('http://localhost/api/qianlai/company-report', { method: 'POST',
+          body: JSON.stringify({ type: 'client-request', rpcId: 'test', method: 'qianlai/company-report',
+            payload: { kind: 'financial', periodKey: month, callId, sessionId: 'current', ...payload } }) }))).json()).result.value
+      expect(await request({ action: 'generate', sessionId: 'other', fingerprint: preview.fingerprint }))
+        .toMatchObject({ code: 'REPORT_ACTION_UNAVAILABLE' })
+      const generated = await request({ action: 'generate', fingerprint: preview.fingerprint })
+      expect(generated.accepted).toBe(true)
+      expect(await request({ action: 'download', id: generated.artifact.id, periodKey: '2026-02', fingerprint: preview.fingerprint }))
+        .toMatchObject({ code: 'REPORT_ACTION_UNAVAILABLE' })
+      const file = await request({ action: 'download', id: generated.artifact.id, fingerprint: preview.fingerprint })
+      expect(file).toMatchObject({ accepted: true, fileName: generated.artifact.fileName })
+      expect(Buffer.from(file.base64, 'base64').subarray(0, 2).toString()).toBe('PK')
+    } finally { store.close() }
+  })
+})
