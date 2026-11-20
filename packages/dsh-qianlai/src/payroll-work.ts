@@ -231,6 +231,15 @@ export function reviewPayroll(store: BookStore, input: Record<string, unknown>, 
   const periodKey = typeof input.periodKey === 'string' ? input.periodKey : selected
   if (!PERIOD_KEY.test(periodKey) || periodKey < company.accountingStartMonth)
     return refuse('PAYROLL_PERIOD_INVALID', '请选择本账本的工资所属月。')
+  if (input.action === 'schedule-form') {
+    const schedule = scheduleAt(store, periodKey)
+    const mode = input.mode === 'recurring' || input.mode === 'once' || input.mode === 'paused' ? input.mode : schedule?.mode
+    const payday = positiveId(input.payday) && input.payday <= 31 ? input.payday : schedule?.payday
+    return { accepted: true as const, payrollForm: {
+      kind: 'schedule', earliestMonth: company.accountingStartMonth, currentMonth: selected,
+      periodKey: input.periodKey === undefined ? '' : periodKey, mode, payday,
+    } }
+  }
   if (input.action === 'status') return readPayroll(store, periodKey, now)
   if (input.action === 'revisions') return { accepted: true as const, periodKey, revisions: events(store, DRAFT, periodKey).slice(0, 20)
     .map(e => ({ revision: e.id, time: e.createdAt, ...eventValue<Draft>(e) })) }

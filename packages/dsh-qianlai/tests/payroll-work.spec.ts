@@ -40,6 +40,9 @@ describe('工资安排、准备稿和实际发放', () => {
   it('只预览不改安排，支持短月、仅本月和以后暂停', () => {
     const schedule = { action: 'schedule', mode: 'recurring', payday: 31 }
     expect(inspect(schedule)).toHaveProperty('summary')
+    expect(inspect({ action: 'schedule-form', mode: 'recurring', payday: 31 })).toMatchObject({
+      accepted: true, payrollForm: { kind: 'schedule', periodKey, mode: 'recurring', payday: 31 },
+    })
     expect(status()).toMatchObject({ schedule: null })
     expect(approve(schedule)).toMatchObject({ accepted: true })
     expect(status()).toMatchObject({ schedule: { plannedDate: '2026-02-28' } })
