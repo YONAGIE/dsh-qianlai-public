@@ -2,6 +2,7 @@ const materialRetryKind = 'moneycome-material-retry'
 const materialReaders = new Set(['moneycome_read_upload', 'moneycome_read_referenced_pdf'])
 const materialWatchedCalls = new Set([...materialReaders, 'ask_user_question', 'moneycome_onboarding',
   'moneycome_record_entry', 'moneycome_check_invoice'])
+const materialInvoiceActions = new Set(['replace_invoice', 'upload_clearer_invoice', 'review_original'])
 const materialRetryReasons = {
   FILE_FORMAT_MISMATCH: '文件格式与内容不一致。请重新导出后发送。',
   FILE_PARSE_FAILED: '这份文件未能读出。请重新导出，或拆成几份再发。',
@@ -27,32 +28,42 @@ export function materialRetryDefinition() {
       'tool/call': event => materialWatchedCalls.has(event.data?.name) ? turn(event) : null,
       'tool/result': event => event.data?.message?.source?.kind === 'tool' ? turn(event) : null,
     },
-    start: () => ({ calls: {}, failures: [], blockedThrough: -1 }),
+    start: () => ({ calls: {}, failures: [], blockedThrough: -1, invoiceCheckCallId: null, invoiceAction: false }),
     update: ({ state }, { event }) => {
       if (event.type === 'turn/end') {
         const item = state.failures.find(failure => failure.seq > state.blockedThrough)
-        return event.data.reason?.kind === 'completed' && item ? { ...state, item, anchorSeq: event.seq } : state
+        return event.data.reason?.kind === 'completed' && item && !state.invoiceAction
+          ? { ...state, item, anchorSeq: event.seq } : state
       }
       if (event.type === 'tool/call') {
         const { name, callId } = event.data
-        if (name === 'ask_user_question' || name === 'moneycome_onboarding'
-          || (name === 'moneycome_record_entry' && materialJson(event.data.arguments)?.preview !== true))
-          return { ...state, blockedThrough: event.seq }
-        if (typeof callId === 'string' && (materialReaders.has(name) || name === 'moneycome_check_invoice'))
+        // Track the currently actionable invoice result, including when a later call clears it.
+        if (name === 'moneycome_check_invoice')
+          return { ...state, invoiceCheckCallId: typeof callId === 'string' ? callId : null, invoiceAction: false }
+        if (name === 'ask_user_question' || name === 'moneycome_record_entry') {
+          const showsDecision = name === 'ask_user_question' || materialJson(event.data.arguments)?.preview !== true
+          return { ...state, invoiceCheckCallId: null, invoiceAction: false,
+            blockedThrough: showsDecision ? event.seq : state.blockedThrough }
+        }
+        if (name === 'moneycome_onboarding') return { ...state, blockedThrough: event.seq }
+        if (typeof callId === 'string' && materialReaders.has(name))
           return { ...state, calls: { ...state.calls, [callId]: name } }
         return state
       }
       const { message } = event.data
       const callId = message?.source?.callId
-      if (event.surfaceOp !== 'append' || message?.isError || !Object.hasOwn(state.calls, callId)) return state
+      if (event.surfaceOp !== 'append' || message?.isError || typeof callId !== 'string') return state
       const first = message.content?.[0]
       if (first?.type !== 'text') return state
-      const result = materialJson(first.text)
-      if (state.calls[callId] === 'moneycome_check_invoice') {
+      if (callId === state.invoiceCheckCallId) {
+        if (message.content.length !== 1 || typeof first.text !== 'string' || first.text.length > 65_536) return state
+        const result = materialJson(first.text)
         const action = result?.nextAction?.kind
-        return result?.accepted === true && ['replace_invoice', 'upload_clearer_invoice'].includes(action)
-          ? { ...state, blockedThrough: event.seq } : state
+        return result?.accepted === true && result.recordable === false && materialInvoiceActions.has(action)
+          ? { ...state, invoiceAction: true } : state
       }
+      if (!Object.hasOwn(state.calls, callId)) return state
+      const result = materialJson(first.text)
       const info = result?.material
       if (!Number.isSafeInteger(info?.id) || info.id < 1) return state
       const failures = state.failures.filter(item => item.id !== info.id)

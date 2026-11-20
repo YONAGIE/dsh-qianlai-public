@@ -12,9 +12,9 @@ export const WORK_OPERATIONS = new Set([
 const validId = (id: unknown): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0
 
 function matterView(store: BookStore, matter: WorkMatter) {
-  const { postingHash, materialLinks, ...details } = matter
+  const { id, title, period, missing, materialLinks, revision, voucherNo, updatedAt } = matter
   return {
-    ...details,
+    id, title, period, missing, revision, voucherNo, updatedAt,
     materials: materialLinks.flatMap(({ materialId, replacesMaterialId }) => {
       const material = store.workMaterial(materialId)
       return material ? [{

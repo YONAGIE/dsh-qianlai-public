@@ -37,9 +37,19 @@ describe('材料重传操作', () => {
     expect(project([...batch, ['ask', 'ask_user_question']])).toBeNull()
     expect(project([...batch, ['confirm', 'moneycome_record_entry', null, { requestApproval: true }]])).toBeNull()
     expect(project([...batch, ['invoice', 'moneycome_check_invoice', {
-      accepted: true, nextAction: { kind: 'replace_invoice' },
+      accepted: true, recordable: false, nextAction: { kind: 'replace_invoice' },
     }]])).toBeNull()
     expect(project([...batch, ['invoice', 'moneycome_check_invoice', { accepted: true, recordable: true }]])).not.toBeNull()
+  })
+
+  it.each(['replace_invoice', 'upload_clearer_invoice', 'review_original'])('有可操作的发票卡 %s 时，无论材料先读还是后读都只显示发票卡', kind => {
+    const invoice = ['invoice', 'moneycome_check_invoice', { accepted: true, recordable: false, nextAction: { kind } }]
+    expect(project([invoice, ...batch])).toBeNull()
+    expect(project([...batch, invoice])).toBeNull()
+    expect(project([invoice, ...batch, ['checked', 'moneycome_check_invoice', { accepted: true, recordable: true }]])).toMatchObject({
+      kind: 'moneycome-material-retry', data: { id: 1 },
+    })
+    expect(project([invoice, ...batch, ['confirm', 'moneycome_record_entry', null, { requestApproval: true }]])).toBeNull()
   })
 
   it('使用实有的会话文件选择器，当前会话打不开时显示聊天附件提示', () => {

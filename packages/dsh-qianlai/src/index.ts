@@ -102,6 +102,8 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, item:
   item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item)
 
+const NON_POSTING_KEYS = new Set(['preview', 'requestApproval', 'workMatterRevision'])
+
 interface Context {
   effect(fn: () => () => void): void
   inject?(dependencies: string[], fn: (scope: Context) => void): void
@@ -288,8 +290,9 @@ export function apply(ctx: Context, config: Config = {}): void {
             const confirmEntry = name === 'moneycome_record_entry' && args.requestApproval === true
             if (entryPreview && confirmEntry) return refuse('ENTRY_MODE_CONFLICT', '请分别选择只看预演或发起正式记账确认。')
             const tracksMatter = name === 'moneycome_record_entry' && (args.workMatterId !== undefined || args.workMatterRevision !== undefined)
-            const { preview: _preview, requestApproval: _requestApproval, workMatterRevision: _workMatterRevision, ...postingArgs } = args
-            const postingHash = tracksMatter ? createHash('sha256').update(canonical(postingArgs)).digest('hex') : ''
+            const postingHash = tracksMatter
+              ? createHash('sha256').update(canonical(Object.fromEntries(Object.entries(args).filter(([key]) => !NON_POSTING_KEYS.has(key))))).digest('hex')
+              : ''
             const matterConflict = () => tracksMatter ? checkMatterPosting(store, args, postingHash) : undefined
             const critical = CRITICAL_WRITES.has(name) && !entryPreview
             const openingConflict = () => name === 'moneycome_open_book'
