@@ -49,6 +49,7 @@ import { taxKinds, taxWork } from './tax-work.js'
 import { checkMatterPosting, readWorkMatter, saveWorkMatter, saveWorkNote, workProgress, WORK_OPERATIONS } from './work-progress.js'
 import { materialSource, parseReferencedPdf, type MaterialSource, type UploadOptions, type UploadResult } from './uploads.js'
 import { isIntroductionSession, isWechatSession, loginControl, type LoginAction } from './wechat/control.js'
+import { compactWechatWorkResult } from './wechat/work-privacy.js'
 
 /**
  * DSH 插件入口。
@@ -449,6 +450,9 @@ export function apply(ctx: Context, config: Config = {}): void {
                 store.recordWork(name, args, result)
               if (receiptKey && (result as { accepted?: boolean })?.accepted === true)
                 store.saveToolReceipt(receiptKey, name, argsHash, result)
+              const sessionId = exec?.agent?.session.id
+              if (sessionId && (isWechatSession(sessionId) || isIntroductionSession(sessionId)))
+                return compactWechatWorkResult(name, result)
               return result
             })
           } catch (error) {

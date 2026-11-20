@@ -11,6 +11,7 @@ import { downloadMedia, getBotQrcode, IlinkConnection, IlinkSendError, imageMedi
 import { isIntroductionSession, registerLoginControl, registerLoginRpc, setIntroductionSession, type LoginRpcControl, type LoginView, type RpcConnection } from './control.js'
 
 import { splitForWechat, toWechatText } from './text.js'
+import { privateHandoffOperation } from './work-privacy.js'
 
 export { splitForWechat, toWechatText } from './text.js'
 
@@ -70,29 +71,6 @@ type Incoming = Exclude<PromptPart, { type: 'file' }> | { type: 'fileBytes'; nam
 type OnboardingTrigger = 'scan-confirmed' | 'saved-binding' | 'owner-message' | 'desktop-request'
 const HANDOFF_NOTICE = '张姐正在整理微信续接待办。'
 const HANDOFF_REQUEST_PREFIX = 'mc-handoff-'
-const PRIVATE_HANDOFF_TOOLS = new Set([
-  'moneycome_payroll', 'moneycome_benefits', 'moneycome_tax_work',
-  'moneycome_receipt_match', 'moneycome_material_archive',
-])
-const PRIVATE_ENTRY_KINDS = new Set([
-  'payroll', 'social_insurance', 'housing_fund', 'closing.payroll_accrual',
-  'closing.social_accrual', 'closing.housing_fund_accrual',
-  'personal_advance_repayment', 'tax_payment', 'tax_accrual',
-])
-
-function privateHandoffOperation(name: unknown, rawArgs: unknown): boolean {
-  if (typeof name !== 'string') return false
-  if (PRIVATE_HANDOFF_TOOLS.has(name)) return true
-  if (name !== 'moneycome_record_entry') return false
-  let args = rawArgs
-  if (typeof args === 'string') {
-    if (args.length > 64_000) return true
-    try { args = JSON.parse(args) as unknown } catch { return true }
-  }
-  const kind = (args as { eventKind?: unknown } | undefined)?.eventKind
-  return typeof kind !== 'string' || PRIVATE_ENTRY_KINDS.has(kind)
-}
-
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 /** DSH 的 RemoteError 按 `code` 区分；会话被删了是 `session/not-found`。 */
 const sessionGone = (error: unknown) => (error as { code?: unknown } | null)?.code === 'session/not-found'
