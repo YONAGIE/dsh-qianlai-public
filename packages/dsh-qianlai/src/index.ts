@@ -568,7 +568,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           if (!agent || !session || isWechatSession(session.id) || isIntroductionSession(session.id))
             return refuse('BENEFIT_DESKTOP_REQUIRED', '请在当前账本的桌面或网页对话核对资料。')
           const proposal = reviewBenefit(store, args, new Date())
-          if (!('operation' in proposal)) return proposal
+          if (!('operation' in proposal) || proposal.operation === undefined) return proposal
           if (args.preview === true) return { accepted: true, preview: true, summary: proposal.summary, values: proposal.value }
           const turn = questionTurns.get(session)
           if (entryQuestions.has(session.id) || turn?.question || turn?.profileCard)

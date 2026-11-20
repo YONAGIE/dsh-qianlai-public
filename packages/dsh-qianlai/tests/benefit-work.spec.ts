@@ -23,7 +23,7 @@ function inspect(input: Record<string, unknown>) {
 
 function persist(input: Record<string, unknown>) {
   const proposal = inspect(input)
-  if (!('operation' in proposal)) throw Error(JSON.stringify(proposal))
+  if (!('operation' in proposal) || proposal.operation === undefined) throw Error(JSON.stringify(proposal))
   return saveBenefit(store, proposal, { benefit, periodKey, ...input }, now)
 }
 
