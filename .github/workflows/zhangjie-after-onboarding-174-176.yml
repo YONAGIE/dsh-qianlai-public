@@ -1,0 +1,57 @@
+name: Zhangjie post-onboarding regression 174–176
+
+on:
+  push:
+    branches: [validation/zhangjie-after-onboarding-174-176]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Node 24
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v6.1.1
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Typecheck and lint
+        shell: bash
+        run: |
+          pnpm typecheck
+          pnpm lint
+      - name: Onboarding, materials and invoice regressions
+        run: pnpm --filter dsh-qianlai exec vitest run --testTimeout 20000 tests/onboarding tests/company-onboarding.spec.ts tests/closing-prerequisites.spec.ts tests/work-progress.spec.ts tests/attachments tests/issue-174 tests/issue-175 tests/issue-176 tests/material tests/invoice tests/posting-approval.spec.ts tests/evidence-integrity.spec.ts tests/tools.spec.ts tests/client.spec.mjs
+      - name: Verify compiled tool posting and export flow
+        run: node packages/dsh-qianlai/e2e/check-accounting-flow.mjs
+      - name: Verify original matter survives replacement and restart
+        run: node .github/zhangjie-phase-one-smoke.mjs
+      - name: Verify built upload actions in Chromium
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          pnpm --filter dsh-qianlai exec playwright-core install chromium --with-deps
+          npm install --prefix "$RUNNER_TEMP/qianlai-ui" --no-save --no-audit --no-fund react@19.2.0 react-dom@19.2.0 esbuild@0.27.3
+          node .github/zhangjie-phase-one-browser.mjs "$RUNNER_TEMP/qianlai-ui"
+      - name: Full test suite
+        if: matrix.os != 'windows-latest'
+        run: pnpm test
+      - name: Real DSH install and activation with synthetic data
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/qianlai-dsh" --no-save --no-audit --no-fund '@deepseek-ai/dsh@0.2.2-rc.1'
+          node packages/dsh-qianlai/scripts/check-dsh-wechat.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
