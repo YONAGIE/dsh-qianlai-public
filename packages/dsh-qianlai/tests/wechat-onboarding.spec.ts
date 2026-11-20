@@ -269,6 +269,43 @@ describe('微信欢迎与桌面任务主动续接', () => {
     expect(submitted).toContain('[REDACTED]')
     expect(active.prompts[0]?.content).toEqual([{ type: 'text', text: '张姐正在整理微信续接待办。' }])
   })
+  it('桌面续接跳过包含工资、社保和原件的完整轮次，也忽略工资记账记录的人员明细', async () => {
+    const net = network()
+    const dir = directory(savedLogin)
+    const store = new BookStore(join(dir, 'book.sqlite'))
+    try {
+      store.recordWork('moneycome_record_entry', { eventKind: 'payroll', summary: '合成私有工资凭证姓名' }, { accepted: true })
+      store.recordWork('moneycome_check_invoice', { invoiceNumber: '合成普通票码' }, { accepted: true })
+    } finally { store.close() }
+    const names = ['moneycome_payroll', 'moneycome_benefits', 'moneycome_tax_work', 'moneycome_receipt_match', 'moneycome_material_archive']
+    const events: Event[] = [...desktopEvents()]
+    for (const [offset, name] of names.entries()) {
+      const turn = offset + 1
+      const sequence = 3 + offset * 5
+      events.push(
+        { type: 'user/message', seq: sequence, data: { content: [{ type: 'text', text: '合成私有员工明细 ' + turn }] } },
+        { type: 'turn/start', seq: sequence + 1, data: { turn } },
+        { type: 'tool/call', seq: sequence + 2, data: { turn, name } },
+        { type: 'assistant/message', seq: sequence + 3, data: { turn, message: { content: [{ type: 'text', text: '合成私有回执 ' + turn }] } } },
+        { type: 'turn/end', seq: sequence + 4, time: Date.now(), data: { turn, reason: { kind: 'completed' } } },
+      )
+    }
+    events.push(
+      { type: 'user/message', seq: 30, data: { content: [{ type: 'text', text: '普通业务请核对银行手续费' }] } },
+      { type: 'turn/start', seq: 31, data: { turn: 9 } },
+      { type: 'tool/call', seq: 32, data: { turn: 9, name: 'moneycome_record_entry', arguments: '{"eventKind":"bank_fee"}' } },
+      { type: 'assistant/message', seq: 33, time: Date.now(), data: { turn: 9, message: { content: [{ type: 'text', text: '银行手续费还待确认' }] } } },
+      { type: 'turn/end', seq: 34, time: Date.now(), data: { turn: 9, reason: { kind: 'completed' } } },
+    )
+    const active = host(dir, { events })
+    await active.control.run('start', source)
+    await vi.waitFor(() => expect(net.sent).toHaveLength(1))
+    const submitted = active.contexts[0]!
+    expect(submitted).not.toContain('合成私有')
+    expect(submitted).toContain('合成普通票码')
+    expect(submitted).toContain('三月利润')
+    expect(submitted).toContain('银行手续费还待确认')
+  })
   it('续接上下文仅供本次摘要，之后的普通微信轮照常处理原消息', async () => {
     const net = network(), dir = directory(savedLogin), active = host(dir)
     await active.control.run('start', source)

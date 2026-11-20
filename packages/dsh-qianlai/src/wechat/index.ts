@@ -70,6 +70,28 @@ type Incoming = Exclude<PromptPart, { type: 'file' }> | { type: 'fileBytes'; nam
 type OnboardingTrigger = 'scan-confirmed' | 'saved-binding' | 'owner-message' | 'desktop-request'
 const HANDOFF_NOTICE = '张姐正在整理微信续接待办。'
 const HANDOFF_REQUEST_PREFIX = 'mc-handoff-'
+const PRIVATE_HANDOFF_TOOLS = new Set([
+  'moneycome_payroll', 'moneycome_benefits', 'moneycome_tax_work',
+  'moneycome_receipt_match', 'moneycome_material_archive',
+])
+const PRIVATE_ENTRY_KINDS = new Set([
+  'payroll', 'social_insurance', 'housing_fund', 'closing.payroll_accrual',
+  'closing.social_accrual', 'closing.housing_fund_accrual',
+  'personal_advance_repayment', 'tax_payment', 'tax_accrual',
+])
+
+function privateHandoffOperation(name: unknown, rawArgs: unknown): boolean {
+  if (typeof name !== 'string') return false
+  if (PRIVATE_HANDOFF_TOOLS.has(name)) return true
+  if (name !== 'moneycome_record_entry') return false
+  let args = rawArgs
+  if (typeof args === 'string') {
+    if (args.length > 64_000) return true
+    try { args = JSON.parse(args) as unknown } catch { return true }
+  }
+  const kind = (args as { eventKind?: unknown } | undefined)?.eventKind
+  return typeof kind !== 'string' || PRIVATE_ENTRY_KINDS.has(kind)
+}
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 /** DSH 的 RemoteError 按 `code` 区分；会话被删了是 `session/not-found`。 */
@@ -81,6 +103,8 @@ interface SessionEventLike {
   readonly time?: number
   readonly data?: {
     readonly turn?: number
+    readonly name?: string
+    readonly arguments?: unknown
     readonly source?: { readonly kind?: string; readonly rpcId?: unknown }
     readonly message?: { readonly content?: readonly { readonly type: string; readonly text?: string }[] }
     readonly content?: readonly { readonly type: string; readonly text?: string }[]
@@ -476,22 +500,46 @@ export function apply(ctx: Context, config: Config = {}): void {
       const store = new BookStore(book)
       try {
         const company = store.company()
-        return company ? { company: JSON.stringify(company), progress: store.workEvents(undefined, 10) } : undefined
+        return company ? { company: JSON.stringify(company), progress: store.workEvents(undefined, 10)
+          .filter(event => !privateHandoffOperation(event.operation, event.request)) } : undefined
       } finally { store.close() }
     }
-    const visibleMessages = (events: readonly SessionEventLike[], throughSeq = Infinity) => events
-      .map((event, index) => ({ event, seq: event.seq ?? index }))
-      .filter(({ event, seq }) => {
-        if (seq > throughSeq) return false
-        if (event.type === 'assistant/message') return true
+    const visibleMessages = (events: readonly SessionEventLike[], throughSeq = Infinity) => {
+      const withheld = new Set<number>()
+      const visible: { role: 'user' | 'assistant'; seq: number; group: number; text: string }[] = []
+      let group = 0
+      let turnStarted = false
+      let replied = false
+      for (const [index, event] of events.entries()) {
+        const user = isUserMessage(event)
         const rpcId = event.data?.source?.rpcId
-        return isUserMessage(event) && !(typeof rpcId === 'string' && rpcId.startsWith(HANDOFF_REQUEST_PREFIX))
-      })
-      .map(({ event, seq }) => ({
-        role: event.type === 'user/message' ? 'user' : 'assistant', seq,
-        text: (event.type === 'user/message' ? event.data?.content : event.data?.message?.content)?.filter(part => part.type === 'text')
-          .map(part => part.text ?? '').join('\n').trim().slice(0, 1200) ?? '',
-      })).filter(message => message.text).slice(-8)
+        const assistant = event.type === 'assistant/message'
+        if (event.type === 'turn/start') {
+          if (turnStarted || replied) group++
+          turnStarted = true
+          replied = false
+        } else if (event.type === 'turn/end') {
+          group++
+          turnStarted = false
+          replied = false
+        } else if (user && !turnStarted && replied) {
+          // Historical surfaces can omit turn boundaries. A new user message starts
+          // a new group when the preceding model already answered.
+          group++
+          replied = false
+        }
+        if (event.type === 'tool/call' && privateHandoffOperation(event.data?.name, event.data?.arguments))
+          withheld.add(group)
+        if (assistant) replied = true
+        if (!assistant && (!user || typeof rpcId === 'string' && rpcId.startsWith(HANDOFF_REQUEST_PREFIX))) continue
+        const seq = event.seq ?? index
+        if (seq > throughSeq) continue
+        const text = (user ? event.data?.content : event.data?.message?.content)?.filter(part => part.type === 'text')
+          .map(part => part.text ?? '').join('\n').trim().slice(0, 1200) ?? ''
+        if (text) visible.push({ role: user ? 'user' : 'assistant', seq, group, text })
+      }
+      return visible.filter(message => !withheld.has(message.group)).slice(-8)
+    }
     const presetOf = (source: { meta: { agentPreset?: string }; events: readonly SessionEventLike[] }) =>
       source.events.filter(event => event.type === 'agent-preset/selected').at(-1)?.data?.agentPreset ?? source.meta.agentPreset
     const captureDesktop = async (sessionId: string, requestedGeneration: number, confirmedScan?: AbortSignal) => {
