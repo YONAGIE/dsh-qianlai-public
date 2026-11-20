@@ -95,8 +95,17 @@ export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'c
   replacesSampleBook: boolean
   enterprise?: Omit<Enterprise, 'accounts'> & { accounts: (Omit<Account, 'number'> & { maskedNumber?: string })[] }
   nextAction?: NextAction
+  handoff?: OnboardingHandoff
   handoffWarning?: string
 }
+
+type OnboardingHandoff = { guidance: string } & (
+  | { kind: 'review-book-periods'; gapFrom: string; gapTo: string }
+  | { kind: 'prior-period-balances'; statementMonth: string; attachment: string }
+  | { kind: 'reconstruct-opening-balances'; openingMonth: string; attachment?: string }
+  | { kind: 'confirm-opening-balances'; openingMonth: string }
+  | { kind: 'bookkeeping' }
+)
 
 interface CardBase {
   id: string
@@ -366,11 +375,48 @@ function validatePayroll(data: Payroll | undefined): Refusal | undefined {
     return refuse('PAYDAY_INVALID', '请选择每月发薪的日期。')
 }
 
-function handoffAction(store: BookStore, accounting: Accounting): NextAction {
-  if (store.openingBalancesSetAt()) return 'bookkeeping'
-  if (accounting.history === 'previous' && previousPeriod(accounting.startMonth) !== accounting.lastMonth)
-    return 'review-book-periods'
-  return 'opening-balances'
+function handoffFor(store: BookStore, { history, lastMonth, startMonth }: Accounting, bankStatus: Enterprise['bankStatus'] = ''): {
+  nextAction: NextAction
+  handoff: OnboardingHandoff
+} {
+  if (store.openingBalancesSetAt()) return {
+    nextAction: 'bookkeeping',
+    handoff: { kind: 'bookkeeping', guidance: '建档和期初余额已确认，可以继续记账。' },
+  }
+  if (history === 'previous') {
+    const statementMonth = previousPeriod(startMonth)
+    if (lastMonth !== statementMonth) {
+      const year = Number(lastMonth.slice(0, 4))
+      const month = Number(lastMonth.slice(5))
+      const gapFrom = month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, '0')}`
+      const gap = gapFrom === statementMonth ? gapFrom : `${gapFrom} 至 ${statementMonth}`
+      return {
+        nextAction: 'review-book-periods',
+        handoff: { kind: 'review-book-periods', gapFrom, gapTo: statementMonth,
+          guidance: `旧账做到 ${lastMonth}，这本账从 ${startMonth} 开始。${gap} 的账需要先确认由谁补齐。` },
+      }
+    }
+    return {
+      nextAction: 'opening-balances',
+      handoff: { kind: 'prior-period-balances', statementMonth, attachment: '添加科目余额表',
+        guidance: `请发 ${statementMonth} 月末的科目余额表，可以发 Excel、PDF 或清晰照片。我核对后会用它接上 ${startMonth} 的账。` },
+    }
+  }
+  if (history === 'unrecorded') return {
+    nextAction: 'opening-balances',
+    handoff: {
+      kind: 'reconstruct-opening-balances', openingMonth: startMonth,
+      ...(bankStatus === 'provided' ? { attachment: '添加银行对账单' } : {}),
+      guidance: bankStatus === 'provided'
+        ? `之前已有经营，先请发能看出 ${startMonth} 月初余额的银行对账单。我会再逐项核对其他余额。`
+        : `之前已有经营，请先核对 ${startMonth} 月初有哪些余额，我再按实际情况收材料。`,
+    },
+  }
+  return {
+    nextAction: 'opening-balances',
+    handoff: { kind: 'confirm-opening-balances', openingMonth: startMonth,
+      guidance: `请先确认 ${startMonth} 月初公司账上是否有余额，包括银行存款、现金、欠款和投入的资金。` },
+  }
 }
 
 /** Preserve the four-step review when a legacy open-book call targets a company with an active draft. */
@@ -396,17 +442,20 @@ export function onboardingBookStatus(store: BookStore) {
     guidance: '企业建档资料已保存。在对话里说「继续建档」即可回到当前步骤。',
   }
   const { accounting, enterprise, payroll } = record
-  const nextAction = handoffAction(store, accounting)
-  const guidance = nextAction === 'bookkeeping' ? '建档和期初余额均已确认，可以继续记账。'
-    : nextAction === 'review-book-periods'
-      ? '旧账月份和起账月份之间有空档。先核对交接范围，再请原财务提供相关期间的科目余额表，确认期初余额后再记账。'
-      : accounting.history === 'previous'
-        ? '请原财务提供起账月前一期的科目余额表，核对并录入期初余额后再记账。'
-        : '请先确认起账月初的科目余额。如果期初确实没有余额，请明确确认期初为零。'
+  const company = store.company()
+  if (!enterprise || !company || company.isSample || company.accountingStartMonth !== accounting.startMonth ||
+    company.taxId?.toUpperCase() !== enterprise.taxId ||
+    normalizeCompanyName(company.name) !== normalizeCompanyName(enterprise.companyName)) return undefined
+  const { nextAction, handoff } = handoffFor(store, accounting, enterprise.bankStatus)
+  const payrollFact = store.companyFacts()['entity.has_payroll']
   return {
-    completed: true as const, ...accounting, payroll, nextAction, guidance,
-    bankStatus: enterprise?.bankStatus,
-    confirmedAccountLabels: enterprise?.bankStatus === 'provided' ? enterprise.accounts.map(accountLabel) : [],
+    completed: true as const, ...accounting, payroll, nextAction, handoff, guidance: handoff.guidance,
+    routineMaterialExclusions: [
+      ...(payroll?.payroll === 'none' && payrollFact !== 'yes' ? ['工资表'] : []),
+      ...(payroll?.social === 'none' && payrollFact !== 'yes' ? ['社保缴费凭证'] : []),
+    ],
+    bankStatus: enterprise.bankStatus,
+    confirmedAccountLabels: enterprise.bankStatus === 'provided' ? enterprise.accounts.map(accountLabel) : [],
   }
 }
 
@@ -467,7 +516,7 @@ export class CompanyOnboarding {
         },
       } : {}),
     }
-    if (view.completed && record.accounting) view.nextAction = handoffAction(this.store, record.accounting)
+    if (view.completed && accounting) Object.assign(view, handoffFor(this.store, accounting, enterprise?.bankStatus))
     if (!view.completed && view.step === 4 && record.accounting?.history === 'previous'
         && previousPeriod(record.accounting.startMonth) !== record.accounting.lastMonth) {
       view.handoffWarning = '旧账截止月与起账月之间有空档。请核对这段月份如何处理。'
@@ -1245,7 +1294,7 @@ export class CompanyOnboarding {
         return next({ labels: [choice === 'add' ? '继续补充账户' : '银行账户已核对'] }, choice === 'add' ? { kind: 'bank' } : undefined)
       if (card.kind === 'confirm' && choice === 'confirm') {
         const saved = this.confirm(revision, replaceSampleBook)
-        return saved.accepted ? next({ labels: ['建档已完成'] }) : saved
+        return saved.accepted ? next({ labels: ['建档已完成'], choice: 'confirm', notice: '建档已完成。' }) : saved
       }
       if (card.kind === 'confirm') {
         const step = choice === 'edit-company' ? 1 : choice === 'edit-accounting' ? 2 : choice === 'edit-payroll' ? 3 : undefined

@@ -24,7 +24,7 @@ export function onboardingFieldError(key, value, { savedNumber = false, lastMont
 
 export function registerOnboardingChat(ctx, {
   jsx, useEffect, useRef, useState, usePreset, OnboardingDateInput = 'input',
-  openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, subscribeOnboarding,
+  openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, pickOnboardingAttachment, subscribeOnboarding,
   readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
 }) {
   const kind = 'moneycome-onboarding-card'
@@ -250,7 +250,7 @@ export function registerOnboardingChat(ctx, {
       case 'bank-next':
         return input.choice === 'add' ? '我还要添加一个银行账户。' : '银行账户已核对，请继续建档。'
       case 'confirm':
-        if (input.choice === 'confirm') return '我已确认建档，请告诉我下一步。'
+        if (input.choice === 'confirm') return '我已确认建档。'
         return '我要更正' + (corrections.find(item => item.value === input.choice)?.label ?? '建档资料') + '。'
       case 'blocked':
         return '我想重新核对企业情况。'
@@ -479,6 +479,7 @@ export function registerOnboardingChat(ctx, {
     function applyStatus(result) {
       statusVersion.current++
       if (result.card) currentRevision.current = result.card.revision
+      else if (result.receipt && result.view?.completed) currentRevision.current = result.view.revision
       setStatus(result)
       if (result.view) refreshOnboarding(sessionId, result.view)
     }
@@ -495,9 +496,13 @@ export function registerOnboardingChat(ctx, {
     }, [sessionId, cardId, statusAttempt])
     useEffect(() => {
       return subscribeOnboarding?.((source, { view }) => {
-        if (source === sessionId && view?.draftId === draftId && view.revision > currentRevision.current) setObsolete(true)
+        if (source !== sessionId || view?.draftId !== draftId) return
+        if (projectedCard.kind === 'confirm' && view.completed) {
+          currentRevision.current = view.revision
+          setStatus(previous => previous?.receipt ? { ...previous, view } : previous)
+        } else if (view.revision > currentRevision.current) setObsolete(true)
       })
-    }, [sessionId, draftId])
+    }, [sessionId, draftId, projectedCard.kind])
 
     async function openDraft(options) {
       try {
@@ -710,9 +715,20 @@ export function registerOnboardingChat(ctx, {
         license: wantsTax ? '已选择上传税务资料' : '已选择上传营业执照',
         manual: '已选择自己填写',
       }[receipt.choice] ?? (labels.length ? sourceText(card.documentKind) + '已识别，资料已保存。' : undefined) : undefined
+      const handoffAttachment = card.kind === 'confirm' && (receipt.choice === 'confirm' || labels.includes('建档已完成')) &&
+        !obsolete && status.view?.completed ? status.view.handoff?.attachment : undefined
       body = [
         jsx('p', { role: 'status', style: { ...secondary, margin: '7px 0 0' },
           children: receipt.notice ?? (mode ? '已选择' + mode : choice ?? (labels.length ? '已保存 ' + labels.join('、') : '资料已保存。')) }),
+        handoffAttachment ? jsx('div', { style: actions, children: button(handoffAttachment, () => {
+          setError('')
+          try {
+            if (pickOnboardingAttachment?.(sessionId)) return
+          } catch {
+            // Older DSH hosts use the chat composer directly.
+          }
+          setError('请在当前聊天的输入框里添加这份文件，选好后发送。')
+        }, saving) }) : null,
         card.maintenance ? jsx('div', { style: actions, children: button('再次更正', () => void reopenProfileCard(), saving) }) : null,
         pendingReply ? jsx('div', { style: actions, children: button('重试发送到对话', () => void sendReply(pendingReply), saving) }) : null,
       ]
