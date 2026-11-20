@@ -2,6 +2,7 @@ const invoiceUploadKind = 'moneycome-invoice-upload'
 const invoiceUploadActions = {
   replace_invoice: { title: '更换发票', label: '上传正确发票' },
   upload_clearer_invoice: { title: '补发清晰原件', label: '上传清晰发票' },
+  review_original: { title: '核对发票原件', label: '上传发票原件' },
 }
 
 export function invoiceUploadDefinition(toolResultText) {

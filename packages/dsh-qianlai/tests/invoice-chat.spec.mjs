@@ -40,7 +40,11 @@ describe('核票后补发附件', () => {
     expect(project([...wrongInvoice, call('valid'), result('valid', 'prepare_posting', true), end()])).toBeNull()
   })
 
-  it('通过当前对话的宿主选择器上传，能力不可用时显示现有附件路径', () => {
+  it.each([
+    ['replace_invoice', '上传正确发票'],
+    ['upload_clearer_invoice', '上传清晰发票'],
+    ['review_original', '上传发票原件'],
+  ])('%s 通过当前对话的宿主选择器上传，能力不可用时显示现有附件路径', (action, label) => {
     let render
     let showFallback = false
     const input = { canPickFiles: vi.fn(() => true), pickFiles: vi.fn() }
@@ -57,9 +61,11 @@ describe('核票后补发附件', () => {
       useState: () => [showFallback, value => { showFallback = value }],
       usePreset: () => 'moneycome-zhangjie',
     })
-    const props = { node: { data: { action: 'replace_invoice' } }, sessionId: 'session-1' }
+    const node = project([call('invoice'), result('invoice', action), end()])
+    expect(node).toMatchObject({ visibility: 'visible', data: { action } })
+    const props = { node, sessionId: 'session-1' }
     const button = render(props).children[0].children[1]
-    expect(button.children).toBe('上传正确发票')
+    expect(button.children).toBe(label)
     button.onClick()
     expect(input.canPickFiles).toHaveBeenCalledWith('session-1')
     expect(input.pickFiles).toHaveBeenCalledExactlyOnceWith('session-1')
