@@ -37,7 +37,7 @@ describe('银行流水来源与未来安排', () => {
     expect(importStatement(store, corrected, now)).toMatchObject({ accepted: true, reused: true, receipt: imported.receipt })
     expect(store.statementCoverage().map(line => line.accountRef)).toEqual([corrected.accountRef])
     expect(store.statementLines({})).toHaveLength(1)
-    expect(store.vouchers({})).toEqual([])
+    expect(store.postedPeriods()).toEqual([])
   })
 
   it('保存未来收款安排只影响安排，重复保存与取消不写账或流水', () => {
@@ -54,6 +54,6 @@ describe('银行流水来源与未来安排', () => {
       .toMatchObject({ accepted: true, status: 'cancelled', affectsLedger: false })
     expect(currentFundsArrangements(store)).toEqual([])
     expect(store.statementCoverage()).toEqual([])
-    expect(store.vouchers({})).toEqual([])
+    expect(store.postedPeriods()).toEqual([])
   })
 })
