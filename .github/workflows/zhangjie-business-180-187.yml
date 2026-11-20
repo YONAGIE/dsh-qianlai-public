@@ -33,6 +33,18 @@ jobs:
           pnpm --filter @moneycome/fintax-core exec vitest run --testTimeout 20000
           pnpm --filter dsh-qianlai exec vitest run --testTimeout 20000
       - run: node packages/dsh-qianlai/e2e/check-accounting-flow.mjs
+      - name: Report and original material download in Chromium
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          if command -v google-chrome >/dev/null; then
+            export PHASE_CHROMIUM="$(command -v google-chrome)"
+          else
+            pnpm --filter dsh-qianlai exec playwright-core install chromium
+          fi
+          npm install --prefix "$RUNNER_TEMP/qianlai-ui" --no-save --no-audit --no-fund react@19.2.0 react-dom@19.2.0 esbuild@0.27.3
+          node .github/zhangjie-business-browser.mjs "$RUNNER_TEMP/qianlai-ui"
       - name: Real DSH installation and start with synthetic data
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 4
