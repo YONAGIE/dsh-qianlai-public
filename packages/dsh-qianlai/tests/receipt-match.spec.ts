@@ -12,7 +12,7 @@ describe('one business with split receipts', () => {
       store.createCompany({ name: '合成企业', accountingStartMonth: '2026-10', isSample: false })
       const invoiceNumber = '26660000000012345678'
       store.saveInvoice({ invoiceNumber, issueDate: '2026-11-01', direction: 'output',
-        counterparty: '合成客户', totalCents: 500000n, facts: {} })
+        counterparty: '合成客户', totalCents: 500000n, facts: {}, now })
       const matter = store.createWorkMatter('分次回款', '2026-11', [])
       const material = store.saveWorkMaterial('synthetic-receipt', '合成回单.pdf', 'read', null)
       const base = { action: 'preview', matterId: matter.id, invoiceNumber, materialId: material.id,
