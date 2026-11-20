@@ -127,7 +127,7 @@ export function createOnboardingDateInput({ jsx, useState, useRef, useEffect }, 
   }
 
   return function OnboardingDateInput({ id, name, type, label, value, required, disabled, onChange, onBlur, style,
-    establishedOn, lastMonth, 'aria-invalid': invalid, 'aria-describedby': describedBy }) {
+    establishedOn, lastMonth, min: minOverride, max: maxOverride, 'aria-invalid': invalid, 'aria-describedby': describedBy }) {
     const trigger = useRef(null)
     const popover = useRef(null)
     const nextFocus = useRef('')
@@ -136,7 +136,9 @@ export function createOnboardingDateInput({ jsx, useState, useRef, useEffect }, 
     const isDay = type === 'date'
     const today = chinaDate.format(new Date())
     const todayValue = isDay ? today : today.slice(0, 7)
-    const { min, max } = onboardingDateBounds(type, name, today, establishedOn, lastMonth)
+    const dates = onboardingDateBounds(type, name, today, establishedOn, lastMonth)
+    const min = minOverride ?? dates.min
+    const max = maxOverride ?? dates.max
     const hasChoices = min <= max
     const initial = isDay ? /^\d{4}-\d{2}-\d{2}$/.test(value) : monthPattern.test(value)
     const cursor = clamp(picker?.value ?? (initial ? value : todayValue), min, max)

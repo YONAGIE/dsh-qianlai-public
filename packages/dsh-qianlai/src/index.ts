@@ -630,7 +630,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         'moneycome_payroll',
         '核对本地工资。先以 status 查询所属月和当前草稿版本。schedule 保存某月起长期发薪、仅这个月发薪或暂停。本月工资表的可确认数字用 draft 保存，金额未知给老板当前一项表单，不能按零填。按员工录入的实际付款用 payment 关联已导入流水或已读回单，并区分工资所属月和实际支付日。未付或暂不确定可用 payment-state 记录。draft、payment 和 payment-state 要带 status 返回的 revision。变更可以 preview: true 先看资料。正式调用只在当前 DSH 确认后保存。revisions 可看旧稿，download 可将工资准备稿导出到本地。工资安排、工资表或付款核对均不发钱、不记账、不代报税。工资费用已计提时不重做计提。',
         {
-          action: { type: 'string', enum: ['status', 'revisions', 'schedule', 'draft', 'payment', 'payment-state', 'download'] },
+          action: { type: 'string', enum: ['status', 'revisions', 'schedule-form', 'schedule', 'draft', 'payment', 'payment-state', 'download'] },
           ...periodKey,
           mode: { type: 'string', enum: ['recurring', 'once', 'paused'] },
           payday: { type: 'integer', description: '每月发薪日，1 至 31' },
