@@ -504,7 +504,7 @@ export class BookStore {
   reportPendingMatter(periodKey: string): WorkMatter | undefined {
     const row = this.db.prepare(`
       SELECT ${MATTER_COLUMNS} FROM work_matter
-      WHERE period_key = ? AND voucher_no IS NULL AND json_array_length(missing_json) > 0
+      WHERE period = ? AND voucher_no IS NULL AND json_array_length(missing_json) > 0
       ORDER BY id ASC LIMIT 1
     `).get(periodKey) as unknown as WorkMatterRow | undefined
     return row && matterFromRow(row)
