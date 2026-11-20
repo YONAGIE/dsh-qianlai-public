@@ -25,6 +25,8 @@
 
 - Continue company setup in a new reply after each chat card submission. Show the method picker at the start and accept later switches by chat while preserving the draft. Open the official QR page automatically after confirming a supported region.
 
+- After company setup, guide the owner through the next bookkeeping action using the recorded handoff period and opening-balance status. Offer the DSH file picker for the current handoff document and reuse payroll and social insurance arrangements when gathering materials.
+
 - Show the same onboarding card only once per reply, including when multiple tool calls return the same tax scan or a document step.
 
 - Show editable draft fields directly in DSH’s right-hand panel. Open the panel in the current conversation when the user starts or explicitly resumes company setup. Keep unsaved input while chat updates the other fields and show conflicting changes before saving. Lay out short fields side by side when the card is wide enough. Align primary card actions to the right and keep bank account save/defer buttons in one wrapping row.
