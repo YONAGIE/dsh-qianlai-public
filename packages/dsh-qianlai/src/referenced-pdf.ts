@@ -1,4 +1,4 @@
-import { extname, isAbsolute } from 'node:path'
+import { basename, extname, isAbsolute } from 'node:path'
 
 import { hasFullAccess, type PermissionPresets } from './permissions.js'
 import { type Refusal, refuse } from './period.js'
@@ -177,6 +177,7 @@ export function createPdfReferences(getFs: () => PdfReferenceFileSystem | undefi
     approval: PdfReferenceApproval | undefined,
     presets?: PermissionPresets,
     fileIndex = 1,
+    onSource?: (name: string) => void,
   ): Promise<PdfReferenceResult> {
     const agent = exec?.agent
     const callId = exec?.callId
@@ -247,7 +248,9 @@ export function createPdfReferences(getFs: () => PdfReferenceFileSystem | undefi
       }
     }
 
-    return { ...await readSelected(), fileIndex, fileCount }
+    const result = await readSelected()
+    if (result.accepted) onSource?.(basename(file.path))
+    return { ...result, fileIndex, fileCount }
   }
 
   return { observe, read }

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import { openBook } from '../src/book.js'
 import { BookStore } from '../src/store.js'
-import { saveWorkNote, workProgress } from '../src/work-progress.js'
+import { readWorkMatter, saveWorkMatter, saveWorkNote, workProgress } from '../src/work-progress.js'
 
 describe('跨端业务进度', () => {
   it('重启与第二个连接能续接真实记录，笔记和预演不授予记账确认', () => {
@@ -49,5 +49,26 @@ describe('跨端业务进度', () => {
     expect(() => store.transaction(() => { store.recordWork('failed', {}, {}); throw Error('rollback') })).toThrow()
     expect(store.workEvents()[0]?.operation).toBe('note')
     store.close()
+  })
+
+  it('其他账本无法把旧待办误认成自身的第一件待办', () => {
+    const own = new BookStore(':memory:')
+    const other = new BookStore(':memory:')
+    try {
+      openBook(own, { companyName: 'Synthetic Company A', accountingStartMonth: '2026-01' })
+      openBook(other, { companyName: 'Synthetic Company B', accountingStartMonth: '2026-01' })
+      const failed = own.saveWorkMaterial('synthetic-invalid-pdf', 'old.pdf', 'failed', 'FILE_FORMAT_MISMATCH')
+      const original = saveWorkMatter(own, { action: 'create-matter', title: '等待有效材料', missing: ['正确的 PDF'] })
+      if (!original.accepted) throw Error('expected pending matter')
+      const otherMatter = saveWorkMatter(other, { action: 'create-matter', title: '另一企业的待办', missing: [] })
+      if (!otherMatter.accepted) throw Error('expected other matter')
+      expect(readWorkMatter(other, original.matter.id)).toMatchObject({ accepted: false, code: 'WORK_MATTER_NOT_FOUND' })
+      expect(saveWorkMatter(other, {
+        action: 'attach-material', matterId: otherMatter.matter.id, revision: 1, materialId: failed.id,
+      })).toMatchObject({ accepted: false, code: 'WORK_MATERIAL_NOT_FOUND' })
+    } finally {
+      own.close()
+      other.close()
+    }
   })
 })
