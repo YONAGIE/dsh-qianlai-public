@@ -32,6 +32,7 @@ import {
   type PdfReferenceSession,
 } from './referenced-pdf.js'
 import { balanceTransferItems, readProfit, readStatements } from './reports.js'
+import { receiptMatch } from './receipt-match.js'
 import { exportReviewPack } from './review-pack.js'
 import { importStatement, readUpload, renameBankAccount, unrecordedStatementLines, type ImportStatementInput } from './statements.js'
 import { BookStore } from './store.js'
@@ -589,6 +590,64 @@ export function apply(ctx: Context, config: Config = {}): void {
         periodKey,
         ['periodKey'],
         (a) => readBalances(store, String(a.periodKey ?? '')),
+      ),
+      tool(
+        'moneycome_receipt_match',
+        '核对分次回款或个人代收。先找到同一企业和同一笔业务的 matterId、已核对销售发票、实际收款凭据，再按每一笔原件传日期金额和去向。先 preview，给一次本地确认，再带 token 用 save。不得猜去向、不把个人代收当公司银行到账，不重复生成收入。凭据号用原件上的唯一参考号。已经存在凭证时回到原凭证核对关联。没有明确来源的事实给对应的选项或表单。此工具只关联收款事实，生成凭证须使用现有确认。',
+        {
+          action: { type: 'string', enum: ['status', 'preview', 'save'] },
+          matterId: { type: 'integer' },
+          invoiceNumber: str('本企业已通过核对的销售发票号码'),
+          materialId: { type: 'integer' },
+          paidOn: str('实际收款日 YYYY-MM-DD'),
+          amount: str('原件上的元金额'),
+          receiver: str('原件上的收款方'),
+          reference: str('原件上可区分这笔收款的唯一编号'),
+          destination: { type: 'string', enum: ['personal-held', 'company-bank', 'unknown'] },
+          statementLineId: { type: 'integer', description: '确认用于公司银行实际收款的流水行' },
+          token: str('当前 preview 返回的核对标识'),
+        },
+        ['action', 'matterId'],
+        async (a, signal, execution) => {
+          const agent = execution?.agent
+          const session = agent?.session
+          if (!session?.id || isWechatSession(session.id) || isIntroductionSession(session.id))
+            return refuse('RECEIPT_DESKTOP_REQUIRED', '请在当前企业的 DSH 会话核对这笔收款。')
+          if (a.action !== 'save') return store.transaction(() => receiptMatch(store, a, new Date()))
+          const prior = store.transaction(() => receiptMatch(store, { ...a, action: 'preview' }, new Date()))
+          if (!prior.accepted || 'alreadyMatched' in prior) return prior
+          if (!('token' in prior) || a.token !== prior.token)
+            return refuse('RECEIPT_CHANGED', '收款资料已更新，请再次核对。')
+          const host = ctx.get?.('userQuestions') as UserQuestions | undefined
+          if (!host?.ask || !agent || !execution?.callId || !signal)
+            return refuse('RECEIPT_CONFIRMATION_UNAVAILABLE', '收款资料仍待核对。')
+          if (entryQuestions.has(session.id) || questionTurns.get(session)?.question || questionTurns.get(session)?.profileCard)
+            return refuse('RECEIPT_CONFIRMATION_PENDING', '请先完成当前确认。')
+          const id = createHash('sha256').update(canonical([session.id, execution.callId, prior.token])).digest('hex')
+          const confirm = '确认这笔收款'
+          const candidate = prior.candidate!
+          entryQuestions.set(session.id, { receiptKey: id, argsHash: canonical(a) })
+          try {
+            const response = await host.ask({ agent, signal, questions: [{ id, header: '收款核对',
+              question: '这笔收款资料核对好了吗？',
+              detail: questionDetail([prior.title, candidate.paidOn + ' · ' + candidate.amount + ' 元',
+                candidate.destination === 'company-bank' ? '已匹配公司银行流水'
+                  : candidate.destination === 'personal-held' ? '由 ' + candidate.receiver + ' 代收，暂未转入公司账户'
+                    : '收款去向待核对',
+                '核对后这笔收款会关联到原事项，仍按现有流程确认记账。',
+              ].join('\n')), options: [{ label: confirm }, { label: '稍后核对' }] }] })
+            const answer = response.answers.length === 1 ? response.answers[0] : undefined
+            if (signal.aborted || disposed || answer?.id !== id || answer.custom !== undefined ||
+                answer.selected.length !== 1 || answer.selected[0] !== confirm)
+              return refuse('RECEIPT_DEFERRED', '收款资料仍待核对。')
+            return store.transaction(() => receiptMatch(store, a, new Date(), true))
+          } catch {
+            return refuse('RECEIPT_DEFERRED', '收款资料仍待核对。')
+          } finally {
+            entryQuestions.delete(session.id)
+          }
+        },
+        true,
       ),
       tool(
         'moneycome_read_profit',
