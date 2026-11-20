@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 
 import { checkArgs } from './args.js'
 import { readBalances } from './balances.js'
+import { reviewBenefit, saveBenefit } from './benefit-work.js'
 import { bookStatus, openBook, prepareOpeningBalances, setCompanyFacts, setOpeningBalances, type OpeningBalanceInput } from './book.js'
 import { closePeriod, closingCheck } from './closing.js'
 import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus, type OnboardingGuideAction } from './company-onboarding.js'
@@ -536,6 +537,69 @@ export function apply(ctx: Context, config: Config = {}): void {
           const onboarding = onboardingBookStatus(store)
           return { ...status, businessDate: todayInChina(new Date()), ...(onboarding ? { onboarding } : {}) }
         },
+      ),
+      tool(
+        'moneycome_benefits',
+        '本地核对社保、公积金。传 benefit 和 periodKey 指定项目和实际所属月。status 查当前进度，history 查变更。enrollment 每次处理一位员工；上传名单仅作为材料，待核对用 pending，核对实际已读回执用 verified，失败用 failed 和实际原因。contribution 按人输入单位和个人金额。paid 需要所属月、实际缴费日、已读材料、回单唯一编号和实缴合计。move 更正所属月并保留原件和实缴日。contribution、paid、move 使用 status 最新 revision，首稿为 0。preview 为只看变更。保存需原生确认，工具仅更新本地记录，不提交增员、不扣款、不入账。',
+        {
+          action: { type: 'string', enum: ['status', 'history', 'enrollment', 'contribution', 'paid', 'move'] },
+          benefit: { type: 'string', enum: ['insurance', 'housing'], description: '社保或公积金' },
+          ...periodKey,
+          targetPeriodKey: str('更正后的缴费所属月 YYYY-MM'),
+          employeeId: str('稳定员工编号，同名员工使用不同编号'),
+          name: str('姓名'),
+          status: { type: 'string', enum: ['pending', 'verified', 'failed'] },
+          materialId: { type: 'integer', description: '已读的办理回执、缴费明细或缴费凭据编号' },
+          reason: str('已核对的实际失败原因'),
+          revision: { type: 'integer', description: '最新缴费资料版本，首次为 0' },
+          paidOn: str('实际缴费日期 YYYY-MM-DD'),
+          reference: str('缴费凭据中的唯一交易号或原始行号'),
+          paidTotal: str('凭据上实际缴纳的金额，以元为单位'),
+          rows: { type: 'array', items: { type: 'object', properties: {
+            employeeId: str('员工编号'), name: str('姓名'),
+            companyAmount: str('单位承担金额'), personalAmount: str('个人承担金额'),
+          }, required: ['employeeId', 'name', 'companyAmount', 'personalAmount'] } },
+          preview: { type: 'boolean', description: '只预览，不保存' },
+        },
+        ['action', 'benefit', 'periodKey'],
+        async (args, signal, execution) => {
+          const agent = execution?.agent
+          const session = agent?.session
+          if (!agent || !session || isWechatSession(session.id) || isIntroductionSession(session.id))
+            return refuse('BENEFIT_DESKTOP_REQUIRED', '请在当前账本的桌面或网页对话核对资料。')
+          const proposal = reviewBenefit(store, args, new Date())
+          if (!('operation' in proposal) || proposal.operation === undefined) return proposal
+          if (args.preview === true) return { accepted: true, preview: true, summary: proposal.summary, values: proposal.value }
+          const turn = questionTurns.get(session)
+          if (entryQuestions.has(session.id) || turn?.question || turn?.profileCard)
+            return refuse('BENEFIT_DECISION_PENDING', '请先完成当前控件的确认。')
+          const questions = ctx.get?.('userQuestions') as UserQuestions | undefined
+          if (!questions?.ask || !execution?.callId || !signal)
+            return refuse('BENEFIT_CONFIRMATION_UNAVAILABLE', '当前没有可用确认控件，资料仍待核对。')
+          const company = JSON.stringify(store.company())
+          const id = createHash('sha256').update(canonical([session.id, execution.callId, proposal])).digest('hex')
+          const confirm = '确认保存'
+          entryQuestions.set(session.id, { receiptKey: id, argsHash: id })
+          let choice: UserQuestionAnswer | undefined
+          try {
+            const result = await questions.ask({ agent, signal, questions: [{
+              id, header: '核对缴费', question: '保存这次核对结果吗？', detail: questionDetail(proposal.summary.join('\n')),
+              options: [{ label: confirm }, { label: '稍后核对' }],
+            }] })
+            choice = result.answers.length === 1 ? result.answers[0] : undefined
+          } catch {
+            // Cancelled or disconnected questions leave the proposal pending.
+          } finally {
+            entryQuestions.delete(session.id)
+          }
+          if (disposed || signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，资料未改动。')
+          if (choice?.id !== id || choice.selected.length !== 1 || choice.selected[0] !== confirm || choice.custom !== undefined)
+            return refuse('BENEFIT_CONFIRMATION_DEFERRED', '本项资料仍待核对。')
+          return store.transaction(() => JSON.stringify(store.company()) === company
+            ? saveBenefit(store, proposal, args, new Date())
+            : refuse('BOOK_CHANGED', '确认期间已切换账本，请在当前公司重新核对。'))
+        },
+        true,
       ),
       tool(
         'moneycome_open_book',
