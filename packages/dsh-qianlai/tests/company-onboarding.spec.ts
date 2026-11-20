@@ -344,6 +344,25 @@ describe('已完成的企业档案', () => {
     return result.card
   }
 
+  it('已完成建档的企业按当前会话确认补登记，只保存尾号，且不改发薪安排', () => {
+    const { store, wizard } = setup()
+    const existing = accepted(wizard.confirm(ready(wizard, { ...enterprise, bankStatus: 'pending', accounts: [] }).revision, false))
+    const fields = { holder: enterprise.companyName, accountTail: '0080', bank: '合成登记银行', currency: 'CNY', openedOn: '2026-11-06' }
+    const visible = wizard.guide('owner-chat', 'add-bank-account', undefined, fields)
+    if (!visible.accepted || !('card' in visible) || !visible.card) throw Error('未取得登记卡')
+    expect(store.companyOnboarding()?.enterprise?.bankStatus).toBe('pending')
+    const { id, revision } = visible.card
+    expect(wizard.submitCard('other-session', id, revision, undefined, fields)).toMatchObject({ accepted: false })
+    expect(wizard.submitCard('owner-chat', id, revision, undefined, { ...fields, holder: '另一家合成企业' }))
+      .toMatchObject({ accepted: false, code: 'PROFILE_ACCOUNT_OWNER_MISMATCH' })
+    expect(wizard.submitCard('owner-chat', id, revision, undefined, fields))
+      .toMatchObject({ accepted: true, receipt: { choice: 'account-added' }, view: { completedAt: existing.completedAt, payroll,
+        enterprise: { bankStatus: 'provided', accounts: [{ maskedNumber: '尾号 0080' }] },
+      } })
+    expect(store.companyOnboarding()?.enterprise?.accounts[0]?.number).toBe(fields.accountTail)
+    expect(store.statementCoverage()).toEqual([])
+  })
+
   it('重复更正成立日期时打开新卡，旧回执按最新档案重新打开', () => {
     const { wizard, store } = completed()
     const session = 'owner-chat'

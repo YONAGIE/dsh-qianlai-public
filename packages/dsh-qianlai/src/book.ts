@@ -1,5 +1,6 @@
 import { formatCents, parseAmountToCents } from '@moneycome/fintax-core'
 
+import { bankRegistrationView } from './bank-accounts.js'
 import { dueSoon } from './deadlines.js'
 import type { LoadedPack } from './pack.js'
 import { PERIOD_KEY, refuse, todayInChina } from './period.js'
@@ -12,6 +13,7 @@ export function bookStatus(store: BookStore, deadlines?: { pack: LoadedPack; now
   const company = store.company()
   if (!company) return refuse('NO_BOOK', '本机还没有账本。')
   const facts = store.companyFacts()
+  const registration = bankRegistrationView(store, todayInChina(deadlines?.now ?? new Date()))
   return {
     accepted: true as const,
     company: company.name,
@@ -19,6 +21,7 @@ export function bookStatus(store: BookStore, deadlines?: { pack: LoadedPack; now
     accountingStartMonth: company.accountingStartMonth,
     openingBalancesEntered: store.openingBalancesSetAt() !== undefined,
     bankAccounts: bankAccounts(store),
+    bankRegistration: registration,
     postedPeriods: store.postedPeriods(),
     closedPeriods: store.lockedPeriods(),
     companyFacts: facts,

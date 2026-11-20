@@ -142,7 +142,7 @@ type CardContent = (
 type OnboardingCard = CardBase & CardContent
 interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
 interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; autoStartClaimed?: true }
-export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile'
+export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile' | 'add-bank-account'
 
 const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
 const profileFields = [...onboardingFields[1], ...onboardingFields[2], ...onboardingFields[3]]
@@ -932,8 +932,60 @@ export class CompanyOnboarding {
       if (previous?.kind !== 'fields' || !previous.maintenance)
         return refuse('CARD_UNAVAILABLE', '这张卡无法重新打开企业档案更正。')
       const { field, accountId } = previous.maintenance
+      if (field === 'addBankAccount') return this.bankAccountCard(sessionId)
       return this.maintainProfile(sessionId, true, [field], undefined, undefined, accountId)
     })
+  }
+
+  private bankAccountCard(sessionId: string, values?: unknown) {
+    const record = this.activeProfile()
+    if (!record) return refuse('PROFILE_UNAVAILABLE', '请先完成企业建档，再登记对公账户。')
+    const proposed = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
+    const fields = [...profileAccountFields]
+    const card = this.profileFieldCard(fields, { holder: record.enterprise.companyName, currency: 'CNY' }, proposed,
+      { field: 'addBankAccount' }, '请按银行资料核对开户行和账号后四位。开户日期用于判断需要核对哪段流水。')
+    return {
+      accepted: true as const, completed: true, cardState: 'active' as const,
+      card: this.issueCard(sessionId, { ...card, title: '登记对公银行账户' }, { reissue: true }),
+    }
+  }
+
+  private saveNewBankAccount(sessionId: string, card: OnboardingCard & FieldsCard, record: NonNullable<ReturnType<CompanyOnboarding['activeProfile']>>, values: unknown) {
+    const { enterprise } = record
+    const today = todayInChina(this.now())
+    let patch: Record<string, unknown>
+    try {
+      patch = fieldPatch(card.fields, object(values), today)
+    } catch (error) {
+      return refuse('PROFILE_INPUT_INVALID', error instanceof Error ? error.message : '请核对填写的账户资料。')
+    }
+    const holder = String(patch.holder ?? '')
+    const number = String(patch.accountTail ?? '')
+    const bank = String(patch.bank ?? '')
+    const currency = String(patch.currency ?? '').toUpperCase()
+    const openedOn = String(patch.openedOn ?? '')
+    if (!/^\d{4}$/.test(number))
+      return refuse('PROFILE_ACCOUNT_TAIL_INVALID', '请输入账号末尾四位数字。', { field: 'accountTail' })
+    if (normalizeCompanyName(holder) !== normalizeCompanyName(enterprise.companyName))
+      return refuse('PROFILE_ACCOUNT_OWNER_MISMATCH', '账户户名与本公司不符。请核对对公账户的户名。', { field: 'holder' })
+    if (!bank) return refuse('BANK_ACCOUNT_REQUIRED', '请填写开户行。', { field: 'bank' })
+    if (enterprise.accounts.some(account => account.number === number ||
+      (accountTail(account) === number && normalizeCompanyName(account.bank) === normalizeCompanyName(bank))))
+      return refuse('BANK_NUMBER_DUPLICATE', '已经登记过同一开户行和尾号，请在原账户下继续办理。', { field: 'accountTail' })
+    const account = { id: randomUUID(), holder, number, bank, currency, openedOn }
+    const problem = validateAccountValues([account], today, true)
+    if (problem) return problem
+    enterprise.accounts = [...enterprise.accounts, account]
+    enterprise.bankStatus = 'provided'
+    record.revision++
+    this.store.saveCompanyOnboarding(record)
+    const start = record.accounting?.startMonth
+    const next = !openedOn ? '给这个账户补上开户日期后，就能确定需要核对哪段流水。'
+      : start && openedOn < start + '-01' ? `请核对从 ${start} 起这张账户是否有遗漏的流水。`
+        : `从 ${openedOn} 起核对这个账户的流水即可。`
+    return this.transition(sessionId, card.id, {
+      labels: ['银行账户'], choice: 'account-added', notice: `已登记${accountLabel(account)}。${next}`,
+    }, () => undefined)
   }
 
   private validProfileProposal(field: FormField, value: unknown) {
@@ -989,6 +1041,7 @@ export class CompanyOnboarding {
     const record = this.activeProfile()
     const maintenance = card.maintenance
     if (!record || !maintenance) return refuse('PROFILE_UNAVAILABLE', '当前账本没有可维护的企业档案。')
+    if (maintenance.field === 'addBankAccount') return this.saveNewBankAccount(sessionId, card, record, values)
     const { enterprise } = record
     const key = maintenance.field
     const field = card.fields[0]!
@@ -1058,6 +1111,7 @@ export class CompanyOnboarding {
     return this.store.transaction(() => {
       if (action === 'read-profile' || action === 'edit-profile')
         return this.maintainProfile(sessionId, action === 'edit-profile', fields, values, currentAccountTail)
+      if (action === 'add-bank-account') return this.bankAccountCard(sessionId, values)
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
       let content: CardContent | undefined
