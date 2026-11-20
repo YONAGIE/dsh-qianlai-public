@@ -45,7 +45,7 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
-async function inspectZhangjie(sessions: OnboardingSessions | undefined, id: unknown, signal: AbortSignal) {
+export async function inspectZhangjie(sessions: OnboardingSessions | undefined, id: unknown, signal: AbortSignal) {
   if (!sessions || typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id) || signal.aborted) return undefined
   try {
     const session = await sessions.inspect(id, signal)
