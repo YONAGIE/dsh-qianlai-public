@@ -19,8 +19,13 @@ function jsonRecord(value: unknown) {
 }
 
 function eligible(payload: Record<string, unknown>, snapshot: NonNullable<Awaited<ReturnType<typeof inspectZhangjie>>>) {
-  const location = snapshot.events.findLastIndex(event => event.type === 'tool/call'
-    && record(event.data).name === 'moneycome_company_report' && record(event.data).callId === payload.callId)
+  let location = snapshot.events.length - 1
+  while (location >= 0) {
+    const event = snapshot.events[location]!
+    if (event.type === 'tool/call' && record(event.data).name === 'moneycome_company_report'
+      && record(event.data).callId === payload.callId) break
+    location--
+  }
   if (location < 0) return false
   for (const event of snapshot.events.slice(location + 1)) {
     if (event.type !== 'tool/result') continue

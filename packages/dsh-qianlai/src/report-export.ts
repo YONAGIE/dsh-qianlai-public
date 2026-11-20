@@ -42,7 +42,7 @@ function reportBlocker(store: BookStore, pack: LoadedPack, periodKey: string, no
     periodKey, blocker: { kind: 'matter_missing', matterId: matter.id, missing: matter.missing },
   })
   const finalizationOnly = new Set(['period_not_ended', 'bank_balance_pending', 'previous_period_open'])
-  const pending = check.checks?.flatMap(row => row.blockers.map(b => b as Record<string, unknown>)) ?? []
+  const pending = 'checks' in check ? check.checks.flatMap(row => row.blockers.map(b => b as Record<string, unknown>)) : []
   const blocker = pending.find(b => ['unexplained_transaction', 'evidence_missing'].includes(String(b.kind)))
     ?? pending.find(b => !finalizationOnly.has(String(b.kind)))
   if (blocker?.kind === 'unexplained_transaction')
