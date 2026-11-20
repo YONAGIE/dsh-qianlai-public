@@ -6,6 +6,7 @@ import {
   runInvoiceSelfChecks,
   type InvoiceExtractedFacts,
   type InvoiceField,
+  type InvoiceSubjectDirection,
 } from '@moneycome/fintax-core'
 
 import { refuse } from './period.js'
@@ -84,9 +85,47 @@ function toFacts(reading: InvoiceReading): InvoiceExtractedFacts {
 export const AUTHENTICITY_NOTE =
   '票面自洽不等于真票：这里没有去税务局查这张票有没有开过、作没作废。重要的票请到国家税务总局全国增值税发票查验平台 https://inv-veri.chinatax.gov.cn 核一下。'
 
-const DIRECTION_HINT: Record<string, string> = {
-  input: '咱们是买方：这是一笔花出去的钱（买东西或服务）。',
-  output: '咱们是卖方：这是一笔收入。',
+const DIRECTION_HINT: Record<InvoiceSubjectDirection, string> = {
+  input: '本公司是买方。该发票用于核对采购或费用。',
+  output: '本公司是卖方。该发票用于核对销售。',
+  subjectMismatch: '发票抬头与本公司登记资料不符。',
+  contradiction: '票面买方和卖方都与本公司匹配，请核对原件。',
+  insufficient: '票面抬头看不清，请补一份清晰原件。',
+  notApplicable: '这份票据缺少可核对的抬头。',
+  unregistered: '本公司登记资料缺少可用于核对抬头的信息。',
+}
+
+function invoiceNextAction(
+  direction: InvoiceSubjectDirection,
+  invalid: boolean,
+  unreadable: boolean,
+  recordable: boolean,
+  voucherNo: string | undefined,
+) {
+  if (direction === 'subjectMismatch') return {
+    kind: 'replace_invoice' as const,
+    message: '发票抬头与本公司登记资料不符，这张票没有入账。请上传抬头正确的发票。',
+  }
+  if (invalid) return {
+    kind: 'review_original' as const,
+    message: '票面有项目核对不上，这张票没有入账。请查看核对结果，再补发正确的发票。',
+  }
+  if (unreadable || direction === 'insufficient') return {
+    kind: 'upload_clearer_invoice' as const,
+    message: '发票的关键信息看不清，这张票没有入账。请补发包含完整票面的清晰原件。',
+  }
+  if (voucherNo) return {
+    kind: 'already_recorded' as const,
+    message: `这张票已关联凭证 ${voucherNo}，没有重复记账。`,
+  }
+  if (recordable) return {
+    kind: 'prepare_posting' as const,
+    message: '发票已核对，尚未入账。收付款情况确认后可提交记账。',
+  }
+  return {
+    kind: 'review_original' as const,
+    message: '目前无法确认这张票属于本公司，这张票没有入账。请核对本公司的发票原件。',
+  }
 }
 
 /**
@@ -114,13 +153,15 @@ export function checkInvoice(store: BookStore, reading: InvoiceReading, now: Dat
     ...(company.taxId ? { subjectTaxId: company.taxId } : {}),
   })
   const failed = checks.filter((c) => c.status === 'failed')
-  const existing = reading.invoiceNumber ? store.invoice(reading.invoiceNumber) : undefined
+  const invoiceNumber = facts.invoiceNumber.state === 'present' ? facts.invoiceNumber.value : undefined
   const recordable =
-    readability !== 'unreadable' && failed.length === 0 && (direction.direction === 'input' || direction.direction === 'output')
-  if (recordable && reading.invoiceNumber && !existing?.voucherNo) {
+    !!invoiceNumber && readability !== 'unreadable' && failed.length === 0
+    && (direction.direction === 'input' || direction.direction === 'output')
+  const alreadyRecorded = recordable ? (store.invoice(invoiceNumber)?.voucherNo ?? undefined) : undefined
+  if (recordable && !alreadyRecorded) {
     const total = facts.totalInclTaxCents.state === 'present' ? BigInt(facts.totalInclTaxCents.value!) : null
     store.saveInvoice({
-      invoiceNumber: reading.invoiceNumber,
+      invoiceNumber,
       issueDate: reading.issueDate ?? null,
       direction: direction.direction,
       counterparty: (direction.direction === 'input' ? reading.sellerName : reading.buyerName) ?? null,
@@ -142,13 +183,14 @@ export function checkInvoice(store: BookStore, reading: InvoiceReading, now: Dat
     recordable,
     readability,
     direction: direction.direction,
-    directionText: DIRECTION_HINT[direction.direction] ?? direction.plainText ?? null,
+    directionText: DIRECTION_HINT[direction.direction],
+    nextAction: invoiceNextAction(direction.direction, failed.length > 0, readability === 'unreadable', recordable, alreadyRecorded),
     problems: [...failed, ...checks.filter((c) => c.status === 'insufficient')].map((c) => ({
       check: c.check,
       status: c.status,
       text: c.plainText ?? null,
     })),
-    ...(existing?.voucherNo ? { alreadyRecorded: existing.voucherNo } : {}),
+    ...(alreadyRecorded ? { alreadyRecorded } : {}),
     authenticity: AUTHENTICITY_NOTE,
     amounts: {
       invoice_total: amount(facts.totalInclTaxCents) ?? null,

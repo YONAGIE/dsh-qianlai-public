@@ -43,10 +43,10 @@ function accepted(result: ReturnType<CompanyOnboarding['save']>): OnboardingView
   return result
 }
 
-function ready(wizard: CompanyOnboarding, company = enterprise, books = accounting) {
+function ready(wizard: CompanyOnboarding, company = enterprise, books = accounting, payrollSetup = payroll) {
   let view = accepted(wizard.save(1, wizard.status().revision, company))
   view = accepted(wizard.save(2, view.revision, books))
-  return accepted(wizard.save(3, view.revision, payroll))
+  return accepted(wizard.save(3, view.revision, payrollSetup))
 }
 
 describe('企业建档', () => {
@@ -218,10 +218,42 @@ describe('企业建档', () => {
     const review = ready(wizard, enterprise, { ...accounting, lastMonth: '2026-09' })
     expect(review.handoffWarning).toContain('空档')
     expect(wizard.confirm(review.revision, false)).toMatchObject({ completed: true, nextAction: 'review-book-periods' })
-    expect(onboardingBookStatus(store)).toMatchObject({ history: 'previous', lastMonth: '2026-09', payroll, nextAction: 'review-book-periods' })
+    expect(onboardingBookStatus(store)).toMatchObject({
+      history: 'previous', lastMonth: '2026-09', payroll, nextAction: 'review-book-periods',
+      handoff: { kind: 'review-book-periods', gapFrom: '2026-10', gapTo: '2026-10' },
+    })
     expect(JSON.stringify(onboardingBookStatus(store))).not.toContain(enterprise.taxId)
     expect(store.companyFacts()).toEqual({})
     expect(store.openingBalancesSetAt()).toBeUndefined()
+  })
+
+  it.each([
+    { history: 'previous', lastMonth: '2026-10', handoff: { kind: 'prior-period-balances', statementMonth: '2026-10', attachment: '添加科目余额表' } },
+    { history: 'unrecorded', lastMonth: '', handoff: { kind: 'reconstruct-opening-balances', openingMonth: '2026-11', attachment: '添加银行对账单' } },
+    { history: 'new', lastMonth: '', handoff: { kind: 'confirm-opening-balances', openingMonth: '2026-11' } },
+  ])('根据旧账情况 $history 引导期初接账，保留实际账本进度', ({ history, lastMonth, handoff }) => {
+    const { store, wizard } = setup()
+    const review = ready(wizard, enterprise, { history, lastMonth, startMonth: '2026-11' })
+    expect(wizard.confirm(review.revision, false)).toMatchObject({ completed: true, handoff })
+    expect(onboardingBookStatus(store)).toMatchObject({ completed: true, handoff })
+    expect(store.openingBalancesSetAt()).toBeUndefined()
+
+    store.setOpeningBalances([], now())
+    const done = { completed: true, nextAction: 'bookkeeping', handoff: { kind: 'bookkeeping' } }
+    expect(wizard.status()).toMatchObject(done)
+    expect(onboardingBookStatus(store)).toMatchObject(done)
+  })
+
+  it('已登记暂不发工资和无参保时减少常规索件，已有账务事实优先', () => {
+    const { store, wizard } = setup()
+    const review = ready(wizard, enterprise, accounting, { payroll: 'none', social: 'none' })
+    expect(wizard.confirm(review.revision, false)).toMatchObject({ completed: true })
+    expect(onboardingBookStatus(store)).toMatchObject({ routineMaterialExclusions: ['工资表', '社保缴费凭证'] })
+    expect(store.companyFacts()).toEqual({})
+
+    store.setCompanyFact('entity.has_payroll', 'yes')
+    expect(onboardingBookStatus(store)).toMatchObject({ routineMaterialExclusions: [] })
+    expect(store.companyFacts()).toEqual({ 'entity.has_payroll': 'yes' })
   })
 
   it('阻止起账月覆盖已完成的旧账月份', () => {

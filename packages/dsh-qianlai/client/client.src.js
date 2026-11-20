@@ -1,4 +1,5 @@
-/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput */
+/* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput, registerInvoiceUpload */
+/* global registerMaterialRetry */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -171,28 +172,43 @@ window.__ModuleLoader__.load({
       return true
     }
 
-    function watchOnboardingStart(sessionId) {
+    function watchOnboarding(sessionId) {
       const source = sessions?.binding(sessionId)?.eventSource
       if (!source) return
       let revision = source.getSnapshot().revision
       const starts = new Set()
+      const openings = new Set()
       return source.subscribe(() => {
         const next = source.getSnapshot()
         if (next.revision === revision) return
         const incremental = next.revision === revision + 1
         revision = next.revision
         // Loading conversation history must not reopen a manually closed panel.
-        if (!incremental || next.change.kind === 'replace') starts.clear()
+        if (!incremental || next.change.kind === 'replace') {
+          starts.clear()
+          openings.clear()
+        }
         if (!incremental || next.change.kind !== 'append') return
         for (const { event } of next.change.entries) {
-          if (event.type === 'turn/end') starts.clear()
-          if (event.type === 'tool/call' && event.data.name === 'moneycome_onboarding'
-            && parseJson(event.data.arguments)?.action === 'start') {
-            starts.add(event.data.callId)
+          if (event.type === 'turn/end') {
+            starts.clear()
+            openings.clear()
           }
-          if (event.type !== 'tool/result' || !starts.delete(event.data.message?.source?.callId)) continue
+          if (event.type === 'tool/call') {
+            if (event.data.name === 'moneycome_onboarding' && parseJson(event.data.arguments)?.action === 'start')
+              starts.add(event.data.callId)
+            if (event.data.name === 'moneycome_set_opening_balances') openings.add(event.data.callId)
+          }
+          if (event.type !== 'tool/result') continue
+          const callId = event.data.message?.source?.callId
+          const showOnboarding = starts.delete(callId)
+          const refreshHandoff = openings.delete(callId)
+          if (!showOnboarding && !refreshHandoff) continue
           const result = parseJson(toolResultText(event))
-          if (result?.accepted === true && result.card) openOnboarding(sessionId)
+          if (result?.accepted !== true) continue
+          if (showOnboarding && result.card) openOnboarding(sessionId)
+          if (refreshHandoff) void onboardingRequest(sessionId, 'status')
+            .then(view => refreshOnboarding(sessionId, view), () => {})
         }
       })
     }
@@ -201,6 +217,13 @@ window.__ModuleLoader__.load({
       const conversation = sessions?.scope(sessionId)?.get('conversation')
       if (!conversation) throw Error('当前对话暂时无法发送消息。')
       return conversation.send(text)
+    }
+
+    function pickOnboardingAttachment(sessionId) {
+      const input = sessions?.scope(sessionId)?.get('conversation')?.input
+      if (typeof input?.pickFiles !== 'function' || !input.canPickFiles?.(sessionId)) return false
+      input.pickFiles(sessionId)
+      return true
     }
 
     async function onboardingRequest(sessionId, action, extra = {}, signal = AbortSignal.timeout(action === 'recognize' ? 120000 : 10000)) {
@@ -678,7 +701,7 @@ window.__ModuleLoader__.load({
     function ZhangjieAvatar({ sessionId, useSessions }) {
       const active = usePreset(sessionId, useSessions) === PRESET
       useQianlaiTheme(active)
-      useEffect(() => active ? watchOnboardingStart(sessionId) : undefined, [active, sessionId])
+      useEffect(() => active ? watchOnboarding(sessionId) : undefined, [active, sessionId])
       return active ? jsx('span', { style: { display: 'inline-flex', gap: 10, alignItems: 'center' }, children: [jsx(Avatar, {}), jsx(WechatPanel, { sessionId })] }) : null
     }
 
@@ -788,6 +811,9 @@ window.__ModuleLoader__.load({
 
     /* onboarding-date-client */
     /* onboarding-chat-client */
+    /* invoice-chat-client */
+
+    /* material-chat-client */
 
     const OnboardingDateInput = createOnboardingDateInput({ jsx, useState, useRef, useEffect },
       typeof window.HTMLElement?.prototype.showPopover === 'function')
@@ -835,7 +861,7 @@ window.__ModuleLoader__.load({
       })
       registerOnboardingChat(ctx, {
         jsx, useEffect, useRef, useState, usePreset, OnboardingDateInput, openOnboarding, refreshOnboarding, onboardingRequest,
-        sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
+        sendOnboardingReply, pickOnboardingAttachment, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
         taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })
       ctx.inject(['uiConversation'], scope => {
@@ -848,6 +874,8 @@ window.__ModuleLoader__.load({
           ZhangjieQuestionHistory,
         ),
       )
+      registerInvoiceUpload(ctx, { jsx, useState, usePreset, toolResultText, buttonStyle, panelSectionStyle })
+      registerMaterialRetry(ctx, { jsx, useState, usePreset, buttonStyle, panelSectionStyle })
     }
 
     module.exports.apply = apply

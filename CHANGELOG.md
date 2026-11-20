@@ -15,6 +15,8 @@
 
 - Format WeChat replies as readable paragraphs. Expand each Markdown table row into a labeled record and split long replies at paragraph or line boundaries where possible.
 
+- Show the next step after checking an invoice and the existing receipt when it was already posted. Let users add a replacement or clearer copy with the conversation's file picker.
+
 - Read and correct one field of a completed company profile in chat. Keep bank numbers masked and preserve leading zeros when correcting a registered tail. Show the saved value in the profile without reopening setup.
 
 - Open a fresh form when a company profile correction is requested again. Reopen saved or expired correction cards using the latest profile values.
@@ -24,6 +26,8 @@
 - Start new data directories with an empty book. Present first greetings as an introduction, a short list of capabilities, and the next action. Use the current onboarding card and its status to guide each step. Place the current setup card after the reply text and wait for a clarification answer before offering a later action.
 
 - Continue company setup in a new reply after each chat card submission. Show the method picker at the start and accept later switches by chat while preserving the draft. Open the official QR page automatically after confirming a supported region.
+
+- After company setup, guide the owner through the next bookkeeping action using the recorded handoff period and opening-balance status. Offer the DSH file picker for the current handoff document and reuse payroll and social insurance arrangements when gathering materials.
 
 - Show the same onboarding card only once per reply, including when multiple tool calls return the same tax scan or a document step.
 
@@ -70,6 +74,7 @@
 - Show submitted question-card answers in the original Zhangjie conversation on older DSH clients, including answers submitted before the plugin update.
 
 - Read multiple PDFs referenced in the same Zhangjie message through the DSH Desktop file picker or chat composer drop. Each file is read and authorized separately.
+- Resume pending postings in the same local book, link earlier and replacement material records, and return the original voucher on an identical retry.
 - Honor DSH Full access when reading the current turn's PDF outside the workspace. With workspace-write permissions, DSH asks before reading the file.
 
 - Surface manual accounting review in the closing checklist and review export for required month-end items whose posting rules all require unsupported historical balances.

@@ -801,6 +801,33 @@ describe('建档对话卡', () => {
     expect(find(active.render(revise), node => node.type === 'input').props.value).toBe('2026-11')
   })
 
+  it('确认建档后自动发出回执，并用同一会话的文件选择入口接收科目余额表', async () => {
+    const confirm = { ...baseCard, kind: 'confirm', replacesSampleBook: false }
+    const view = { completed: true, draftId, revision: 6,
+      handoff: { kind: 'prior-period-balances', attachment: '添加科目余额表' } }
+    const result = {
+      accepted: true, receipt: { labels: ['建档已完成'], choice: 'confirm' }, view,
+    }
+    const pickOnboardingAttachment = vi.fn(() => true)
+    let update
+    const active = client(vi.fn(async (_session, action) => action === 'card-status' ? { accepted: true } : result),
+      'moneycome-zhangjie', { pickOnboardingAttachment, subscribeOnboarding: listener => { update = listener } })
+    active.render(confirm)
+    await settle()
+    find(active.render(confirm), named('确认建档')).props.onClick()
+    await settle()
+    expect(active.sendOnboardingReply).toHaveBeenCalledExactlyOnceWith(sessionId, '我已确认建档。')
+
+    find(active.render(confirm), named('添加科目余额表')).props.onClick()
+    expect(pickOnboardingAttachment).toHaveBeenCalledExactlyOnceWith(sessionId)
+    pickOnboardingAttachment.mockReturnValue(false)
+    find(active.render(confirm), named('添加科目余额表')).props.onClick()
+    expect(find(active.render(confirm), node => node.props.role === 'alert')?.props.children)
+      .toBe('请在当前聊天的输入框里添加这份文件，选好后发送。')
+    update(sessionId, { view: { ...view, handoff: { kind: 'bookkeeping' } } })
+    expect(find(active.render(confirm), named('添加科目余额表'))).toBeUndefined()
+  })
+
   it('对话发送失败时可单独重试，重复点击不会再次提交草稿', async () => {
     const card = { ...baseCard, kind: 'mode' }
     const request = vi.fn(async (_session, action) => action === 'card-status' ? { accepted: true }
