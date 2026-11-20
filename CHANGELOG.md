@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep monthly payroll plans, review drafts and partial payments by employee. Review wage months separately from payment dates and download the saved draft as CSV.
+
 - Jump directly to a year or month in both setup forms. Use the same calendar for company and bank dates, and choose bookkeeping months without selecting a day.
 
 - Use one structured interaction at a time for Zhangjie's desktop and web follow-ups. Reuse known facts and receipts, use a choice for decisions or a form for missing fields, and keep unresolved items pending when a control is unavailable.

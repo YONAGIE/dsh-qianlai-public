@@ -11,6 +11,7 @@ import { downloadMedia, getBotQrcode, IlinkConnection, IlinkSendError, imageMedi
 import { isIntroductionSession, registerLoginControl, registerLoginRpc, setIntroductionSession, type LoginRpcControl, type LoginView, type RpcConnection } from './control.js'
 
 import { splitForWechat, toWechatText } from './text.js'
+import { privateHandoffOperation } from './work-privacy.js'
 
 export { splitForWechat, toWechatText } from './text.js'
 
@@ -70,7 +71,6 @@ type Incoming = Exclude<PromptPart, { type: 'file' }> | { type: 'fileBytes'; nam
 type OnboardingTrigger = 'scan-confirmed' | 'saved-binding' | 'owner-message' | 'desktop-request'
 const HANDOFF_NOTICE = '张姐正在整理微信续接待办。'
 const HANDOFF_REQUEST_PREFIX = 'mc-handoff-'
-
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
 /** DSH 的 RemoteError 按 `code` 区分；会话被删了是 `session/not-found`。 */
 const sessionGone = (error: unknown) => (error as { code?: unknown } | null)?.code === 'session/not-found'
@@ -81,6 +81,8 @@ interface SessionEventLike {
   readonly time?: number
   readonly data?: {
     readonly turn?: number
+    readonly name?: string
+    readonly arguments?: unknown
     readonly source?: { readonly kind?: string; readonly rpcId?: unknown }
     readonly message?: { readonly content?: readonly { readonly type: string; readonly text?: string }[] }
     readonly content?: readonly { readonly type: string; readonly text?: string }[]
@@ -476,22 +478,46 @@ export function apply(ctx: Context, config: Config = {}): void {
       const store = new BookStore(book)
       try {
         const company = store.company()
-        return company ? { company: JSON.stringify(company), progress: store.workEvents(undefined, 10) } : undefined
+        return company ? { company: JSON.stringify(company), progress: store.workEvents(undefined, 10)
+          .filter(event => !privateHandoffOperation(event.operation, event.request)) } : undefined
       } finally { store.close() }
     }
-    const visibleMessages = (events: readonly SessionEventLike[], throughSeq = Infinity) => events
-      .map((event, index) => ({ event, seq: event.seq ?? index }))
-      .filter(({ event, seq }) => {
-        if (seq > throughSeq) return false
-        if (event.type === 'assistant/message') return true
+    const visibleMessages = (events: readonly SessionEventLike[], throughSeq = Infinity) => {
+      const withheld = new Set<number>()
+      const visible: { role: 'user' | 'assistant'; seq: number; group: number; text: string }[] = []
+      let group = 0
+      let turnStarted = false
+      let replied = false
+      for (const [index, event] of events.entries()) {
+        const user = isUserMessage(event)
         const rpcId = event.data?.source?.rpcId
-        return isUserMessage(event) && !(typeof rpcId === 'string' && rpcId.startsWith(HANDOFF_REQUEST_PREFIX))
-      })
-      .map(({ event, seq }) => ({
-        role: event.type === 'user/message' ? 'user' : 'assistant', seq,
-        text: (event.type === 'user/message' ? event.data?.content : event.data?.message?.content)?.filter(part => part.type === 'text')
-          .map(part => part.text ?? '').join('\n').trim().slice(0, 1200) ?? '',
-      })).filter(message => message.text).slice(-8)
+        const assistant = event.type === 'assistant/message'
+        if (event.type === 'turn/start') {
+          if (turnStarted || replied) group++
+          turnStarted = true
+          replied = false
+        } else if (event.type === 'turn/end') {
+          group++
+          turnStarted = false
+          replied = false
+        } else if (user && !turnStarted && replied) {
+          // Historical surfaces can omit turn boundaries. A new user message starts
+          // a new group when the preceding model already answered.
+          group++
+          replied = false
+        }
+        if (event.type === 'tool/call' && privateHandoffOperation(event.data?.name, event.data?.arguments))
+          withheld.add(group)
+        if (assistant) replied = true
+        if (!assistant && (!user || typeof rpcId === 'string' && rpcId.startsWith(HANDOFF_REQUEST_PREFIX))) continue
+        const seq = event.seq ?? index
+        if (seq > throughSeq) continue
+        const text = (user ? event.data?.content : event.data?.message?.content)?.filter(part => part.type === 'text')
+          .map(part => part.text ?? '').join('\n').trim().slice(0, 1200) ?? ''
+        if (text) visible.push({ role: user ? 'user' : 'assistant', seq, group, text })
+      }
+      return visible.filter(message => !withheld.has(message.group)).slice(-8)
+    }
     const presetOf = (source: { meta: { agentPreset?: string }; events: readonly SessionEventLike[] }) =>
       source.events.filter(event => event.type === 'agent-preset/selected').at(-1)?.data?.agentPreset ?? source.meta.agentPreset
     const captureDesktop = async (sessionId: string, requestedGeneration: number, confirmedScan?: AbortSignal) => {
