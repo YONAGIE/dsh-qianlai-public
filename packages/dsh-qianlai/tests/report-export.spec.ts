@@ -6,7 +6,7 @@ import { closingCheck } from '../src/closing.js'
 import { recordEntry } from '../src/entries.js'
 import { checkInvoice } from '../src/invoices.js'
 import { loadPack } from '../src/pack.js'
-import { generateReport, listReports, previewReport } from '../src/report-export.js'
+import { compareEquipmentReport, generateReport, listReports, previewReport } from '../src/report-export.js'
 import { registerCompanyReport } from '../src/report-rpc.js'
 import { importStatement } from '../src/statements.js'
 import { BookStore } from '../src/store.js'
@@ -45,6 +45,25 @@ function approvedPreview(store: BookStore, period = month) {
 }
 
 describe('可下载的报表版本', () => {
+  it('设备采购只比较已核实适用的记法，利润差异来自规则而现金不变', () => {
+    const store = newBook()
+    try {
+      cashSale(store, '2026-01-10', '26000000000123456781', '100.00', '101.00', '1.00')
+      const invoiceNumber = '26000000000123456789'
+      expect(checkInvoice(store, { invoiceNumber, issueDate: '2026-01-11', sellerName: '合成设备卖方', buyerName: companyName,
+        amountExclTax: '200.00', taxAmount: '2.00', totalInclTax: '202.00', taxRate: '1%' }, today))
+        .toMatchObject({ recordable: true })
+      const options = compareEquipmentReport(store, pack, month, invoiceNumber, 'cash', ['expense', 'capitalize'], today)
+      expect(options).toMatchObject({ accepted: true, currentProfit: '100.00', actualPayment: '202.00', cashDifference: '0.00',
+        options: [{ monthlyProfitChange: '-202.00', monthlyProfitAfter: '-102.00' }, { monthlyProfitChange: '0.00', monthlyProfitAfter: '100.00' }],
+      })
+      expect(compareEquipmentReport(store, pack, month, invoiceNumber, 'unsettled', ['expense'], today))
+        .toMatchObject({ accepted: true, actualPayment: '0.00', options: [{ treatment: 'expense' }] })
+      expect(store.vouchers({ periodKey: month })).toHaveLength(1)
+      expect(store.reportArtifacts(month, 'financial')).toEqual([])
+    } finally { store.close() }
+  })
+
   it('无业务材料和只有流水优先给当月实际缺项', () => {
     const store = newBook()
     try {
