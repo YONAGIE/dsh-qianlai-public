@@ -53,7 +53,7 @@ const compiled = await build({
   stdin: { contents: fixture, sourcefile: 'business-next-actions.js', resolveDir: dependencies },
   bundle: true, write: false, format: 'iife', platform: 'browser',
 })
-const browser = await chromium.launch()
+const browser = await chromium.launch({ executablePath: process.env.PHASE_CHROMIUM })
 try {
   const page = await browser.newPage({ viewport: { width: 720, height: 620 } })
   const errors = []
