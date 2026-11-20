@@ -1,5 +1,13 @@
 import type { BookStore } from './store.js'
 
+interface RegisteredBankAccount {
+  readonly id: string
+  readonly bank: string
+  readonly number: string
+  readonly currency: string
+  readonly openedOn: string
+}
+
 const normalizeLabel = (value: string) => value.normalize('NFKC').replace(/\s+/g, '')
 export const accountDigits = (label: string) => label.match(/(?:尾号|\*{2,})\s*[:：]?\s*(\d{4,34})\s*$/u)?.[1] ??
   label.replace(/\D/g, '')
@@ -14,7 +22,10 @@ export function bankFromRef(ref: string) {
   return ref.replace(/\s*(?:尾号|\*{2,})?\s*[:：]?\s*[\d-]+\s*$/u, '').trim()
 }
 
-export function registeredBankProfile(store: BookStore) {
+export function registeredBankProfile(store: BookStore): {
+  readonly status: 'provided' | 'none' | 'pending' | ''
+  readonly accounts: readonly RegisteredBankAccount[]
+} | undefined {
   const company = store.company()
   const record = store.companyOnboarding()
   const enterprise = record?.enterprise
