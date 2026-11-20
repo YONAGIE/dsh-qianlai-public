@@ -22,6 +22,7 @@ import {
 import { checkInvoice, type InvoiceReading } from './invoices.js'
 import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessions } from './onboarding-rpc.js'
 import { loadPack } from './pack.js'
+import { reviewPayroll, savePayroll } from './payroll-work.js'
 import { hasFullAccess, type PermissionPresets } from './permissions.js'
 import { refuse, todayInChina } from './period.js'
 import {
@@ -678,6 +679,75 @@ export function apply(ctx: Context, config: Config = {}): void {
           } finally {
             entryQuestions.delete(session.id)
           }
+        },
+        true,
+      ),
+      tool(
+        'moneycome_payroll',
+        '核对本地工资。先以 status 查询所属月和当前草稿版本。schedule 保存某月起长期发薪、仅这个月发薪或暂停。本月工资表的可确认数字用 draft 保存，金额未知给老板当前一项表单，不能按零填。按员工录入的实际付款用 payment 关联已导入流水或已读回单，并区分工资所属月和实际支付日。未付或暂不确定可用 payment-state 记录。draft、payment 和 payment-state 要带 status 返回的 revision。变更可以 preview: true 先看资料。正式调用只在当前 DSH 确认后保存。revisions 可看旧稿，download 可将工资准备稿导出到本地。工资安排、工资表或付款核对均不发钱、不记账、不代报税。工资费用已计提时不重做计提。',
+        {
+          action: { type: 'string', enum: ['status', 'revisions', 'schedule', 'draft', 'payment', 'payment-state', 'download'] },
+          ...periodKey,
+          mode: { type: 'string', enum: ['recurring', 'once', 'paused'] },
+          payday: { type: 'integer', description: '每月发薪日，1 至 31' },
+          revision: { type: 'integer', description: '所属月当前工资草稿版本；首稿为 0' },
+          rows: { type: 'array', items: { type: 'object', properties: {
+            employeeId: str('稳定的员工编号，同名员工使用不同编号'),
+            name: str('姓名'), gross: str('应发'),
+            personalSocial: str('个人社保'), personalHousing: str('个人公积金'),
+            individualTax: str('个人所得税扣款'), otherDeduction: str('其他扣款'),
+            net: str('实发金额'),
+          }, required: ['employeeId', 'name', 'gross', 'personalSocial', 'personalHousing', 'individualTax', 'otherDeduction', 'net'] } },
+          materialId: { type: 'integer', description: '工资表或银行付款凭据的材料编号' },
+          employeeId: str('本次确认付款的员工编号'),
+          paidOn: str('实际付款日期 YYYY-MM-DD，独立于工资所属月'),
+          paymentStatus: { type: 'string', enum: ['unpaid', 'unknown'], description: '确认未付、暂不确定；省略员工编号时适用本期全员' },
+          amount: str('本次付款金额，以元为单位'),
+          statementLineId: { type: 'integer', description: '实际支付的银行流水行编号' },
+          reference: str('付款凭据中的交易号或唯一行号'),
+          preview: { type: 'boolean', description: '是否只核对变更而不保存' },
+        },
+        ['action'],
+        async (args, signal, execution) => {
+          const agent = execution?.agent
+          const session = agent?.session
+          if (!session || isWechatSession(session.id) || isIntroductionSession(session.id))
+            return refuse('PAYROLL_DESKTOP_REQUIRED', '请在当前公司账本的桌面或网页对话里核对工资。')
+          const now = new Date()
+          const payrollExportRoot = join(dirname(config.bookPath ?? defaultBookPath()), 'exports')
+          const proposed = reviewPayroll(store, args, now, payrollExportRoot)
+          if (!('operation' in proposed)) return proposed
+          if (args.preview === true)
+            return { accepted: true, preview: true, periodKey: proposed.periodKey, summary: proposed.summary, values: proposed.value }
+          const turn = questionTurns.get(session)
+          if (entryQuestions.has(session.id) || turn?.question || turn?.profileCard)
+            return refuse('PAYROLL_DECISION_PENDING', '请先完成当前控件的确认。')
+          const questions = ctx.get?.('userQuestions') as UserQuestions | undefined
+          if (!questions?.ask || !execution?.callId || !signal || !agent)
+            return refuse('PAYROLL_CONFIRMATION_UNAVAILABLE', '当前没有可用的工资核对控件，资料仍待确认。')
+          const id = createHash('sha256').update(canonical([session.id, execution.callId, proposed])).digest('hex')
+          const company = JSON.stringify(store.company())
+          const confirm = '确认保存'
+          entryQuestions.set(session.id, { receiptKey: id, argsHash: id })
+          let answer: UserQuestionAnswer | undefined
+          try {
+            const result = await questions.ask({ agent, signal, questions: [{
+              id, header: '核对工资', question: '保存这次工资核对结果吗？',
+              detail: questionDetail(proposed.summary.join('\n')),
+              options: [{ label: confirm }, { label: '稍后核对' }],
+            }] })
+            answer = result.answers.length === 1 ? result.answers[0] : undefined
+          } catch {
+            // Closing the question or losing the host connection leaves the proposal pending.
+          } finally {
+            entryQuestions.delete(session.id)
+          }
+          if (disposed || signal.aborted) return refuse('TOOL_CANCELLED', '操作已取消，工资资料未改动。')
+          if (answer?.id !== id || answer.selected.length !== 1 || answer.selected[0] !== confirm || answer.custom !== undefined)
+            return refuse('PAYROLL_CONFIRMATION_DEFERRED', '工资资料仍待核对。')
+          return store.transaction(() => JSON.stringify(store.company()) === company
+            ? savePayroll(store, proposed, args, new Date())
+            : refuse('BOOK_CHANGED', '确认期间已切换账本，请在当前公司重新核对。'))
         },
         true,
       ),
