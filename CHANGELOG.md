@@ -19,6 +19,8 @@
 
 - Select, drop or paste bank account documents on the setup chat card. Review extracted account details before saving them to the company draft.
 
+- Register a missing business bank account after setup without reopening the company. Check statement account identifiers before import, reuse the original import receipt on a retry, and keep planned receipts or payments separate from the ledger.
+
 - Format WeChat replies as readable paragraphs. Expand each Markdown table row into a labeled record and split long replies at paragraph or line boundaries where possible.
 
 - Show the next step after checking an invoice and the existing receipt when it was already posted. Let users add a replacement or clearer copy with the conversation's file picker.

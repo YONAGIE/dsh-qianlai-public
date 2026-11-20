@@ -540,7 +540,10 @@ export function registerOnboardingChat(ctx, {
       }
       if (!result.receipt) throw Error('未能确认资料已保存，请重试。')
       setValues({})
-      if (card.maintenance) return
+      if (card.maintenance) {
+        if (result.receipt.choice === 'account-added') await sendReply('我已在表单登记银行账户。')
+        return
+      }
       if (card.kind === 'mode') void openDraft({ mode: result.receipt.mode ?? input.mode, view: result.view })
       await sendReply(replyFor(card, input, result))
     }
@@ -871,7 +874,7 @@ export function registerOnboardingChat(ctx, {
       body = buildForm({
         fields, values: formValues, change, saving, onSubmit: input => saveFields(fields, input),
         ...(card.maintenance || card.correction ? {
-          label: fields[0]?.key === 'accountChoice' ? '确认账户' : '保存更正',
+          label: card.maintenance?.field === 'addBankAccount' ? '保存账户' : fields[0]?.key === 'accountChoice' ? '确认账户' : '保存更正',
         } : {}),
       })
     }
