@@ -13,6 +13,7 @@ function makeClient() {
     .replace('/* tax-fields */ []', JSON.stringify(taxFields))
     .replace('/* material-chat-client */', () => 'function registerMaterialRetry() {}')
     .replace('/* report-chat-client */', () => 'function registerCompanyReportChat() {}')
+    .replace('/* material-archive-chat-client */', () => 'function registerMaterialArchiveChat() {}')
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
     .replace('/* onboarding-date-client */', () => createOnboardingDateInput.toString())
     .replace('/* onboarding-chat-client */', () => onboardingFieldError.toString() +

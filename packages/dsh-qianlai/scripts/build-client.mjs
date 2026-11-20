@@ -14,6 +14,7 @@ const invoiceChat = readFileSync(new URL('client/invoice-chat.src.js', root), 'u
 const avatar = readFileSync(new URL('assets/zhangjie/avatar.png', root)).toString('base64')
 const materialChat = readFileSync(new URL('client/material-chat.src.js', root), 'utf8').replace(/^export /gm, '')
 const reportChat = readFileSync(new URL('client/report-chat.src.js', root), 'utf8').replace(/^export /gm, '')
+const materialArchiveChat = readFileSync(new URL('client/material-archive-chat.src.js', root), 'utf8').replace(/^export /gm, '')
 mkdirSync(new URL('lib/', root), { recursive: true })
 writeFileSync(new URL('lib/client.js', root), source
   .replace('__AVATAR_DATA_URL__', `data:image/png;base64,${avatar}`)
@@ -23,6 +24,7 @@ writeFileSync(new URL('lib/client.js', root), source
   .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
   .replace('/* material-chat-client */', () => materialChat)
   .replace('/* report-chat-client */', () => reportChat)
+  .replace('/* material-archive-chat-client */', () => materialArchiveChat)
   .replace('/* tax-fields */ []', JSON.stringify(taxFields))
   .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities())))
 

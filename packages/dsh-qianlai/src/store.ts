@@ -163,6 +163,12 @@ const MIGRATIONS: readonly string[] = [
     UNIQUE (kind, period_key, version)
   );
   `,
+  `
+  CREATE TABLE work_material_original (
+    material_id INTEGER PRIMARY KEY REFERENCES work_material(id) ON DELETE CASCADE,
+    content BLOB NOT NULL
+  );
+  `,
 ]
 
 export interface Company {
@@ -414,6 +420,7 @@ export class BookStore {
       'tool_receipt',
       'work_event',
       'work_matter',
+      'work_material_original',
       'work_material',
       'report_artifact',
       'opening_balance',
@@ -455,6 +462,20 @@ export class BookStore {
 
   workMaterial(id: number): WorkMaterial | undefined {
     return this.db.prepare(`SELECT ${MATERIAL_COLUMNS} FROM work_material WHERE id = ?`).get(id) as unknown as WorkMaterial | undefined
+  }
+
+  hasWorkMaterialOriginal(id: number): boolean {
+    return this.db.prepare('SELECT 1 FROM work_material_original WHERE material_id = ?').get(id) !== undefined
+  }
+
+  workMaterialOriginal(id: number): Uint8Array | undefined {
+    const row = this.db.prepare('SELECT content FROM work_material_original WHERE material_id = ?')
+      .get(id) as { content: Uint8Array } | undefined
+    return row?.content
+  }
+
+  saveWorkMaterialOriginal(id: number, content: Uint8Array): void {
+    this.db.prepare('INSERT OR IGNORE INTO work_material_original (material_id, content) VALUES (?, ?)').run(id, content)
   }
 
   recentWorkMaterials(): WorkMaterial[] {

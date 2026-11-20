@@ -1,6 +1,7 @@
 /* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput, registerInvoiceUpload */
 /* global registerMaterialRetry */
 /* global registerCompanyReportChat */
+/* global registerMaterialArchiveChat */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -816,6 +817,7 @@ window.__ModuleLoader__.load({
 
     /* material-chat-client */
     /* report-chat-client */
+    /* material-archive-chat-client */
 
     const OnboardingDateInput = createOnboardingDateInput({ jsx, useState, useRef, useEffect },
       typeof window.HTMLElement?.prototype.showPopover === 'function')
@@ -879,6 +881,7 @@ window.__ModuleLoader__.load({
       )
       registerInvoiceUpload(ctx, { jsx, useState, usePreset, toolResultText, buttonStyle, panelSectionStyle })
       registerMaterialRetry(ctx, { jsx, useState, usePreset, buttonStyle, panelSectionStyle })
+      registerMaterialArchiveChat(ctx, { jsx, useState, useRef, usePreset, toolResultText, buttonStyle, panelSectionStyle })
     }
 
     module.exports.apply = apply
