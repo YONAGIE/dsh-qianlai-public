@@ -746,7 +746,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           const now = new Date()
           const payrollExportRoot = join(dirname(config.bookPath ?? defaultBookPath()), 'exports')
           const proposed = reviewPayroll(store, args, now, payrollExportRoot)
-          if (!('operation' in proposed)) return proposed
+          if (!('operation' in proposed) || proposed.operation === undefined) return proposed
           if (args.preview === true)
             return { accepted: true, preview: true, periodKey: proposed.periodKey, summary: proposed.summary, values: proposed.value }
           const turn = questionTurns.get(session)

@@ -30,7 +30,7 @@ const inspect = (args: Record<string, unknown>) => reviewPayroll(store, { period
 const approve = (args: Record<string, unknown>) => {
   const same = { periodKey, ...args }
   const proposal = inspect(args)
-  if (!('operation' in proposal)) throw Error(JSON.stringify(proposal))
+  if (!('operation' in proposal) || proposal.operation === undefined) throw Error(JSON.stringify(proposal))
   return savePayroll(store, proposal, same, now)
 }
 const status = (period = periodKey) => inspect({ action: 'status', periodKey: period })
