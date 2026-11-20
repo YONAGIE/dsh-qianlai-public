@@ -1,6 +1,6 @@
 import { formatCents, parseAmountToCents } from '@moneycome/fintax-core'
 
-import { PERIOD_KEY, refuse, todayInChina } from './period.js'
+import { nextPeriod, PERIOD_KEY, refuse, todayInChina } from './period.js'
 import type { BookStore } from './store.js'
 
 const scopeOp = 'local-work:history-scope'
@@ -35,16 +35,9 @@ function activeHandoff(store: BookStore) {
   return { company, accounting: record.accounting, establishedOn: record.enterprise.establishedOn }
 }
 
-function nextMonth(key: string) {
-  const year = Number(key.slice(0, 4))
-  const month = Number(key.slice(5))
-  return month === 12 ? String(year + 1).padStart(4, '0') + '-01'
-    : key.slice(0, 4) + '-' + String(month + 1).padStart(2, '0')
-}
-
 function monthsBetween(from: string, before: string) {
   const result: string[] = []
-  for (let month = from; month < before; month = nextMonth(month)) result.push(month)
+  for (let month = from; month < before; month = nextPeriod(month)) result.push(month)
   return result
 }
 
@@ -53,6 +46,7 @@ function materialValid(store: BookStore, input: unknown): input is number {
 }
 
 export function historicalHandoffProgress(store: BookStore) {
+  const reconstructed = new Set(store.historicalPeriods())
   const decisions = new Map<number, 'confirmed' | 'deferred'>()
   for (const event of store.workEventsByOperation(decisionOp)) {
     const { handoffId } = event.request
@@ -62,6 +56,10 @@ export function historicalHandoffProgress(store: BookStore) {
   const plans = store.workEventsByOperation(scopeOp).map(event => ({
     ...(event.result as unknown as HistoricalScope), handoffId: event.id,
     state: decisions.get(event.id) ?? 'awaiting_confirmation',
+  })).map(plan => ({
+    ...plan,
+    missingMonths: plan.missingMonths.filter(month => !reconstructed.has(month)),
+    bookedMonths: plan.missingMonths.filter(month => reconstructed.has(month)),
   }))
   const balances = new Map<number, HistoricalBalance>()
   for (const event of store.workEventsByOperation(balanceOp)) {
@@ -83,7 +81,7 @@ export function planHistoricalHandoff(store: BookStore, args: Record<string, unk
     return refuse('HISTORICAL_HANDOFF_UNAVAILABLE', '请先核对以前是否已经做过账。')
   if (!materialValid(store, args.materialId))
     return refuse('HISTORICAL_HANDOFF_MATERIAL_REQUIRED', '先发已经有的合同、收支记录或旧账表，我会按原件核对月份。')
-  const pastStart = accounting.history === 'previous' ? nextMonth(accounting.lastMonth) : args.firstOperatingMonth
+  const pastStart = accounting.history === 'previous' ? nextPeriod(accounting.lastMonth) : args.firstOperatingMonth
   if (typeof pastStart !== 'string' || !PERIOD_KEY.test(pastStart) ||
     (accounting.history === 'unrecorded' && (pastStart < active.establishedOn.slice(0, 7) || pastStart >= accounting.startMonth)))
     return refuse('HISTORICAL_FIRST_OPERATING_MONTH_REQUIRED', '请核对实际开始经营的月份。旧账未知时不会按零处理。')
@@ -94,7 +92,7 @@ export function planHistoricalHandoff(store: BookStore, args: Record<string, unk
   const reported = (fromSource as string[]).filter(month => month < accounting.startMonth)
   const coveredMonths = [...new Set(reported)].sort()
   const overlapMonths = [...new Set((fromSource as string[]).filter(month => month >= accounting.startMonth))].sort()
-  const coverage = new Set([...coveredMonths, ...store.postedPeriods()])
+  const coverage = new Set([...coveredMonths, ...store.postedPeriods(), ...store.historicalPeriods()])
   const missingMonths = monthsBetween(pastStart, accounting.startMonth).filter(month => !coverage.has(month))
   const plan = { history: accounting.history, accountingStartMonth: accounting.startMonth,
     originalLastMonth: accounting.lastMonth, missingMonths, coveredMonths, overlapMonths, materialId: args.materialId }

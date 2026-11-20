@@ -39,7 +39,7 @@ function validPeriod(store: BookStore, periodKey: string, now: Date) {
   const company = store.company()
   if (!company) return refuse('NO_BOOK', '本机还没有账本。')
   if (!PERIOD_KEY.test(periodKey)) return refuse('PERIOD_INVALID', `月份要写成 YYYY-MM，收到的是 ${periodKey}。`)
-  if (periodKey < company.accountingStartMonth)
+  if (periodKey < company.accountingStartMonth && !store.historicalOpening(periodKey))
     return refuse('PERIOD_BEFORE_BOOK', `这本账从 ${company.accountingStartMonth} 开始记，没有 ${periodKey} 的账。`)
   if (periodKey > todayInChina(now).slice(0, 7)) return refuse('PERIOD_FUTURE', `${periodKey} 还没到。`)
   return company
@@ -97,7 +97,9 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
   const lines = store.statementLines(range)
 
   const coverage = new Map<string, { from: string; to: string }[]>()
-  for (const c of store.statementCoverage()) coverage.set(c.accountRef, [...(coverage.get(c.accountRef) ?? []), c])
+  for (const c of store.statementCoverage()) {
+    if (c.to >= startMonth + '-01') coverage.set(c.accountRef, [...(coverage.get(c.accountRef) ?? []), c])
+  }
   const bankSubject = packParameter(pack.payload, 'transaction.account.bank.subject')
   if (coverage.size === 0 && bankSubject && vouchers.some((v) => v.legs.some((l) => l.subjectCode === bankSubject)))
     coverage.set(UNREGISTERED_BANK_ACCOUNT, [])
@@ -211,8 +213,11 @@ function runChecks(store: BookStore, pack: LoadedPack, periodKey: string, startM
 export function closingCheck(store: BookStore, pack: LoadedPack, periodKey: string, now: Date) {
   const company = validPeriod(store, periodKey, now)
   if ('accepted' in company) return company
-  if (store.lockedPeriods().includes(periodKey))
-    return { accepted: true as const, periodKey, locked: true, canClose: false, message: `${periodKey} 已经结过账了。` }
+  if (store.lockedPeriods().includes(periodKey)) {
+    const history = periodKey < company.accountingStartMonth
+    return { accepted: true as const, periodKey, locked: true, canClose: false,
+      message: history ? `${periodKey} 的历史补账已核对并确认。` : `${periodKey} 已经结过账了。` }
+  }
   return {
     accepted: true as const,
     periodKey,
@@ -222,12 +227,52 @@ export function closingCheck(store: BookStore, pack: LoadedPack, periodKey: stri
   }
 }
 
-/**
- * 结账：所有检查通过才做。先按包声明做损益结转（把这个月损益科目的余额转进声明的科目），再把这个月锁住，
- * 之后不能再往里记账或导流水。
- *
- * 结转分录按余额算、不按规则推，做法与 moneycome `finance-ledger/balance-transfer.ts` 相同。
- */
+/** 按会计包结转当月损益。调用者在核对通过的事务内执行。 */
+export function postBalanceTransfers(store: BookStore, pack: LoadedPack, periodKey: string, now: Date): string[] {
+  const subjects = new Map(pack.payload.catalogs[0]!.subjects.map((s) => [s.subjectCode, s]))
+  const posted: string[] = []
+  for (const item of balanceTransferItems(pack.payload)) {
+    const transfer = item.balanceTransfer!
+    const inScope = new Set(
+      pack.payload.reportLines.filter((l) => l.reportId === transfer.fromReportId).flatMap((l) => l.subjectCodes),
+    )
+    const legs: LedgerPosting['legs'][number][] = []
+    let net = 0n
+    for (const m of store.movements(periodKey, periodKey)) {
+      if (!inScope.has(m.subjectCode) || m.netDebitCents === 0n) continue
+      // 借方余额就贷方冲平，贷方余额就借方冲平。
+      const debit = m.netDebitCents < 0n
+      const amount = debit ? -m.netDebitCents : m.netDebitCents
+      net += debit ? amount : -amount
+      legs.push({ direction: debit ? 'debit' : 'credit', subjectCode: m.subjectCode, subjectName: m.subjectName, amount: formatCents(amount), amountSource: 'balance' })
+    }
+    if (legs.length === 0) continue
+    const target = subjects.get(transfer.toSubjectCode)!
+    if (net !== 0n)
+      legs.push({
+        direction: net > 0n ? 'credit' : 'debit',
+        subjectCode: target.subjectCode,
+        subjectName: target.subjectName,
+        amount: formatCents(net > 0n ? net : -net),
+        amountSource: 'balance',
+      })
+    const saved = store.postVoucher({
+      periodKey,
+      voucherDate: monthRange(periodKey).to,
+      summary: `${periodKey} ${item.itemName}`,
+      eventKind: item.itemId,
+      facts: {},
+      posting: { eventId: `close-${periodKey}-${item.itemId}`, packRef: pack.packRef, ruleId: item.itemId, legs },
+      requiredRoles: [],
+      evidenceRoles: [],
+      now,
+    })
+    posted.push(saved.voucherNo)
+  }
+  return posted
+}
+
+/** 全部检查通过后结转并锁月。 */
 export function closePeriod(store: BookStore, pack: LoadedPack, periodKey: string, now: Date) {
   const company = validPeriod(store, periodKey, now)
   if ('accepted' in company) return company
@@ -237,48 +282,10 @@ export function closePeriod(store: BookStore, pack: LoadedPack, periodKey: strin
   if (!checks.canClose) return refuse('CLOSING_BLOCKED', '还有没过的检查项，这个月先不能结账。', checks.checks.filter((c) => !c.passed))
 
   const profit = store.postedPeriods().includes(periodKey) ? readProfit(store, pack, periodKey) : undefined
-  const subjects = new Map(pack.payload.catalogs[0]!.subjects.map((s) => [s.subjectCode, s]))
-  const posted: string[] = []
-  store.transaction(() => {
-    for (const item of balanceTransferItems(pack.payload)) {
-      const transfer = item.balanceTransfer!
-      const inScope = new Set(
-        pack.payload.reportLines.filter((l) => l.reportId === transfer.fromReportId).flatMap((l) => l.subjectCodes),
-      )
-      const legs: LedgerPosting['legs'][number][] = []
-      let net = 0n
-      for (const m of store.movements(periodKey, periodKey)) {
-        if (!inScope.has(m.subjectCode) || m.netDebitCents === 0n) continue
-        // 借方余额就贷方冲平，贷方余额就借方冲平。
-        const debit = m.netDebitCents < 0n
-        const amount = debit ? -m.netDebitCents : m.netDebitCents
-        net += debit ? amount : -amount
-        legs.push({ direction: debit ? 'debit' : 'credit', subjectCode: m.subjectCode, subjectName: m.subjectName, amount: formatCents(amount), amountSource: 'balance' })
-      }
-      if (legs.length === 0) continue
-      const target = subjects.get(transfer.toSubjectCode)!
-      if (net !== 0n)
-        legs.push({
-          direction: net > 0n ? 'credit' : 'debit',
-          subjectCode: target.subjectCode,
-          subjectName: target.subjectName,
-          amount: formatCents(net > 0n ? net : -net),
-          amountSource: 'balance',
-        })
-      const saved = store.postVoucher({
-        periodKey,
-        voucherDate: monthRange(periodKey).to,
-        summary: `${periodKey} ${item.itemName}`,
-        eventKind: item.itemId,
-        facts: {},
-        posting: { eventId: `close-${periodKey}-${item.itemId}`, packRef: pack.packRef, ruleId: item.itemId, legs },
-        requiredRoles: [],
-        evidenceRoles: [],
-        now,
-      })
-      posted.push(saved.voucherNo)
-    }
+  const posted = store.transaction(() => {
+    const vouchers = postBalanceTransfers(store, pack, periodKey, now)
     store.lockPeriod(periodKey, now)
+    return vouchers
   })
   return {
     accepted: true as const,

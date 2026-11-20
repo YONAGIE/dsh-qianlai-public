@@ -24,6 +24,12 @@ export function previousPeriod(periodKey: string): string {
   return month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, '0')}`
 }
 
+export function nextPeriod(periodKey: string): string {
+  const [year, month] = periodKey.split('-').map(Number) as [number, number]
+  return month === 12 ? String(year + 1).padStart(4, '0') + '-01'
+    : periodKey.slice(0, 5) + String(month + 1).padStart(2, '0')
+}
+
 /** 记账按北京时间算日子：`now` 在北京时间是哪一天，YYYY-MM-DD。 */
 export function todayInChina(now: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)

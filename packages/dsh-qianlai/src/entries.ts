@@ -126,7 +126,7 @@ const POSTING_MESSAGES: Record<string, string> = {
 const legView = (legs: readonly { direction: 'debit' | 'credit'; subjectCode: string; subjectName: string; amount: string }[]) =>
   legs
     .filter((l) => l.amount !== '0.00')
-    .map((l) => ({ side: l.direction === 'debit' ? '借' : '贷', subjectCode: l.subjectCode, subjectName: l.subjectName, amount: l.amount }))
+    .map((l) => ({ side: l.direction === 'debit' ? '借' as const : '贷' as const, subjectCode: l.subjectCode, subjectName: l.subjectName, amount: l.amount }))
 
 /**
  * 记一笔账。业务事实交给会计包的规则推分录，插件不自己判科目。
@@ -134,7 +134,7 @@ const legView = (legs: readonly { direction: 'debit' | 'credit'; subjectCode: st
  * 落账前依次挡：样本账、日期、已结账的月份、包里没有的记法、发票没核过或已记过或金额和票面不符、
  * 流水已记过或不在这个月或金额对不上。
  */
-export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEntryInput, now: Date) {
+export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEntryInput, now: Date, historicalPeriod?: string) {
   const company = store.company()
   if (!company) return refuse('NO_BOOK', '本机还没有账本。')
   if (company.isSample)
@@ -142,7 +142,7 @@ export function recordEntry(store: BookStore, pack: LoadedPack, input: RecordEnt
   if (!isCalendarDate(input.date)) return refuse('DATE_INVALID', `日期要写成 YYYY-MM-DD，收到的是 ${input.date}。`)
   if (input.date > todayInChina(now)) return refuse('DATE_IN_FUTURE', `${input.date} 还没到，不能先记。`)
   const periodKey = input.date.slice(0, 7)
-  if (periodKey < company.accountingStartMonth)
+  if (periodKey < company.accountingStartMonth && periodKey !== historicalPeriod)
     return refuse('PERIOD_BEFORE_BOOK', `这本账从 ${company.accountingStartMonth} 开始记，${input.date} 在建账之前。`)
   if (store.lockedPeriods().includes(periodKey))
     return refuse('PERIOD_LOCKED', `${periodKey} 已经结账，不能再往里记。`)

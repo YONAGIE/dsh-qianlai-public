@@ -3,7 +3,7 @@ import { formatCents, parseAmountToCents } from '@moneycome/fintax-core'
 import { bankRegistrationView } from './bank-accounts.js'
 import { dueSoon } from './deadlines.js'
 import type { LoadedPack } from './pack.js'
-import { PERIOD_KEY, refuse, todayInChina } from './period.js'
+import { PERIOD_KEY, previousPeriod, refuse, todayInChina } from './period.js'
 import { balanceTransferItems } from './reports.js'
 import { bankAccounts, unrecordedStatementLines } from './statements.js'
 import type { BookStore, SubjectMovement } from './store.js'
@@ -102,19 +102,8 @@ const openingView = (rows: readonly SubjectMovement[]) =>
     balance: formatCents(r.netDebitCents > 0n ? r.netDebitCents : -r.netDebitCents),
   }))
 
-/**
- * 校验建账当月月初的科目余额，供审批预览和正式写入使用。
- * 每次整体替换已录余额，建账月份结账后禁止修改。
- * 科目要在会计包的科目表里、不能是损益类（损益在上一年末已经结转），借方合计要等于贷方合计。
- * 新成立、月初什么都没有的公司传空列表，表示录过了、期初全是零。
- */
-export function prepareOpeningBalances(store: BookStore, pack: LoadedPack, balances: readonly OpeningBalanceInput[]) {
-  const company = store.company()
-  if (!company) return refuse('NO_BOOK', '本机还没有账本。')
-  if (company.isSample) return refuse('SAMPLE_BOOK', '样本账的期初是编好的，不改。先用 moneycome_open_book 开老板自己的账。')
-  if (store.lockedPeriods().includes(company.accountingStartMonth))
-    return refuse('PERIOD_LOCKED', `建账那个月 ${company.accountingStartMonth} 已经结账，期初余额不能再改。`)
-
+/** 校验交接科目表。损益科目以当期结转后的余额衔接，借贷必须平衡。 */
+export function validateOpeningRows(pack: LoadedPack, balances: readonly OpeningBalanceInput[]) {
   const subjects = new Map(pack.payload.catalogs[0]!.subjects.map((s) => [s.subjectCode, s.subjectName]))
   const profitScope = new Set(
     balanceTransferItems(pack.payload).flatMap((item) =>
@@ -155,7 +144,43 @@ export function prepareOpeningBalances(store: BookStore, pack: LoadedPack, balan
       creditTotal: formatCents(credit),
       difference: formatCents(debit > credit ? debit - credit : credit - debit),
     })
+  return { accepted: true as const, rows, debit, credit }
+}
 
+export function firstBalanceDifference(actual: readonly SubjectMovement[], expected: readonly SubjectMovement[]) {
+  const actualByCode = new Map(actual.map(row => [row.subjectCode, row]))
+  const expectedByCode = new Map(expected.map(row => [row.subjectCode, row]))
+  const codes = [...new Set([...actualByCode.keys(), ...expectedByCode.keys()])].sort()
+  for (const subjectCode of codes) {
+    const found = actualByCode.get(subjectCode)
+    const reference = expectedByCode.get(subjectCode)
+    const got = found?.netDebitCents ?? 0n
+    const want = reference?.netDebitCents ?? 0n
+    if (got === want) continue
+    const text = (cents: bigint) => cents === 0n ? '0.00' : (cents < 0n ? '贷方 ' : '借方 ') + formatCents(cents < 0n ? -cents : cents)
+    return { subjectCode, subjectName: (found ?? reference)!.subjectName, actual: text(got), expected: text(want),
+      difference: formatCents(got > want ? got - want : want - got) }
+  }
+  return undefined
+}
+
+/** 校验当前账本起账月的月初余额，供审批和写入共用。 */
+export function prepareOpeningBalances(store: BookStore, pack: LoadedPack, balances: readonly OpeningBalanceInput[]) {
+  const company = store.company()
+  if (!company) return refuse('NO_BOOK', '本机还没有账本。')
+  if (company.isSample) return refuse('SAMPLE_BOOK', '样本账的期初是编好的，不改。先用 moneycome_open_book 开老板自己的账。')
+  if (store.lockedPeriods().includes(company.accountingStartMonth))
+    return refuse('PERIOD_LOCKED', `建账那个月 ${company.accountingStartMonth} 已经结账，期初余额不能再改。`)
+
+  const checked = validateOpeningRows(pack, balances)
+  if (!checked.accepted) return checked
+  const { rows, debit, credit } = checked
+  const prior = previousPeriod(company.accountingStartMonth)
+  if (store.historicalOpening(prior)) {
+    const difference = firstBalanceDifference(rows, store.movements(prior))
+    if (difference) return refuse('OPENING_LINKED_TO_HISTORY',
+      `期初已与 ${prior} 的正式补账衔接。请先核对${difference.subjectName}的差异，再按账务更正处理。`, difference)
+  }
   return {
     accepted: true as const,
     companyName: company.name,

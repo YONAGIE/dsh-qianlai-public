@@ -124,7 +124,8 @@ function prepareReport(store: BookStore, pack: LoadedPack, periodKey: string, ki
   if (!checked.accepted) return checked
   const tables = kind === 'financial' ? financialTables(store, pack, periodKey) : ledgerTables(store, periodKey)
   if (!tables) return refuse('REPORT_REVIEW_REQUIRED', '报表有余额未归类或没有平衡，请先核对该月账项。', { periodKey })
-  const phase = store.lockedPeriods().includes(periodKey) ? '已结账' : '未结账，供会计核对'
+  const historical = periodKey < company.accountingStartMonth && store.historicalOpening(periodKey)
+  const phase = historical ? '历史补账已核对' : store.lockedPeriods().includes(periodKey) ? '已结账' : '未结账，供会计核对'
   const fingerprint = createHash('sha256').update(JSON.stringify([company.name, company.isSample, periodKey, kind, phase, tables])).digest('hex')
   return { accepted: true as const, kind, periodKey, companyName: company.name, isSample: company.isSample, phase, fingerprint, tables }
 }
