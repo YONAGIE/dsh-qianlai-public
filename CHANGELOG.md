@@ -4,6 +4,8 @@
 
 - Prepare and review tax materials by company, tax type and reporting period. Preserve local versions and keep uploaded filing and payment receipts pending official verification.
 
+- Show the current ledger and plugin version, one actionable next step, and evidence-based reminders within three days of their due date.
+
 - Jump directly to a year or month in both setup forms. Use the same calendar for company and bank dates, and choose bookkeeping months without selecting a day.
 
 - Use one structured interaction at a time for Zhangjie's desktop and web follow-ups. Reuse known facts and receipts, use a choice for decisions or a form for missing fields, and keep unresolved items pending when a control is unavailable.

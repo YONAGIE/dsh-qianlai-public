@@ -155,9 +155,15 @@ describe('接下来要办的事', () => {
     })
   })
 
-  it('账本现状里带上 10 天内到期还没办的事', () => {
-    const status = bookStatus(januaryBook(), { pack, now: new Date('2026-04-12T02:00:00Z') })
-    expect(status).toMatchObject({ dueSoon: expect.arrayContaining([expect.objectContaining({ title: '季度报税（增值税及附加）', dueDate: '2026-04-20', daysLeft: 8 })]) })
+  it('有日期依据的提醒从到期前 3 天出现并保留待核对状态', () => {
+    const store = januaryBook()
+    const title = '季度报税（增值税及附加）'
+    const earlier = bookStatus(store, { pack, now: new Date('2026-04-16T02:00:00Z') })
+    expect(earlier).toMatchObject({ dueSoon: expect.not.arrayContaining([expect.objectContaining({ title })]) })
+    const status = bookStatus(store, { pack, now: new Date('2026-04-17T02:00:00Z') })
+    expect(status).toMatchObject({ dueSoon: expect.arrayContaining([expect.objectContaining({
+      title, dueDate: '2026-04-20', daysLeft: 3, label: expect.stringContaining('办理结果待核对'),
+    })]) })
   })
 })
 

@@ -7,6 +7,7 @@ import { readBalances } from './balances.js'
 import { bookStatus, openBook, prepareOpeningBalances, setCompanyFacts, setOpeningBalances, type OpeningBalanceInput } from './book.js'
 import { closePeriod, closingCheck } from './closing.js'
 import { checkOnboardingBookOpen, CompanyOnboarding, onboardingBookStatus, type OnboardingGuideAction } from './company-onboarding.js'
+import { currentWork } from './current-work.js'
 import { quarterFilingPrep, upcomingDeadlines } from './deadlines.js'
 import {
   addEvidence,
@@ -535,7 +536,8 @@ export function apply(ctx: Context, config: Config = {}): void {
         () => {
           const status = bookStatus(store)
           const onboarding = onboardingBookStatus(store)
-          return { ...status, businessDate: todayInChina(new Date()), ...(onboarding ? { onboarding } : {}) }
+          const now = new Date()
+          return { ...status, businessDate: todayInChina(now), currentWork: currentWork(store, pack, now), ...(onboarding ? { onboarding } : {}) }
         },
       ),
       tool(
