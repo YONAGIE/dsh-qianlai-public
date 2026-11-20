@@ -290,7 +290,7 @@ describe('记账的可信批准与调用重试', () => {
     disposers.pop()!()
     const db = new DatabaseSync(old.bookPath)
     try {
-      db.exec('DROP TABLE report_artifact; DROP TABLE work_material_original; DROP TABLE work_matter; DROP TABLE work_material')
+      db.exec('DROP TABLE historical_book_period; DROP TABLE report_artifact; DROP TABLE work_material_original; DROP TABLE work_matter; DROP TABLE work_material')
       if (legacyVersion === 4) db.exec('DROP TABLE company_onboarding; DROP TABLE tool_receipt')
       db.exec(`PRAGMA user_version = ${legacyVersion}`)
     } finally {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Preview and post vouchers for confirmed historical gaps after reconciling balances. Keep the existing takeover month and opening balances, and include the approved vouchers in historical reports.
+
 - Prepare and review tax materials by company, tax type and reporting period. Preserve local versions and keep uploaded filing and payment receipts pending official verification.
 
 - Show the current ledger and plugin version, one actionable next step, and evidence-based reminders within three days of their due date.

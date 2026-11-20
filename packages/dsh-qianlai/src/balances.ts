@@ -30,10 +30,11 @@ export function checkPeriod(store: BookStore, periodKey: string): Refusal | { co
   if (!company) return { accepted: false, code: 'NO_BOOK', message: '本机还没有账本。' }
   if (!PERIOD_KEY.test(periodKey))
     return { accepted: false, code: 'PERIOD_INVALID', message: `月份要写成 YYYY-MM，收到的是 ${periodKey}。` }
-  const periods = [...store.postedPeriods(), ...store.lockedPeriods()]
+  const historical = store.historicalPeriods()
+  const periods = [...store.postedPeriods(), ...store.lockedPeriods(), ...historical]
   if (store.openingBalancesSetAt() !== undefined) periods.push(company.accountingStartMonth)
   const last = periods.sort().at(-1)
-  if (periodKey < company.accountingStartMonth)
+  if (periodKey < company.accountingStartMonth && !historical.includes(periodKey))
     return {
       accepted: false,
       code: 'PERIOD_BEFORE_BOOK',

@@ -169,6 +169,12 @@ const MIGRATIONS: readonly string[] = [
     content BLOB NOT NULL
   );
   `,
+  `
+  CREATE TABLE historical_book_period (
+    period_key TEXT PRIMARY KEY,
+    opening_json TEXT NOT NULL
+  );
+  `,
 ]
 
 export interface Company {
@@ -340,6 +346,18 @@ export class BookStore {
     }
   }
 
+  previewTransaction<T>(fn: () => T): T {
+    return this.transaction(() => {
+      this.db.exec('SAVEPOINT historical_preview')
+      try {
+        return fn()
+      } finally {
+        this.db.exec('ROLLBACK TO historical_preview')
+        this.db.exec('RELEASE historical_preview')
+      }
+    })
+  }
+
   company(): Company | undefined {
     const row = this.db
       .prepare('SELECT name, tax_id, accounting_start_month, is_sample FROM company WHERE id = 1')
@@ -421,6 +439,7 @@ export class BookStore {
       'work_event',
       'work_matter',
       'work_material_original',
+      'historical_book_period',
       'work_material',
       'report_artifact',
       'opening_balance',
@@ -552,6 +571,24 @@ export class BookStore {
       subjectName: r.name,
       netDebitCents: r.net,
     }))
+  }
+
+  historicalPeriods(): string[] {
+    const periods = this.db.prepare('SELECT period_key FROM historical_book_period ORDER BY period_key').all() as { period_key: string }[]
+    return periods.map(period => period.period_key)
+  }
+
+  historicalOpening(periodKey: string): SubjectMovement[] | undefined {
+    const row = this.db.prepare('SELECT opening_json FROM historical_book_period WHERE period_key = ?')
+      .get(periodKey) as { opening_json: string } | undefined
+    if (row === undefined) return undefined
+    const balances = JSON.parse(row.opening_json) as (Omit<SubjectMovement, 'netDebitCents'> & { netDebitCents: string })[]
+    return balances.map(balance => ({ ...balance, netDebitCents: BigInt(balance.netDebitCents) }))
+  }
+
+  saveHistoricalOpening(periodKey: string, rows: readonly SubjectMovement[]): void {
+    const encoded = JSON.stringify(rows.map(row => ({ ...row, netDebitCents: row.netDebitCents.toString() })))
+    this.db.prepare('INSERT INTO historical_book_period (period_key, opening_json) VALUES (?, ?)').run(periodKey, encoded)
   }
 
   /** 整体替换期初余额。 */
@@ -729,6 +766,10 @@ export class BookStore {
    * `excludeEventKinds` 里的凭证不算，查利润时用它排除损益结转。
    */
   movements(toPeriod: string, fromPeriod = '', excludeEventKinds: readonly string[] = []): SubjectMovement[] {
+    const takeover = fromPeriod === '' ? this.company()?.accountingStartMonth : undefined
+    const historical = takeover && toPeriod < takeover ? this.historicalOpening(toPeriod) : undefined
+    const lower = fromPeriod || (historical ? toPeriod : takeover ?? '')
+    const anchorAtTakeover = fromPeriod === '' && (takeover === undefined || toPeriod >= takeover)
     const placeholders = excludeEventKinds.map(() => '?').join(', ')
     const stmt = this.db.prepare(
       `SELECT code, max(name) AS name, sum(net) AS net FROM (
@@ -738,12 +779,16 @@ export class BookStore {
          WHERE v.period_key <= ? AND v.period_key >= ? AND v.voided_at IS NULL
            ${excludeEventKinds.length ? `AND v.event_kind NOT IN (${placeholders})` : ''}
          UNION ALL
-         SELECT subject_code, subject_name, net_debit_cents FROM opening_balance WHERE ? = ''
+         SELECT subject_code, subject_name, net_debit_cents FROM opening_balance WHERE ? = 1
        ) GROUP BY code ORDER BY code`,
     )
     stmt.setReadBigInts(true)
-    const rows = stmt.all(toPeriod, fromPeriod, ...excludeEventKinds, fromPeriod) as { code: string; name: string; net: bigint }[]
-    return rows.map((r) => ({ subjectCode: r.code, subjectName: r.name, netDebitCents: r.net }))
+    const rows = stmt.all(toPeriod, lower, ...excludeEventKinds, anchorAtTakeover ? 1 : 0) as { code: string; name: string; net: bigint }[]
+    const movements = new Map(rows.map(row => [row.code, { subjectCode: row.code, subjectName: row.name, netDebitCents: row.net }]))
+    for (const prior of historical ?? []) {
+      movements.set(prior.subjectCode, { ...prior, netDebitCents: prior.netDebitCents + (movements.get(prior.subjectCode)?.netDebitCents ?? 0n) })
+    }
+    return [...movements.values()].sort((a, b) => a.subjectCode.localeCompare(b.subjectCode))
   }
 
   saveInvoice(input: {

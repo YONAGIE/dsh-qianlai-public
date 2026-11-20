@@ -1,6 +1,6 @@
 const PRIVATE_HANDOFF_TOOLS = new Set([
   'moneycome_payroll', 'moneycome_benefits', 'moneycome_tax_work',
-  'moneycome_receipt_match', 'moneycome_material_archive',
+  'moneycome_receipt_match', 'moneycome_material_archive', 'moneycome_historical_backfill',
 ])
 const PRIVATE_ENTRY_KINDS = new Set([
   'payroll', 'social_insurance', 'housing_fund', 'closing.payroll_accrual',

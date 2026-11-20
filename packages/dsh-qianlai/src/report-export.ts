@@ -63,6 +63,8 @@ function financialTables(store: BookStore, pack: LoadedPack, month: string): Tab
   const { month: current, yearToDate } = report.profit
   const lines = new Set([...current.lines, ...yearToDate.lines].map(line => line.lineName))
   const value = (list: typeof current.lines, name: string) => amount(list.find(line => line.lineName === name)?.amount ?? '0.00')
+  const cumulativeLabel = yearToDate.from.endsWith('-01')
+    ? '本年累计（元）' : `累计（${yearToDate.from} 至 ${yearToDate.to}，元）`
   return [
     { name: '资产负债表', rows: [
       ['资产', '余额（元）', '负债和所有者权益', '余额（元）'],
@@ -74,7 +76,7 @@ function financialTables(store: BookStore, pack: LoadedPack, month: string): Tab
       ['资产合计', amount(balance.assetsTotal), '负债和所有者权益合计', amount(balance.liabilitiesAndEquityTotal)],
     ] },
     { name: '利润表', rows: [
-      ['项目', '本月（元）', '本年累计（元）'],
+      ['项目', '本月（元）', cumulativeLabel],
       ...[...lines].map(name => [name, value(current.lines, name), value(yearToDate.lines, name)]),
       ...(current.totals && yearToDate.totals ? [
         ['收入合计', amount(current.totals.revenue), amount(yearToDate.totals.revenue)],
@@ -124,7 +126,8 @@ function prepareReport(store: BookStore, pack: LoadedPack, periodKey: string, ki
   if (!checked.accepted) return checked
   const tables = kind === 'financial' ? financialTables(store, pack, periodKey) : ledgerTables(store, periodKey)
   if (!tables) return refuse('REPORT_REVIEW_REQUIRED', '报表有余额未归类或没有平衡，请先核对该月账项。', { periodKey })
-  const phase = store.lockedPeriods().includes(periodKey) ? '已结账' : '未结账，供会计核对'
+  const historical = periodKey < company.accountingStartMonth && store.historicalOpening(periodKey)
+  const phase = historical ? '历史补账已核对' : store.lockedPeriods().includes(periodKey) ? '已结账' : '未结账，供会计核对'
   const fingerprint = createHash('sha256').update(JSON.stringify([company.name, company.isSample, periodKey, kind, phase, tables])).digest('hex')
   return { accepted: true as const, kind, periodKey, companyName: company.name, isSample: company.isSample, phase, fingerprint, tables }
 }

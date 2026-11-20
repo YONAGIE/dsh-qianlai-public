@@ -137,7 +137,7 @@ function openingBalance(input: ImportStatementInput): bigint | undefined {
  *
  * 进账的只是流水本身，每一行还要说清是什么钱、记成凭证；没记的行结账检查会挡住。
  */
-export function importStatement(store: BookStore, input: ImportStatementInput, now: Date) {
+export function importStatement(store: BookStore, input: ImportStatementInput, now: Date, historicalPeriod?: string) {
   const company = store.company()
   if (!company) return refuse('NO_BOOK', '本机还没有账本。')
   if (company.isSample)
@@ -149,7 +149,9 @@ export function importStatement(store: BookStore, input: ImportStatementInput, n
     return refuse('PERIOD_FUTURE', `流水截止日期 ${input.periodEnd} 还没到（北京时间 ${businessDate}）。`, {
       businessDate, periodEnd: input.periodEnd,
     })
-  if (input.periodStart.slice(0, 7) < company.accountingStartMonth)
+  const fromPeriod = input.periodStart.slice(0, 7)
+  const toPeriod = input.periodEnd.slice(0, 7)
+  if (fromPeriod < company.accountingStartMonth && (fromPeriod !== historicalPeriod || toPeriod !== historicalPeriod))
     return refuse('PERIOD_BEFORE_BOOK', `这本账从 ${company.accountingStartMonth} 开始记，流水起始日期在建账之前。`)
   const target = selectBankAccount(store, input)
   if (!target.accepted) return target

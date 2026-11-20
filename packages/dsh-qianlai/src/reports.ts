@@ -3,6 +3,7 @@ import { formatCents, type AccountingPackPayload } from '@moneycome/fintax-core'
 import { checkPeriod } from './balances.js'
 import { packParameter } from './entries.js'
 import type { LoadedPack } from './pack.js'
+import { previousPeriod } from './period.js'
 import type { BookStore } from './store.js'
 
 const PROFIT_REPORT = 'report.profit'
@@ -48,7 +49,10 @@ export function readProfit(store: BookStore, pack: LoadedPack, periodKey: string
   const period = checkPeriod(store, periodKey)
   if ('accepted' in period) return period
   const startOfYear = `${periodKey.slice(0, 4)}-01`
-  const ytdFrom = startOfYear > store.company()!.accountingStartMonth ? startOfYear : store.company()!.accountingStartMonth
+  const takeover = store.company()!.accountingStartMonth
+  const covered = new Set(store.historicalPeriods())
+  let ytdFrom = periodKey < takeover ? periodKey : startOfYear > takeover ? startOfYear : takeover
+  while (ytdFrom > startOfYear && covered.has(previousPeriod(ytdFrom))) ytdFrom = previousPeriod(ytdFrom)
   return {
     accepted: true as const,
     company: period.company,
