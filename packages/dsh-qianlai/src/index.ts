@@ -658,11 +658,16 @@ export function apply(ctx: Context, config: Config = {}): void {
             return refuse('TAX_REVIEW_PENDING', '有一项选择正在等待处理，请先完成当前操作。')
           const id = createHash('sha256').update(canonical([session.id, execution.callId, a.fingerprint])).digest('hex')
           const confirm = '确认本地资料'
+          const evidenceNames = (Array.isArray(prior.evidence) ? prior.evidence : []).flatMap(entry => {
+            if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') return []
+            return [entry.name + (typeof entry.amount === 'string' ? ' · ' + entry.amount + ' 元' : '')]
+          }).slice(0, 3)
           entryQuestions.set(session.id, { receiptKey: id, argsHash: canonical(a) })
           try {
             const result = await host.ask({ agent, signal, questions: [{ id, header: '核对税务资料',
               question: '这份税务准备资料核对好了吗？', detail: questionDetail([
                 String(prior.company), String(prior.title) + ' · ' + String(prior.periodKey),
+                ...evidenceNames,
                 '保存本期本地核对版本，供后续办理。',
               ].join('\n')), options: [{ label: confirm }, { label: '稍后核对' }],
             }] })
