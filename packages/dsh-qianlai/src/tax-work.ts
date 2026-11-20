@@ -142,7 +142,8 @@ export function taxWork(store: BookStore, pack: LoadedPack, args: Record<string,
       evidence: { id: material.id, name: material.name, category: args.evidenceKind, date: args.evidenceDate,
         ...(amount !== undefined ? { amount: formatCents(amount) } : {}) },
     }, now)
-    return { ...taxWorkStatus(store, pack, args, now), alreadyAttached: !!used }
+    const updated = taxWorkStatus(store, pack, args, now)
+    return updated.accepted ? { ...updated, alreadyAttached: !!used } : updated
   }
   if (action !== 'review') return refuse('TAX_ACTION_INVALID', '请先查看当前税务准备资料。')
   if (filingStatus === 'verification-required' || paymentStatus === 'verification-required')
