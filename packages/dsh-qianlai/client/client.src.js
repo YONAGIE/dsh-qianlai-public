@@ -21,7 +21,7 @@ window.__ModuleLoader__.load({
   id: 'dsh-qianlai',
   factory: (require) => {
     const module = { exports: {} }
-    const { useEffect, useId, useRef, useState } = require('react')
+    const { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } = require('react')
     const { jsx } = require('react/jsx-runtime')
 
     const PRESET = 'moneycome-zhangjie'
@@ -214,6 +214,17 @@ window.__ModuleLoader__.load({
             .then(view => refreshOnboarding(sessionId, view), () => {})
         }
       })
+    }
+
+    function useCurrentOnboardingReply(sessionId, turn) {
+      const source = sessions?.binding(sessionId)?.eventSource
+      const subscribe = useCallback(listener => source?.subscribe(listener) ?? (() => {}), [source])
+      const snapshot = useCallback(() => {
+        const latest = source?.getSnapshot().entries.findLast(({ event }) =>
+          event.type === 'turn/start' || event.type === 'turn/end')?.event
+        return latest?.type === 'turn/end' && latest.data.turn === turn && latest.data.reason?.kind === 'completed'
+      }, [source, turn])
+      return useSyncExternalStore(subscribe, snapshot)
     }
 
     function sendOnboardingReply(sessionId, text) {
@@ -867,7 +878,8 @@ window.__ModuleLoader__.load({
         ), 'dsh-qianlai: onboarding tab body')
       })
       registerOnboardingChat(ctx, {
-        jsx, useEffect, useRef, useState, usePreset, OnboardingDateInput, openOnboarding, refreshOnboarding, onboardingRequest,
+        jsx, useEffect, useRef, useState, usePreset, useCurrentOnboardingReply, OnboardingDateInput,
+        openOnboarding, refreshOnboarding, onboardingRequest,
         sendOnboardingReply, pickOnboardingAttachment, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
         taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })

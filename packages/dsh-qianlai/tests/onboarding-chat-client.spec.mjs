@@ -31,6 +31,7 @@ function client(onboardingRequest, preset = 'moneycome-zhangjie', extras = {}) {
   let hooks
   let index = 0
   let effects = []
+  let currentReply = true
   registerOnboardingChat({
     inject(_names, mount) {
       mount({ effect: install => install(), uiConversation: { events: { register(value) { definition = value } } } })
@@ -39,6 +40,7 @@ function client(onboardingRequest, preset = 'moneycome-zhangjie', extras = {}) {
   }, {
     jsx, onboardingRequest, openOnboarding, refreshOnboarding, sendOnboardingReply, ...extras,
     usePreset: () => preset,
+    useCurrentOnboardingReply: () => currentReply,
     useState(initial) {
       const slot = index++
       const slots = hooks
@@ -70,9 +72,9 @@ function client(onboardingRequest, preset = 'moneycome-zhangjie', extras = {}) {
     }
     return { ...tree, props: { ...tree.props, children: resolve(tree.props.children, path, mounted) } }
   }
-  const render = card => {
+  const renderEvents = events => {
     const start = { location: { kind: 'turn', turn: 1 } }
-    const state = [toolCall, resultFor(card), completedTurn].reduce(
+    const state = events.reduce(
       (current, event) => definition.update({ state: current }, { event }),
       definition.start({}, start),
     )
@@ -89,7 +91,10 @@ function client(onboardingRequest, preset = 'moneycome-zhangjie', extras = {}) {
     return rendered
   }
   return {
-    definition, openOnboarding, refreshOnboarding, sendOnboardingReply, render,
+    definition, openOnboarding, refreshOnboarding, sendOnboardingReply,
+    render: card => renderEvents([toolCall, resultFor(card), completedTurn]),
+    renderEntry: () => renderEvents([{ type: 'assistant/message', data: { turn: 1 } }, completedTurn]),
+    setCurrentReply(value) { currentReply = value },
     remount() {
       for (const slots of components.values()) {
         for (const hook of slots) hook?.cleanup?.()
@@ -128,6 +133,41 @@ const companyUpload = next(3, { kind: 'upload', documentKind: 'license' })
 const recognizedView = { revision: 9, enterprise: { companyName: '示例服务有限公司', taxId: '111111111111111111' } }
 
 describe('建档对话卡', () => {
+  it.each([['start', '开始建档'], ['continue', '继续建档']])('建档入口可以直接打开当前表单并同步右侧（%s）', async (entry, label) => {
+    const card = entry === 'start' ? { ...baseCard, kind: 'mode' } : companyChoice
+    const opened = Promise.withResolvers()
+    const request = vi.fn(async (_session, action) => {
+      if (action === 'entry-status') return { accepted: true, entry }
+      if (action === 'open-entry') return opened.promise
+      if (action === 'card-status') return { accepted: true, card }
+    })
+    const active = client(request)
+    expect(active.renderEntry()).toBeNull()
+    await settle()
+    const button = find(active.renderEntry(), named(label))
+    expect(button).toBeDefined()
+    button.props.onClick()
+    button.props.onClick()
+    expect(request.mock.calls.filter(([, action]) => action === 'open-entry')).toHaveLength(1)
+    opened.resolve({ accepted: true, entry, card, view: recognizedView })
+    await settle()
+    expect(section(active.renderEntry(), card)).toBeDefined()
+    expect(active.openOnboarding).toHaveBeenCalledOnce()
+    expect(active.openOnboarding).toHaveBeenCalledWith(sessionId, { view: recognizedView })
+    expect(active.sendOnboardingReply).not.toHaveBeenCalled()
+    active.setCurrentReply(false)
+    expect(active.renderEntry()).toBeNull()
+  })
+
+  it.each([null, 'deferred'])('没有待办建档操作时不显示入口（%s）', async entry => {
+    const request = vi.fn(async () => ({ accepted: true, entry }))
+    const active = client(request)
+    expect(active.renderEntry()).toBeNull()
+    await settle()
+    expect(active.renderEntry()).toBeNull()
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('从已保存的成立日期回执重新打开可编辑表单，然后保存新值', async () => {
     const archived = {
       ...baseCard, kind: 'fields', title: '更正成立日期', maintenance: { field: 'establishedOn' },

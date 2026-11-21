@@ -25,7 +25,7 @@ import { commitHistoricalBackfill, historicalBackfillStatus, prepareHistoricalBa
 import { checkInvoice, type InvoiceReading } from './invoices.js'
 import { historicalHandoffProgress, planHistoricalHandoff, recordHandoffBalance } from './historical-handoff.js'
 import { inspectMaterialArchive, registerMaterialArchive } from './material-archive.js'
-import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessions } from './onboarding-rpc.js'
+import { companyTaxDraftAccess, onboardingSessionAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessionQuery, type OnboardingSessions } from './onboarding-rpc.js'
 import { loadPack } from './pack.js'
 import { reviewPayroll, savePayroll } from './payroll-work.js'
 import { hasFullAccess, type PermissionPresets } from './permissions.js'
@@ -125,6 +125,16 @@ interface Context {
     guard?(check: (execution: { name: string; callId?: string; agent?: Execution['agent']; arguments?: { questions?: unknown } }) => string | undefined): () => void
   }
   get?(name: string): unknown
+}
+
+interface OnboardingPromptContext {
+  context(contribution: {
+    name: string
+    order: number
+    required: true
+    interpolate: false
+    text(input: { agent?: Execution['agent'] }): string
+  }): () => void
 }
 
 /** bigint 不能直接进 JSON；工具结果里的金额都已格式化成字符串，这里只兜底。 */
@@ -260,7 +270,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (connection) scope.effect(() => {
         const store = new BookStore(config.bookPath ?? defaultBookPath())
         const onboarding = new CompanyOnboarding(store)
-        const sessions = scope.get?.('sessionController') as OnboardingSessions | undefined
+        const sessions = onboardingSessionAccess(
+          scope.get?.('sessionController') as Partial<OnboardingSessions> | undefined,
+          scope.get?.('sessionQuery') as OnboardingSessionQuery | undefined,
+        )
         const services = (): OnboardingHostServices => ({
           llm: scope.get?.('llm') as OnboardingHostServices['llm'],
           attachments: scope.get?.('attachments') as OnboardingHostServices['attachments'],
@@ -298,8 +311,29 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     })
     const onboarding = new CompanyOnboarding(store)
+    const stopOnboardingPrompt = (ctx.get?.('systemPrompt') as Partial<OnboardingPromptContext> | undefined)?.context?.({
+      name: 'moneycome-onboarding:entry-state',
+      order: 320,
+      required: true,
+      interpolate: false,
+      text({ agent }) {
+        const sessionId = agent?.session.id
+        if (!sessionId || isIntroductionSession(sessionId)) return ''
+        const entry = onboarding.entryState()
+        if (!entry) return ''
+        const wechat = isWechatSession(sessionId)
+        if (entry === 'deferred' && !wechat)
+          return '老板已经暂缓建档。照常回应当前的话，等他主动表示要办建档再用 moneycome_onboarding 的 start 恢复。'
+        if (wechat)
+          return '企业档案还未完成。先简短回应老板发来的内容，涉及本公司的账务时引导到桌面或网页的钱来张姐对话继续建档。'
+        return (entry === 'continue' ? '企业已有未完成的建档草稿。' : '这家公司还未开始建档。') +
+          '先简短回应老板这次发来的内容。能直接回答的先回答。有账务或材料就接住原来的事，建档后从原对话续办。' +
+          '回复末尾自然带到建档的当前一步，界面会在正文后提供开始或继续入口。先回应再引导，不靠固定口令。' +
+          '未实际打开表单时，请说可以开始或继续，别声称已经显示了表单。明确选择开始、继续、暂缓或提交当前资料时，用建档工具处理实际决定。'
+      },
+    })
     const currentGuide = (sessionId: string) => {
-      if (!onboarding.hasGuide(sessionId)) return
+      if (!onboarding.hasGuide(sessionId) || onboarding.entryState() === 'deferred') return
       const result = onboarding.guide(sessionId, 'continue')
       if (result.accepted && 'card' in result) return result.card
     }
@@ -544,7 +578,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         'moneycome_onboarding',
         '在桌面或网页的钱来张姐对话里继续企业建档或维护档案。完成建档后用 read-profile 查询所问的一项，edit-profile 给一项更正卡，需要补登记对公账户时用 add-bank-account 给登记卡。登记可用 values 预填核实的 holder、bank、accountTail、currency、openedOn。只有用户在卡上保存才写入。例如更正登记尾号用 fields: ["accountTail"]，values.accountTail 传新尾号的四位字符串。明确提到的原尾号用 currentAccountTail；没指定且有多个账户时用卡片选择。保留开头的零，不索要完整账号。建档中 start 在未选方式时给一次方式卡，已有方式则继续。continue 读取最新草稿和当前卡。有一个明确卡点时，直接展示返回的表单。枚举字段用表单上的完整选项，用户在表单选择并保存一次即可。真实不支持的状态保留，不能为了继续而改成正常。公司、税务资料卡在当前聊天，同一张卡可填写、选文件或拖入文件。从本轮聊天附件实际读到营业执照或税务资料时，用 review-document、documentKind 和 values 给出预填卡，等老板确认。老板直接口述公司或税务资料缺项时用 fill，也会先给预填卡。老板明确选定要更正哪项后用 correct，fields 只传一项。已有明确的新值可传 values 预填。先等表单确认并核对最新资料，再继续。实际经营、旧账做到的月份和起账月份用当前建档卡收集，不调用 ask_user_question。其他步骤的 fill 只保存老板明确提供的缺项，例如明确回答「只有以上都没有」时传 values.business 为 ["none"]。输入无效时工具返回当前可使用的卡片。正在询问扫码地区时，老板直接回复地区可用 fill 的 province 和 city。右侧企业建档可修改和保存草稿。老板明确要求切换方式时用 switch-mode 和 mode。不得推断缺项，不收集账号密码或验证码。工具不启用账本或代替卡片确认。',
         {
-          action: { type: 'string', enum: ['start', 'continue', 'fill', 'review-document', 'switch-mode', 'correct', 'read-profile', 'edit-profile', 'add-bank-account', 'review-handoff'], description: 'review-handoff 使用已生成的 values.handoffId（数字字符串）显示历史交接范围确认卡' },
+          action: { type: 'string', enum: ['start', 'continue', 'defer-entry', 'fill', 'review-document', 'switch-mode', 'correct', 'read-profile', 'edit-profile', 'add-bank-account', 'review-handoff'], description: '老板明确暂缓整个建档时用 defer-entry，之后主动继续时用 start。review-handoff 使用 values.handoffId（数字字符串）显示交接范围确认卡。' },
           mode: { type: 'string', enum: ['scan', 'manual'], description: '仅 switch-mode 使用，按老板明确要求切换。' },
           documentKind: { type: 'string', enum: ['license', 'tax'], description: '仅 review-document 使用。license 为营业执照，tax 为税务资料。' },
           fields: { type: 'array', items: { type: 'string' }, description: 'correct、read-profile、edit-profile 只传一个字段。公司和税务：companyName、taxId、establishedOn、business、taxAuthority、taxpayerIdentity、taxStatus、taxStatusOther、incomeMethod、accountingSystem、accountingSystemOther。银行：bankAccounts（仅查询已登记的账户列表）、bankStatus、accountTail、holder、bank、currency、openedOn。记账和工资社保：history、lastMonth、startMonth、payroll、payday、social。以工具返回的可编辑范围为准。' },
@@ -732,14 +766,15 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_book_status',
-        '查看北京时间业务日（businessDate）、建档状态和账本进度。首次单纯问候时，只用结果判断是否引导建档，不主动播报账本信息或申报期限。收到建档确认回执后，用 onboarding.handoff 和 openingBalancesEntered 主动引导当前的一步。onboarding.routineMaterialExclusions 仅指通常无需再索取的材料，不能替代本期账务事实。处理账务或老板问账务进度时用于核对公司、期初、已记和已结月份、待记发票与流水。问余额用 moneycome_read_balances，问利润用 moneycome_read_profit，问申报或结账期限用 moneycome_upcoming。',
+        '查看北京时间业务日（businessDate）、建档状态和账本进度。onboardingEntry 表示可以开始（start）、接着已有草稿（continue）、老板已暂缓（deferred）或无需展示入口（null）。问候时不主动播报账本信息或申报期限。收到建档确认回执后，用 onboarding.handoff 和 openingBalancesEntered 主动引导当前一步。onboarding.routineMaterialExclusions 仅指通常无需再索取的材料，不能替代本期账务事实。处理账务或老板问账务进度时用于核对公司、期初、已记和已结月份、待记发票与流水。问余额用 moneycome_read_balances，问利润用 moneycome_read_profit，问申报或结账期限用 moneycome_upcoming。',
         {},
         [],
         () => {
           const status = bookStatus(store)
-          const onboarding = onboardingBookStatus(store)
+          const onboardingStatus = onboardingBookStatus(store)
           const now = new Date()
-          return { ...status, businessDate: todayInChina(now), currentWork: currentWork(store, pack, now), ...(onboarding ? { onboarding } : {}) }
+          return { ...status, businessDate: todayInChina(now), onboardingEntry: onboarding.entryState(),
+            currentWork: currentWork(store, pack, now), ...(onboardingStatus ? { onboarding: onboardingStatus } : {}) }
         },
       ),
       tool(
@@ -1297,6 +1332,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       disposed = true
       stopObserving?.()
       stopQuestionGuard?.()
+      stopOnboardingPrompt?.()
       for (const dispose of disposers) dispose()
       store.close()
     }

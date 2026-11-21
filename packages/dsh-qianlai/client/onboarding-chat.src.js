@@ -1,4 +1,4 @@
-/* global FormData, setInterval, clearInterval */
+/* global AbortController, AbortSignal, FormData, setInterval, clearInterval */
 
 export function onboardingFieldError(key, value, { savedNumber = false, lastMonth } = {}) {
   const input = String(value ?? '').trim()
@@ -23,7 +23,7 @@ export function onboardingFieldError(key, value, { savedNumber = false, lastMont
 }
 
 export function registerOnboardingChat(ctx, {
-  jsx, useEffect, useRef, useState, usePreset, OnboardingDateInput = 'input',
+  jsx, useEffect, useRef, useState, usePreset, useCurrentOnboardingReply, OnboardingDateInput = 'input',
   openOnboarding, refreshOnboarding, onboardingRequest, sendOnboardingReply, pickOnboardingAttachment, subscribeOnboarding,
   readOnboardingFile, taxRequest, previewOnboardingTax, taxRegionCities = {},
 }) {
@@ -143,12 +143,19 @@ export function registerOnboardingChat(ctx, {
     return Number.isSafeInteger(event.data?.turn) ? { id: String(event.data.turn), role } : null
   }
 
+  function replyMatch(event) {
+    const parts = event.data?.message?.content
+    return Array.isArray(parts) && parts.some(part =>
+      part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) ? turnMatch(event) : null
+  }
+
   function definition() {
     return {
       kind,
       target: 'chat',
       match: {
         'turn/start': event => turnMatch(event, 'start'),
+        'assistant/message': replyMatch,
         'tool/call': event => [toolName, 'ask_user_question'].includes(event.data?.name)
           && typeof event.data.callId === 'string' ? turnMatch(event) : null,
         'tool/result': event => typeof event.data?.message?.source?.callId === 'string' ? turnMatch(event) : null,
@@ -162,8 +169,10 @@ export function registerOnboardingChat(ctx, {
         if (event.type === 'turn/end') {
           const completed = event.data.reason?.kind === 'completed'
           const show = completed && state.card && state.card.id !== state.previousCardId
-          return { ...state, anchorSeq: event.seq, show, lastShownCardId: show ? state.card.id : state.previousCardId }
+          const entry = completed && state.replied && !show && !state.question ? { entryTurn: event.data.turn } : null
+          return { ...state, anchorSeq: event.seq, show, entry, lastShownCardId: show ? state.card.id : state.previousCardId }
         }
+        if (event.type === 'assistant/message') return { ...state, replied: true }
         if (event.type === 'tool/call') {
           if (event.data.name === 'ask_user_question') {
             // A question invalidates any proposed action from before the question.
@@ -197,8 +206,8 @@ export function registerOnboardingChat(ctx, {
         key, id, kind, target: 'chat', anchorSeq: state.anchorSeq,
         location: start.location, groupTree: 'turn',
         // Replay can hide a previously shown card while keeping the same node.
-        visibility: state.show ? 'visible' : 'hidden',
-        data: state.show ? state.card : null,
+        visibility: state.show || state.entry ? 'visible' : 'hidden',
+        data: state.show ? state.card : state.entry,
       } : null,
     }
   }
@@ -912,8 +921,76 @@ export function registerOnboardingChat(ctx, {
     }, cardId)
   }
 
+  function OnboardingEntry({ sessionId, turn }) {
+    const live = useCurrentOnboardingReply(sessionId, turn)
+    const [entry, setEntry] = useState(null)
+    const [card, setCard] = useState(null)
+    const [opening, setOpening] = useState(false)
+    const [error, setError] = useState('')
+    const pending = useRef(false)
+    const interaction = useRef(null)
+    useEffect(() => {
+      if (!live) return
+      const controller = new AbortController()
+      interaction.current = controller
+      const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10000)])
+      void onboardingRequest(sessionId, 'entry-status', { turn }, signal).then(result => {
+        if (!signal.aborted) setEntry(result.entry)
+      }, () => {})
+      const stop = subscribeOnboarding?.((source, { view }) => {
+        if (source === sessionId && view?.completed) {
+          controller.abort()
+          setCard(null)
+          setEntry(null)
+        }
+      })
+      return () => {
+        controller.abort()
+        stop?.()
+        interaction.current = null
+      }
+    }, [sessionId, turn, live])
+
+    async function open() {
+      if (pending.current || !live || !interaction.current) return
+      const signal = AbortSignal.any([interaction.current.signal, AbortSignal.timeout(10000)])
+      pending.current = true
+      setOpening(true)
+      setError('')
+      try {
+        const result = await onboardingRequest(sessionId, 'open-entry', { turn }, signal)
+        if (signal.aborted) return
+        if (result.entry === null) {
+          setEntry(null)
+          return
+        }
+        const active = validCard(result.card)
+        if (!active) throw Error('建档表单暂时无法打开，请重试。')
+        setCard(active)
+        openOnboarding(sessionId, { view: result.view })
+      } catch (error) {
+        if (interaction.current && !interaction.current.signal.aborted)
+          setError(shownError(error, '建档表单暂时无法打开，请重试。'))
+      } finally {
+        pending.current = false
+        setOpening(false)
+      }
+    }
+
+    if (!live) return null
+    if (card) return jsx(Card, { card, sessionId }, card.id)
+    if (entry !== 'start' && entry !== 'continue') return null
+    const label = entry === 'start' ? '开始建档' : '继续建档'
+    return jsx('div', { style: actions, children: [
+      button(opening ? '正在打开建档…' : label, () => void open(), opening, 'button', true),
+      ...(error ? [jsx('span', { role: 'alert', style: secondary, children: error })] : []),
+    ] })
+  }
+
   function ZhangjieOnboardingCard({ node, sessionId, useSessions }) {
     if (usePreset(sessionId, useSessions) !== 'moneycome-zhangjie' || !node.data) return null
+    if (Number.isSafeInteger(node.data.entryTurn))
+      return jsx(OnboardingEntry, { sessionId, turn: node.data.entryTurn }, sessionId + ':' + node.data.entryTurn)
     return jsx(Card, { card: node.data, sessionId }, sessionId + ':' + node.data.id)
   }
 
