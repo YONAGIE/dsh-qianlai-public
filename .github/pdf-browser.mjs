@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
+import { fields } from './pdf-onboarding-cards.mjs'
 
 const wait = ms => new Promise(done => setTimeout(done, ms))
 
@@ -87,7 +88,7 @@ function cookiesFromHeader(cookie, origin) {
 /**
  * The supplied session must already have a completed ordinary reply, and its isolated
  * DSH_HOME must still have no onboarding draft. Uses the real browser and real DSH
- * HTTP APIs. Returns the actual open-entry result so the caller can use its mode card.
+ * HTTP APIs. Continues through manual mode and verifies license review and writeback.
  */
 export async function checkOnboardingBrowser({
   loginUrl, sessionId, replyText, cookie = '', evidenceDir, repoDir = process.cwd(),
@@ -97,7 +98,8 @@ export async function checkOnboardingBrowser({
   assert.ok(login.protocol === 'http:' && login.hostname === '127.0.0.1' && login.port && !login.username && !login.password,
     '浏览器验收需要连接隔离的回环 DSH 宿主')
   assert.match(sessionId, /^[A-Za-z0-9_.:-]+$/)
-  const playwright = createRequire(resolve(repoDir, 'packages/dsh-qianlai/package.json'))('playwright-core')
+  const requirePlugin = createRequire(resolve(repoDir, 'packages/dsh-qianlai/package.json'))
+  const playwright = requirePlugin('playwright-core')
   const browser = await playwright.chromium.launch({ headless: true, ...(chromiumPath ? { executablePath: chromiumPath } : {}) })
   let page
   let stage = '打开隔离 DSH'
@@ -172,6 +174,52 @@ export async function checkOnboardingBrowser({
     const [left, right] = await Promise.all([card.boundingBox(), panel.boundingBox()])
     assert.ok(left && right && left.x < right.x, '方式卡和企业建档没有分别出现在左、右区域')
     await screenshot('dsh-onboarding-entry')
+
+    stage = '手动填写后继续打开执照卡'
+    await card.getByRole('button', { name: '手动填写', exact: true }).click()
+    await page.getByRole('button', { name: '继续建档', exact: true }).click()
+    const license = page.locator('[data-qianlai-onboarding-card][aria-label="核对公司资料"]')
+    const drop = license.getByRole('group', { name: '添加营业执照', exact: true })
+    await drop.waitFor({ state: 'visible' })
+
+    stage = '拖入重建的营业执照 PDF 并核验预览'
+    const pdf = await requirePlugin('pdf-lib').PDFDocument.create()
+    pdf.addPage().drawText('SyntheticAcceptance:license isolated workflow verification')
+    const transfer = await page.evaluateHandle(bytes => {
+      const dataTransfer = new DataTransfer()
+      dataTransfer.items.add(new File([new Uint8Array(bytes)], 'license-synthetic.pdf', { type: 'application/pdf' }))
+      return dataTransfer
+    }, Array.from(await pdf.save()))
+    try {
+      const [recognized] = await Promise.all([
+        page.waitForResponse(response => isOnboardingResponse(response, sessionId, 'recognize'), { timeout: 30_000 }),
+        (async () => {
+          for (const type of ['dragenter', 'dragover', 'drop'])
+            await drop.dispatchEvent(type, { dataTransfer: transfer })
+        })(),
+      ])
+      const body = await recognized.json()
+      assert.deepEqual(body.result?.value?.fields, fields.license, JSON.stringify(body.result?.value))
+    } finally {
+      await transfer.dispose()
+    }
+    await license.locator('[data-qianlai-document-file="ready"]').waitFor({ state: 'visible' })
+    for (const [field, value] of Object.entries(fields.license)) {
+      assert.equal(await license.locator(`input[name="${field}"]`).inputValue(), value)
+      assert.equal(await panel.locator(`input[name="${field}"]`).inputValue(), '', field + ' 在确认前不应写进右侧')
+    }
+    await screenshot('dsh-license-preview')
+
+    stage = '确认执照资料并核验右侧回填'
+    const [saved] = await Promise.all([
+      page.waitForResponse(response => isOnboardingResponse(response, sessionId, 'submit-card')),
+      license.getByRole('button', { name: '确认公司资料', exact: true }).click(),
+    ])
+    assert.equal((await saved.json()).result?.value?.accepted, true)
+    await page.waitForFunction(expected => Object.entries(expected).every(([field, value]) =>
+      document.querySelector(`[data-qianlai-onboarding] input[name="${field}"]`)?.value === value), fields.license)
+    await screenshot('dsh-license-saved')
+    console.log('PASS: actual DSH browser drop, license preview, and all three fields written back only after confirmation')
     return { opened: result.value, pageErrors: errors, acknowledged }
   } catch (error) {
     const dialogs = page ? await dialogSnapshot(page).catch(() => []) : []
