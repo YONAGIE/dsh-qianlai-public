@@ -25,7 +25,7 @@ import { commitHistoricalBackfill, historicalBackfillStatus, prepareHistoricalBa
 import { checkInvoice, type InvoiceReading } from './invoices.js'
 import { historicalHandoffProgress, planHistoricalHandoff, recordHandoffBalance } from './historical-handoff.js'
 import { inspectMaterialArchive, registerMaterialArchive } from './material-archive.js'
-import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessions } from './onboarding-rpc.js'
+import { companyTaxDraftAccess, onboardingSessionAccess, registerCompanyOnboarding, type OnboardingHostServices, type OnboardingSessionQuery, type OnboardingSessions } from './onboarding-rpc.js'
 import { loadPack } from './pack.js'
 import { reviewPayroll, savePayroll } from './payroll-work.js'
 import { hasFullAccess, type PermissionPresets } from './permissions.js'
@@ -270,7 +270,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       if (connection) scope.effect(() => {
         const store = new BookStore(config.bookPath ?? defaultBookPath())
         const onboarding = new CompanyOnboarding(store)
-        const sessions = scope.get?.('sessionController') as OnboardingSessions | undefined
+        const sessions = onboardingSessionAccess(
+          scope.get?.('sessionController') as Partial<OnboardingSessions> | undefined,
+          scope.get?.('sessionQuery') as OnboardingSessionQuery | undefined,
+        )
         const services = (): OnboardingHostServices => ({
           llm: scope.get?.('llm') as OnboardingHostServices['llm'],
           attachments: scope.get?.('attachments') as OnboardingHostServices['attachments'],
