@@ -330,7 +330,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     })
     const currentGuide = (sessionId: string) => {
-      if (!onboarding.hasGuide(sessionId)) return
+      if (!onboarding.hasGuide(sessionId) || onboarding.entryState() === 'deferred') return
       const result = onboarding.guide(sessionId, 'continue')
       if (result.accepted && 'card' in result) return result.card
     }
