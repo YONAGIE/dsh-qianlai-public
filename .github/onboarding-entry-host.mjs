@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { zstdDecompressSync } from 'node:zlib'
 
 const cli = resolve(process.argv[2])
 const plugin = fileURLToPath(new URL('../packages/dsh-qianlai', import.meta.url))
@@ -13,6 +14,7 @@ const root = mkdtempSync(join(tmpdir(), 'qianlai-onboarding-entry-'))
 const home = join(root, 'home')
 const preload = join(root, 'synthetic-replies.mjs')
 const modelCalls = join(root, 'model.jsonl')
+const statusReplies = new Map()
 const replyText = '好的，我先帮您理清这件事，再接着准备企业资料。'
 const env = { ...process.env, DSH_HOME: home, DEEPSEEK_API_KEY: 'sk-synthetic-onboarding-entry', NO_PROXY: '127.0.0.1,localhost' }
 delete env.DEEPSEEK_BASE_URL
@@ -22,7 +24,10 @@ writeFileSync(preload, [
   "const original = globalThis.fetch",
   "globalThis.fetch = async (target, init) => {",
   "  const url = new URL(target instanceof Request ? target.url : target)",
-  "  if (url.hostname !== 'api.deepseek.com' || !url.pathname.endsWith('/chat/completions')) return original(target, init)",
+  "  if (url.hostname !== 'api.deepseek.com') return original(target, init)",
+  "  appendFileSync(" + JSON.stringify(modelCalls) + ", JSON.stringify({ pathname: url.pathname }) + '\\n')",
+  "  if (url.pathname.endsWith('/models')) return Response.json({ object: 'list', data: [{ id: 'deepseek-chat', object: 'model' }, { id: 'deepseek-reasoner', object: 'model' }, { id: 'deepseek-v4-flash', object: 'model' }, { id: 'deepseek-v4.1-flash', object: 'model' }] })",
+  "  if (!url.pathname.endsWith('/chat/completions')) throw Error('Unexpected synthetic model endpoint ' + url.pathname)",
   "  const raw = init?.body === undefined && target instanceof Request ? await target.text() : String(init?.body ?? '')",
   "  const body = JSON.parse(raw)",
   "  const setupContext = raw.includes('这家公司还未开始建档。') || raw.includes('企业已有未完成的建档草稿。')",
@@ -81,6 +86,7 @@ try {
     return until(async () => {
       for (const turn of turns) {
         const state = await onboarding('entry-status', { turn })
+        statusReplies.set(turn, state)
         if (state?.entry === entry) return { turn }
       }
     }, 'No completed user reply with onboarding entry ' + entry)
@@ -100,6 +106,21 @@ try {
   console.log('PASS: real DSH model context, completed reply, direct setup action, resumed draft and stale-reply guard')
 } catch (error) {
   console.error(log.replace(/([?&]token=)[\w-]+/g, '$1[redacted]').slice(-6500))
+  console.error('Model requests:', existsSync(modelCalls) ? readFileSync(modelCalls, 'utf8').slice(-2500) : 'none')
+  console.error('Onboarding states:', JSON.stringify([...statusReplies]))
+  const dir = join(home, 'sessions')
+  if (existsSync(dir)) {
+    for (const file of readdirSync(dir, { recursive: true }).filter(file => String(file).endsWith('session.v4.jsonl.zstd'))) {
+      try {
+        const body = zstdDecompressSync(readFileSync(join(dir, file))).toString('utf8')
+        const records = body.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
+        console.error('Session events:', JSON.stringify(records.map(({ type, data }) => ({
+          type, turn: data?.turn, source: data?.source?.kind ?? data?.message?.source?.kind,
+          reason: data?.reason?.kind, parts: (data?.content ?? data?.message?.content)?.map?.(part => part.type),
+        })).slice(-34)))
+      } catch (decodeError) { console.error(String(decodeError)) }
+    }
+  }
   throw error
 } finally {
   if (child?.exitCode === null) {
