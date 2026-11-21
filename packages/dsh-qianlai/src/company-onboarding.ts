@@ -86,11 +86,12 @@ export interface OnboardingRecord {
   accounting?: Accounting
   payroll?: Payroll
   completedAt?: string
+  entryDeferred?: true
 }
 
 type NextAction = 'review-book-periods' | 'opening-balances' | 'bookkeeping'
 
-export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'taxFlowId' | 'correction'> {
+export interface OnboardingView extends Omit<OnboardingRecord, 'enterprise' | 'cards' | 'taxFlowId' | 'correction' | 'entryDeferred'> {
   accepted: true
   completed: boolean
   replacesSampleBook: boolean
@@ -143,7 +144,7 @@ type CardContent = (
 type OnboardingCard = CardBase & CardContent
 interface CardReceipt { labels: string[]; mode?: OnboardingMode; choice?: string; notice?: string }
 interface StoredCard { sessionId: string; card: OnboardingCard; receipt?: CardReceipt; autoStartClaimed?: true }
-export type OnboardingGuideAction = 'start' | 'continue' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile' | 'add-bank-account' | 'review-handoff'
+export type OnboardingGuideAction = 'start' | 'continue' | 'defer-entry' | 'fill' | 'review-document' | 'switch-mode' | 'correct' | 'read-profile' | 'edit-profile' | 'add-bank-account' | 'review-handoff'
 
 const companyDocumentKeys = ['companyName', 'taxId', 'establishedOn']
 const profileFields = [...onboardingFields[1], ...onboardingFields[2], ...onboardingFields[3]]
@@ -440,7 +441,7 @@ export function onboardingBookStatus(store: BookStore) {
   if (!record.completedAt || !record.accounting) return {
     completed: false as const,
     step: record.step,
-    guidance: '企业建档资料已保存。在对话里说「继续建档」即可回到当前步骤。',
+    guidance: '企业建档资料已保存，可以从当前步骤继续。',
   }
   const { accounting, enterprise, payroll } = record
   const company = store.company()
@@ -527,6 +528,29 @@ export class CompanyOnboarding {
 
   status(): OnboardingView {
     return this.store.transaction(() => this.view(this.record()))
+  }
+
+  entryState(): 'start' | 'continue' | 'deferred' | null {
+    const draft = this.store.companyOnboarding()
+    if (draft?.completedAt) return null
+    const started = !!draft && (draft.revision > 0 || !!draft.mode || !!draft.cards?.length)
+    const company = this.store.company()
+    // A pre-existing formal book can be in use without an onboarding draft.
+    if (!started && company && !company.isSample) return null
+    if (draft?.entryDeferred) return 'deferred'
+    return started ? 'continue' : 'start'
+  }
+
+  openEntry(sessionId: string) {
+    return this.store.transaction(() => {
+      const entry = this.entryState()
+      if (entry !== 'start' && entry !== 'continue') return { accepted: true as const, entry: null }
+      const result = this.guide(sessionId, 'start')
+      if (!result.accepted) return result
+      if (!('card' in result) || !result.card)
+        return refuse('CARD_UNAVAILABLE', '当前建档步骤暂时无法打开，请重试。')
+      return { accepted: true as const, entry, card: result.card, view: this.view(this.record()) }
+    })
   }
 
   setMode(revision: number, mode: OnboardingMode): OnboardingView | Refusal {
@@ -1153,8 +1177,21 @@ export class CompanyOnboarding {
         const raw = values && typeof values === 'object' ? (values as Record<string, unknown>).handoffId : undefined
         return this.historyScopeCard(sessionId, raw)
       }
+      if (action === 'defer-entry') {
+        const entry = this.entryState()
+        if (entry === 'start' || entry === 'continue') {
+          const draft = this.record()
+          draft.entryDeferred = true
+          this.store.saveCompanyOnboarding(draft)
+        }
+        return { accepted: true as const, entry: this.entryState() }
+      }
       let record = this.record()
       if (record.completedAt) return { accepted: true as const, completed: true }
+      if (record.entryDeferred && (action === 'start' || action === 'continue')) {
+        delete record.entryDeferred
+        this.store.saveCompanyOnboarding(record)
+      }
       let content: CardContent | undefined
       const supplied = values && typeof values === 'object' && !Array.isArray(values) ? values as Record<string, unknown> : {}
       if (action === 'correct' || (record.correction && action === 'fill')) {

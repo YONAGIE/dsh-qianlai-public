@@ -2,7 +2,7 @@ import type { CompanyOnboarding } from './company-onboarding.js'
 import { recognizeCompanyDocument, type DocumentRecognitionServices, type ModelSelection } from './onboarding-document.js'
 import { refuse } from './period.js'
 import type { TaxDraftAccess, TaxOnboardingTarget } from './tax-onboarding.js'
-import type { RpcConnection } from './wechat/control.js'
+import { isIntroductionSession, isWechatSession, type RpcConnection } from './wechat/control.js'
 
 interface SessionSnapshot {
   readonly meta: { readonly agentPreset?: string }
@@ -43,6 +43,27 @@ export interface OnboardingHostServices extends DocumentRecognitionServices {
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function hasCurrentReply(session: SessionSnapshot, turn: unknown): boolean {
+  if (typeof turn !== 'number' || !Number.isSafeInteger(turn) || turn < 0) return false
+  const { events } = session
+  const end = events.findLastIndex(event => event.type === 'turn/start' || event.type === 'turn/end')
+  const boundary = events[end]
+  if (boundary?.type !== 'turn/end' || record(boundary.data).turn !== turn ||
+    record(record(boundary.data).reason).kind !== 'completed') return false
+  const start = events.findLastIndex((event, index) => index < end && event.type === 'turn/start')
+  if (start < 0 || record(events[start]?.data).turn !== turn) return false
+  const reply = events.slice(start + 1, end)
+  return reply.some(event => event.type === 'user/message' && record(record(event.data).source).kind === 'user') &&
+    reply.some(event => {
+      if (event.type !== 'assistant/message') return false
+      const content = record(record(event.data).message).content
+      return Array.isArray(content) && content.some(part => {
+        const { type, text } = record(part)
+        return type === 'text' && typeof text === 'string' && text.trim() !== ''
+      })
+    })
 }
 
 export async function inspectZhangjie(sessions: OnboardingSessions | undefined, id: unknown, signal: AbortSignal) {
@@ -116,6 +137,12 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
 
       try {
         signal.throwIfAborted()
+        if (action === 'entry-status' || action === 'open-entry') {
+          if (typeof sessionId !== 'string' || isWechatSession(sessionId) || isIntroductionSession(sessionId) ||
+            !hasCurrentReply(session, payload.turn)) return reply({ accepted: true, entry: null })
+          if (action === 'entry-status') return reply({ accepted: true, entry: onboarding.entryState() })
+          return reply(onboarding.openEntry(sessionId))
+        }
         const view = onboarding.status()
         if (action === 'status') return reply(view)
         if (action === 'card-status' && typeof sessionId === 'string' && typeof payload.cardId === 'string')
