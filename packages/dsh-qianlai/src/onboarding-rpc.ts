@@ -7,6 +7,7 @@ import { isIntroductionSession, isWechatSession, type RpcConnection } from './we
 interface SessionSnapshot {
   readonly meta: { readonly agentPreset?: string }
   readonly events: readonly { readonly type: string; readonly data?: unknown }[]
+  readonly currentPreset?: string | null
 }
 
 // Room for an 8 MiB file in base64 plus the RPC envelope.
@@ -35,6 +36,28 @@ async function readEnvelope(request: Request, signal: AbortSignal) {
 
 export interface OnboardingSessions {
   inspect(id: string, signal: AbortSignal): Promise<SessionSnapshot>
+}
+
+export interface OnboardingSessionQuery {
+  observeSession(id: string, options: { signal: AbortSignal; projectionMode: 'all' }): Promise<{
+    readonly projections?: { readonly values: { readonly agentPreset?: string | null } }
+    readonly events: SessionSnapshot['events']
+    [Symbol.dispose](): void
+  }>
+}
+
+export function onboardingSessionAccess(controller?: Partial<OnboardingSessions>, query?: OnboardingSessionQuery): OnboardingSessions | undefined {
+  if (typeof controller?.inspect === 'function') return { inspect: controller.inspect.bind(controller) }
+  if (!query) return undefined
+  return {
+    async inspect(id, signal) {
+      const observation = await query.observeSession(id, { signal, projectionMode: 'all' })
+      try {
+        signal.throwIfAborted()
+        return { meta: {}, currentPreset: observation.projections?.values.agentPreset ?? null, events: observation.events.slice() }
+      } finally { observation[Symbol.dispose]() }
+    },
+  }
 }
 
 export interface OnboardingHostServices extends DocumentRecognitionServices {
@@ -72,8 +95,11 @@ export async function inspectZhangjie(sessions: OnboardingSessions | undefined, 
   if (!sessions || typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id) || signal.aborted) return undefined
   try {
     const session = await sessions.inspect(id, signal)
-    const lastSelection = session.events.filter(event => event.type === 'agent-preset/selected').at(-1)
-    const preset = lastSelection ? record(lastSelection.data).agentPreset : session.meta.agentPreset
+    let preset: unknown = session.currentPreset
+    if (preset === undefined) {
+      const lastSelection = session.events.filter(event => event.type === 'agent-preset/selected').at(-1)
+      preset = lastSelection ? record(lastSelection.data).agentPreset : session.meta.agentPreset
+    }
     return !signal.aborted && preset === 'moneycome-zhangjie' ? session : undefined
   } catch {
     return undefined

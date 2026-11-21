@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CompanyOnboarding, type OnboardingGuideAction } from '../src/company-onboarding.js'
-import { companyTaxDraftAccess, registerCompanyOnboarding, type OnboardingHostServices } from '../src/onboarding-rpc.js'
+import { companyTaxDraftAccess, inspectZhangjie, onboardingSessionAccess, registerCompanyOnboarding, type OnboardingHostServices } from '../src/onboarding-rpc.js'
 import { BookStore } from '../src/store.js'
 import type { RpcConnection } from '../src/wechat/control.js'
 
@@ -55,6 +55,22 @@ const ownerMessage = (content: unknown[]) => ({ type: 'user/message', data: {
 const assistantMessage = { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '收到，先按您的情况办。' }] } } }
 
 describe('company onboarding RPC', () => {
+  it('checks the modern DSH session projection and releases observations', async () => {
+    const dispose = vi.fn()
+    const events = [{ type: 'agent-preset/selected', data: { agentPreset: 'moneycome-zhangjie' } }, end(1)]
+    const observeSession = vi.fn(async (id: string) => ({
+      projections: { values: { agentPreset: id === 'current' ? 'moneycome-zhangjie' : 'default' } },
+      events,
+      [Symbol.dispose]: dispose,
+    }))
+    const sessions = onboardingSessionAccess({}, { observeSession })
+    const signal = new AbortController().signal
+    await expect(inspectZhangjie(sessions, 'current', signal)).resolves.toMatchObject({ events })
+    await expect(inspectZhangjie(sessions, 'other', signal)).resolves.toBeUndefined()
+    expect(observeSession).toHaveBeenCalledWith('current', { signal, projectionMode: 'all' })
+    expect(dispose).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     [{ type: 'text', text: '辛苦了。上次的材料我有点记不清。' }],
     [{ type: 'text', text: '?!' }],
