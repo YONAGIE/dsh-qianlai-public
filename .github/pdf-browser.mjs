@@ -55,12 +55,15 @@ async function revealSession(page, sessionId, acknowledged) {
       }
     }
     const sidebar = page.getByRole('button', { name: /^(打开侧边栏|Open sidebar)$/ }).first()
-    if (await sidebar.isVisible()) await sidebar.click({ timeout: 3_000 })
-    else {
+    try {
       const group = page.locator('[data-row-key^="workspace:"][aria-expanded="false"]:visible').first()
       const more = page.locator('[data-row-key^="overflow:"][aria-expanded="false"]:visible').first()
-      if (await group.isVisible()) await group.click({ timeout: 3_000 })
-      else if (await more.isVisible()) await more.click({ timeout: 3_000 })
+      if (await sidebar.isVisible()) await sidebar.click({ timeout: 1_800 })
+      else if (await group.isVisible()) await group.click({ timeout: 1_800 })
+      else if (await more.isVisible()) await more.click({ timeout: 1_800 })
+    } catch (error) {
+      // A first-start dialog can appear after the tree is painted.
+      if (!await rootInert.count() && !await dismissFirstRunDialog(page, acknowledged)) throw error
     }
     await wait(180)
   }
