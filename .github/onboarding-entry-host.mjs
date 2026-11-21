@@ -27,13 +27,26 @@ writeFileSync(preload, [
   "  if (url.hostname !== 'api.deepseek.com') return original(target, init)",
   "  appendFileSync(" + JSON.stringify(modelCalls) + ", JSON.stringify({ pathname: url.pathname }) + '\\n')",
   "  if (url.pathname.endsWith('/models')) return Response.json({ object: 'list', data: [{ id: 'deepseek-chat', object: 'model' }, { id: 'deepseek-reasoner', object: 'model' }, { id: 'deepseek-v4-flash', object: 'model' }, { id: 'deepseek-v4.1-flash', object: 'model' }] })",
-  "  if (!url.pathname.endsWith('/chat/completions')) throw Error('Unexpected synthetic model endpoint ' + url.pathname)",
   "  const raw = init?.body === undefined && target instanceof Request ? await target.text() : String(init?.body ?? '')",
   "  const body = JSON.parse(raw)",
   "  const setupContext = raw.includes('这家公司还未开始建档。') || raw.includes('企业已有未完成的建档草稿。')",
   "  appendFileSync(" + JSON.stringify(modelCalls) + ", JSON.stringify({ setupContext }) + '\\n')",
   "  const basics = { id: 'synthetic-onboarding-turn', created: 1, model: body.model }",
   "  const text = " + JSON.stringify(replyText),
+  "  if (url.pathname.endsWith('/messages')) {",
+  "    const message = { id: basics.id, type: 'message', role: 'assistant', content: [], model: body.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } }",
+  "    if (!body.stream) return Response.json({ ...message, content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 5 } })",
+  "    const events = [",
+  "      { type: 'message_start', message },",
+  "      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },",
+  "      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },",
+  "      { type: 'content_block_stop', index: 0 },",
+  "      { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } },",
+  "      { type: 'message_stop' },",
+  "    ]",
+  "    return new Response(events.map(event => 'event: ' + event.type + '\\ndata: ' + JSON.stringify(event) + '\\n\\n').join(''), { headers: { 'Content-Type': 'text/event-stream' } })",
+  "  }",
+  "  if (!url.pathname.endsWith('/chat/completions')) throw Error('Unexpected synthetic model endpoint ' + url.pathname)",
   "  const usage = { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 }",
   "  if (!body.stream) return Response.json({ ...basics, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage })",
   "  const stub = [{ delta: { role: 'assistant', content: '' }, finish_reason: null }, { delta: { content: text }, finish_reason: null }, { delta: {}, finish_reason: 'stop' }]",
@@ -78,7 +91,9 @@ try {
     return data.result?.value ?? data.value
   }
 
-  const { sessionId } = await call('session/create', { agentPreset: 'moneycome-zhangjie', cwd: root })
+  const created = await call('session/create', { agentPreset: 'moneycome-zhangjie', cwd: root })
+  console.log('Created preset:', created.agentPreset ?? '(not returned)')
+  const { sessionId } = created
   assert(sessionId)
   const onboarding = (action, extra = {}) => call('qianlai/company-onboarding', { action, sessionId, ...extra }, true)
   async function completeTurn(text, turns, entry) {
@@ -114,8 +129,9 @@ try {
       try {
         const body = zstdDecompressSync(readFileSync(join(dir, file))).toString('utf8')
         const records = body.split('\n').filter(Boolean).flatMap(line => { try { return [JSON.parse(line)] } catch { return [] } })
-        console.error('Session events:', JSON.stringify(records.map(({ type, data }) => ({
+        console.error('Session events:', JSON.stringify(records.map(({ type, data, agentPreset }) => ({
           type, turn: data?.turn, source: data?.source?.kind ?? data?.message?.source?.kind,
+          preset: agentPreset ?? data?.agentPreset ?? data?.meta?.agentPreset,
           reason: data?.reason?.kind, parts: (data?.content ?? data?.message?.content)?.map?.(part => part.type),
         })).slice(-34)))
       } catch (decodeError) { console.error(String(decodeError)) }
