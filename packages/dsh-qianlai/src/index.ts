@@ -308,7 +308,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     })
     const onboarding = new CompanyOnboarding(store)
-    const stopOnboardingPrompt = (ctx.get?.('systemPrompt') as OnboardingPromptContext | undefined)?.context({
+    const stopOnboardingPrompt = (ctx.get?.('systemPrompt') as Partial<OnboardingPromptContext> | undefined)?.context?.({
       name: 'moneycome-onboarding:entry-state',
       order: 320,
       required: true,
