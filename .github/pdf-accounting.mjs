@@ -213,9 +213,9 @@ try {
     periodStart: from, periodEnd: to, printedOpeningBalance: '10000.00', printedClosingBalance: '13000.00',
     rows: [
       { rowNumber: 1, occurredAt: receiptDate, direction: '收入', amount: '5000.00',
-        rawDescription: '合成咨询来款', balanceAfter: '15000.00' },
+        rawDescription: '合成咨询来款' },
       { rowNumber: 2, occurredAt: rentDate, direction: '支出', amount: '2000.00',
-        rawDescription: '合成办公室租金', balanceAfter: '13000.00' },
+        rawDescription: '合成办公室租金' },
     ],
   }
   const imported = await ok('import_statement', statementInput)
@@ -268,7 +268,7 @@ try {
   const deferred = await call('record_entry', { ...rentInput, requestApproval: true })
   assert.equal(deferred.code, 'ENTRY_CONFIRMATION_DEFERRED')
   assert.deepEqual((await ok('list_vouchers', period)).vouchers, [])
-  assert.match(JSON.stringify(entryQuestions.at(-1)?.detail), /2000\.00/)
+  assert.match(entryQuestions.at(-1)?.detail?.replaceAll('\\', '') ?? '', /2000\.00/)
 
   selection = '确认记账'
   const postCallId = randomUUID()
