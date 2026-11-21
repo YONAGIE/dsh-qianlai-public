@@ -40,3 +40,8 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/qianlai-dsh" --no-save --no-audit --no-fund '@deepseek-ai/dsh@0.2.2-rc.1'
           node packages/dsh-qianlai/scripts/check-dsh-wechat.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
+      - name: Setup entry with actual DSH conversation events
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
+        shell: bash
+        run: node .github/onboarding-entry-host.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
