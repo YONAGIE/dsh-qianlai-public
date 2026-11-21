@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
@@ -7,6 +8,7 @@ import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { zstdDecompressSync } from 'node:zlib'
+import { completeOnboarding, fields } from './pdf-onboarding-cards.mjs'
 
 const cli = resolve(process.argv[2])
 const plugin = fileURLToPath(new URL('../packages/dsh-qianlai', import.meta.url))
@@ -32,7 +34,13 @@ writeFileSync(preload, [
   "  const setupContext = raw.includes('这家公司还未开始建档。') || raw.includes('企业已有未完成的建档草稿。')",
   "  appendFileSync(" + JSON.stringify(modelCalls) + ", JSON.stringify({ setupContext }) + '\\n')",
   "  const basics = { id: 'synthetic-onboarding-turn', created: 1, model: body.model }",
-  "  const text = " + JSON.stringify(replyText),
+  "  const fixture = " + JSON.stringify(fields),
+  "  let text = " + JSON.stringify(replyText),
+  "  if (raw.includes('你是资料字段识别程序')) {",
+  "    const kind = /SyntheticAcceptance:(license|tax|bank)/.exec(raw)?.[1]",
+  "    if (!kind) throw Error('Expected text extracted from a generated acceptance PDF')",
+  "    text = JSON.stringify(fixture[kind])",
+  "  }",
   "  if (url.pathname.endsWith('/messages')) {",
   "    const message = { id: basics.id, type: 'message', role: 'assistant', content: [], model: body.model, stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } }",
   "    if (!body.stream) return Response.json({ ...message, content: [{ type: 'text', text }], stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 5 } })",
@@ -109,16 +117,32 @@ try {
 
   const { turn } = await completeTurn('我这里有点乱，先帮我捋一下。', [1, 0], 'start')
   assert(existsSync(modelCalls) && readFileSync(modelCalls, 'utf8').includes('"setupContext":true'), 'No live onboarding context reached the model')
-  const start = await onboarding('open-entry', { turn })
-  assert.equal(start.accepted, true)
-  assert.equal(start.card.kind, 'mode')
-  const selected = await onboarding('submit-card', { cardId: start.card.id, draftId: start.card.draftId,
-    revision: start.card.revision, mode: 'manual' })
-  assert.equal(selected.accepted, true)
-  const later = await completeTurn('等一下，先把前面说的事情记在心里。', [turn + 1], 'continue')
-  assert.equal((await onboarding('entry-status', { turn })).entry, null)
-  assert.equal((await onboarding('open-entry', { turn: later.turn })).card.kind, 'document')
-  console.log('PASS: real DSH model context, completed reply, direct setup action, resumed draft and stale-reply guard')
+  if (process.env.PDF_TEST_BROWSER === '1') {
+    const { checkOnboardingBrowser } = await import('./pdf-browser.mjs')
+    await checkOnboardingBrowser({ loginUrl: login, sessionId, cookie, replyText })
+    console.log('PASS: actual browser, first reply followed by start button, mode card at left and editable company panel at right')
+  } else {
+    const start = await onboarding('open-entry', { turn })
+    assert.equal(start.accepted, true)
+    assert.equal(start.card.kind, 'mode')
+    const selected = await onboarding('submit-card', { cardId: start.card.id, draftId: start.card.draftId,
+      revision: start.card.revision, mode: 'manual' })
+    assert.equal(selected.accepted, true)
+    const later = await completeTurn('等一下，先把前面说的事情记在心里。', [turn + 1], 'continue')
+    assert.equal((await onboarding('entry-status', { turn })).entry, null)
+    assert.equal((await onboarding('open-entry', { turn: later.turn })).card.kind, 'document')
+    console.log('PASS: real DSH model context, completed reply, direct setup action, resumed draft and stale-reply guard')
+    const require = createRequire(join(plugin, 'package.json'))
+    await completeOnboarding(onboarding, later.turn, require('pdf-lib'))
+    assert(child.kill(), 'Could not stop the isolated DSH host')
+    await until(() => child.exitCode !== null || child.signalCode !== null, 'DSH host did not exit')
+    const booked = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./pdf-accounting.mjs', import.meta.url)),
+      plugin,
+      join(home, 'moneycome', 'book.sqlite'),
+    ], { env, stdio: 'inherit', timeout: 90_000 })
+    assert.equal(booked.status, 0, booked.error?.message ?? 'Accounting validation failed')
+  }
 } catch (error) {
   console.error(log.replace(/([?&]token=)[\w-]+/g, '$1[redacted]').slice(-6500))
   console.error('Model requests:', existsSync(modelCalls) ? readFileSync(modelCalls, 'utf8').slice(-2500) : 'none')
@@ -139,7 +163,7 @@ try {
   }
   throw error
 } finally {
-  if (child?.exitCode === null) {
+  if (child?.exitCode === null && child.signalCode === null) {
     child.kill()
     await Promise.race([new Promise(resolve => child.once('close', resolve)), delay(5000)])
   }

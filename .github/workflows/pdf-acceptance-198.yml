@@ -1,0 +1,35 @@
+name: Acceptance PDF main flow
+
+on:
+  push:
+    branches: [validation/pdf-acceptance-198]
+
+permissions:
+  contents: read
+
+jobs:
+  dsh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v6.1.1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install isolated DSH Web
+        run: npm install --prefix "$RUNNER_TEMP/qianlai-dsh" --no-save --no-audit --no-fund '@deepseek-ai/dsh@0.2.2-rc.1'
+      - name: Browser first message and onboarding panels
+        env:
+          PDF_TEST_BROWSER: '1'
+        run: |
+          export PHASE_CHROMIUM="$(command -v google-chrome || command -v chromium || true)"
+          if [ -z "$PHASE_CHROMIUM" ]; then pnpm --filter dsh-qianlai exec playwright-core install chromium; fi
+          node .github/onboarding-entry-host.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
+      - name: Actual DSH onboarding, accounting, and XLSX
+        if: ${{ !cancelled() }}
+        run: node .github/onboarding-entry-host.mjs "$RUNNER_TEMP/qianlai-dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
