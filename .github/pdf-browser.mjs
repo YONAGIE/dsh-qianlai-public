@@ -129,7 +129,7 @@ export async function checkOnboardingBrowser({
 
     stage = '打开已收到合成回复的钱来张姐会话'
     await revealSession(page, sessionId, acknowledged)
-    const reply = replyText ? page.getByText(replyText, { exact: true }) : undefined
+    const reply = replyText ? page.getByText(replyText, { exact: true }).and(page.getByRole('paragraph')) : undefined
     if (reply) await reply.waitFor({ state: 'visible' })
 
     stage = '确认正文后的开始建档入口'

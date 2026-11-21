@@ -334,8 +334,8 @@ try {
   assert.deepEqual(reopenedList.versions.map(item => [item.version, item.id]), [[1, artifact.id]])
   const reopened = new BookStore(database)
   try {
-    assert.deepEqual(Buffer.from(reopened.reportArtifact(artifact.id).content), content)
-    assert.deepEqual(Buffer.from(reopened.workMaterialOriginal(original.material.id)), statementPdf.bytes)
+    assert(Buffer.from(reopened.reportArtifact(artifact.id).content).equals(content), 'Stored XLSX bytes changed after reopen')
+    assert(Buffer.from(reopened.workMaterialOriginal(original.material.id)).equals(statementPdf.bytes), 'Stored original PDF changed after reopen')
   } finally {
     reopened.close()
   }
