@@ -13,7 +13,7 @@ const stores: BookStore[] = []
 afterEach(() => { for (const store of stores.splice(0)) store.close() })
 const document = { name: 'synthetic.png', mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/axouYQAAAAASUVORK5CYII=' }
 
-function setup(services: OnboardingHostServices = {}) {
+function setup(services: OnboardingHostServices = {}, events: { type: string; data: unknown }[] = []) {
   const store = new BookStore(':memory:')
   stores.push(store)
   const onboarding = new CompanyOnboarding(store)
@@ -23,6 +23,7 @@ function setup(services: OnboardingHostServices = {}) {
     async inspect(id: string) {
       return { meta: { agentPreset: id.startsWith('test-zhangjie') ? 'moneycome-zhangjie' : 'default' }, events: [
         { type: 'model/selection', data: { provider: 'synthetic', model: 'vision-fixture' } },
+        ...events,
       ] }
     },
   }
@@ -46,7 +47,63 @@ function setup(services: OnboardingHostServices = {}) {
   return { request, onboarding, store, card, submit, sessions }
 }
 
+const start = (turn: number) => ({ type: 'turn/start', data: { turn } })
+const end = (turn: number, kind = 'completed') => ({ type: 'turn/end', data: { turn, reason: { kind } } })
+const ownerMessage = (content: unknown[]) => ({ type: 'user/message', data: {
+  source: { kind: 'user' }, role: 'user', content,
+} })
+const assistantMessage = { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '收到，先按您的情况办。' }] } } }
+
 describe('company onboarding RPC', () => {
+  it.each([
+    [{ type: 'text', text: '辛苦了。上次的材料我有点记不清。' }],
+    [{ type: 'text', text: '?!' }],
+    [{ type: 'image', attachment: { attachmentId: 'synthetic-file' } }],
+  ])('真实完成的任意开场可点击建档，读状态不会写草稿（%j）', async content => {
+    const { request, store, submit } = setup(undefined, [start(1), ownerMessage([content]), assistantMessage, end(1)])
+    expect(await request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: 'start' })
+    expect(store.companyOnboarding()).toBeUndefined()
+    expect(await request('open-entry', { turn: 0 })).toEqual({ accepted: true, entry: null })
+    expect(store.companyOnboarding()).toBeUndefined()
+    const entry = await request('open-entry', { turn: 1 })
+    expect(entry).toMatchObject({ accepted: true, entry: 'start', card: { kind: 'mode' }, view: { step: 1 } })
+    await submit(entry.card, { mode: 'manual' })
+    expect(await request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: 'continue' })
+    expect(await request('open-entry', { turn: 1 })).toMatchObject({
+      accepted: true, entry: 'continue', card: { kind: 'document', documentKind: 'license' }, view: { mode: 'manual' },
+    })
+  })
+
+  it('暂缓跨会话保留，有草稿时显式恢复同一步，已有正式账本不引导', async () => {
+    const events = [start(1), ownerMessage([{ type: 'text', text: '先等等，我想了解一下。' }]), assistantMessage, end(1)]
+    const { request, onboarding, store, submit } = setup(undefined, events)
+    const entry = await request('open-entry', { turn: 1 })
+    await submit(entry.card, { mode: 'manual' })
+    const draft = store.companyOnboarding()!
+    onboarding.guide('test-zhangjie', 'defer-entry')
+    expect(await request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: 'deferred' })
+    expect(await request('open-entry', { turn: 1, sessionId: 'test-zhangjie-other' })).toEqual({ accepted: true, entry: null })
+    expect(store.companyOnboarding()).toMatchObject({ draftId: draft.draftId, revision: draft.revision, mode: 'manual' })
+    expect(onboarding.guide('test-zhangjie-other', 'start')).toMatchObject({ card: { kind: 'document', documentKind: 'license' } })
+    expect(await request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: 'continue' })
+    store.saveCompanyOnboarding({ ...store.companyOnboarding()!, completedAt: '2026-09-10T00:00:00Z' })
+    expect(await request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: null })
+    const existing = setup(undefined, events)
+    existing.store.createCompany({ name: '合成旧账企业', accountingStartMonth: '2025-09', isSample: false })
+    expect(await existing.request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: null })
+  })
+
+  it('历史回复、未完成回复与缺少实际对话消息的记录无法打开入口', async () => {
+    const { request, store } = setup(undefined, [start(1), ownerMessage([]), assistantMessage, end(1), start(2)])
+    expect(await request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: null })
+    expect(await request('open-entry', { turn: 2 })).toEqual({ accepted: true, entry: null })
+    expect(store.companyOnboarding()).toBeUndefined()
+    const toolOnly = setup(undefined, [start(1), assistantMessage, end(1)])
+    expect(await toolOnly.request('entry-status', { turn: 1 })).toEqual({ accepted: true, entry: null })
+    const aborted = setup(undefined, [start(1), ownerMessage([]), assistantMessage, end(1, 'aborted')])
+    expect(await aborted.request('open-entry', { turn: 1 })).toEqual({ accepted: true, entry: null })
+  })
+
   it('requires the host-owned Zhangjie session and current draft identity', async () => {
     const { request } = setup()
     await expect(request('status', { sessionId: 'another-preset' })).resolves.toMatchObject({ accepted: false, code: 'ONBOARDING_SESSION' })
