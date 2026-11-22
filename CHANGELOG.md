@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Prepare and download monthly financial reports and ledger-detail XLSX files in Zhangjie conversations. The report card saves confirmed workbooks as separate, downloadable versions.
+- Show the exact transaction or voucher that needs evidence and let the user select the missing file from the report card.
+- Describe actual workbook sheets and saved versions. Bank transactions without a voucher appear under bank transactions with a blank voucher reference.
+
 - Show the current WeChat connection state in the Zhangjie header, mark sustained long-poll failures as reconnecting, and restore the connected state when polling recovers.
 
 - Record WeChat welcome send attempts, response codes and retry stages in the local channel log. The log records whether a conversation context is present and omits credentials and message contents.

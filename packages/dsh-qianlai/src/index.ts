@@ -29,6 +29,8 @@ import {
   type PdfReferenceFileSystem,
   type PdfReferenceSession,
 } from './referenced-pdf.js'
+import { isReportKind, listReports, previewReport, REPORT_TITLES, type ReportKind } from './report-export.js'
+import { registerCompanyReport, reportSessionAccess, type ReportSessionController, type ReportSessionQuery } from './report-rpc.js'
 import { balanceTransferItems, readProfit, readStatements } from './reports.js'
 import { exportReviewPack } from './review-pack.js'
 import { seedSampleBook } from './sample-book.js'
@@ -50,7 +52,7 @@ export interface Config {
   /** 账本文件。省略时放在 `$DSH_HOME/moneycome/book.sqlite`。 */
   readonly bookPath?: string
   /**
-   * `ui`：宿主层的那一行，只用来让 DSH 加载本包的浏览器半边（张姐头像），不注册工具、不开账本。
+   * `ui`：加载浏览器界面并提供报表卡使用的宿主接口。
    * 省略时是张姐会话里的工具。
    */
   readonly mode?: 'tools' | 'ui'
@@ -75,12 +77,23 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, item:
 
 interface Context {
   effect(fn: () => () => void): void
+  inject?(dependencies: string[], fn: (scope: Context) => void): void
   on?(event: 'session/event', listener: (session: PdfReferenceSession, event: PdfReferenceEvent) => void): () => void
   tools: {
     register(tool: ToolDefinition): () => void
     guard?(check: (execution: { name: string; arguments?: { questions?: unknown } }) => string | undefined): () => void
   }
   get?(name: string): unknown
+}
+
+interface SystemPromptContext {
+  context(contribution: {
+    name: string
+    order: number
+    required: true
+    interpolate: false
+    text(input: { agent?: Execution['agent'] }): string
+  }): () => void
 }
 
 /** bigint 不能直接进 JSON；工具结果里的金额都已格式化成字符串，这里只兜底。 */
@@ -106,13 +119,50 @@ const periodKey = { periodKey: str('会计期间，YYYY-MM') }
 const stringMap = (description: string) => ({ type: 'object', additionalProperties: { type: 'string' }, description })
 
 export function apply(ctx: Context, config: Config = {}): void {
-  if (config.mode === 'ui') return
+  if (config.mode === 'ui') {
+    ctx.inject?.(['connection', 'sessionController'], scope => {
+      const connection = scope.get?.('connection') as Parameters<typeof registerCompanyReport>[0] | undefined
+      if (connection) scope.effect(() => {
+        const pack = loadPack()
+        const store = new BookStore(config.bookPath ?? defaultBookPath())
+        const sessions = reportSessionAccess(
+          scope.get?.('sessionController') as Partial<ReportSessionController> | undefined,
+          scope.get?.('sessionQuery') as ReportSessionQuery | undefined,
+        )
+        const stopReport = registerCompanyReport(connection, store, pack, sessions)
+        return () => { stopReport(); store.close() }
+      })
+    })
+    return
+  }
   ctx.effect(() => {
     const pack = loadPack()
     const store = new BookStore(config.bookPath ?? defaultBookPath())
     seedSampleBook(store, pack, new Date())
     const pdfReferences = createPdfReferences(() => ctx.get?.('fs') as PdfReferenceFileSystem | undefined)
     const stopObserving = ctx.on?.('session/event', (session, event) => pdfReferences.observe(session, event))
+    const recentReports = new WeakMap<PdfReferenceSession, {
+      company: string; periodKey: string; kind: ReportKind; preview: { fingerprint: string; description: string } | undefined
+    }>()
+    const systemPrompt = ctx.get?.('systemPrompt') as Partial<SystemPromptContext> | undefined
+    const stopReportPrompt = systemPrompt?.context?.({
+      name: 'moneycome-report:saved-state',
+      order: 321,
+      required: true,
+      interpolate: false,
+      text({ agent }) {
+        const recent = agent && recentReports.get(agent.session)
+        if (!recent || recent.company !== JSON.stringify(store.company())) return ''
+        const saved = store.reportArtifacts(recent.periodKey, recent.kind)[0]
+        const prefix = `本会话最近查看的 ${recent.periodKey}「${REPORT_TITLES[recent.kind]}」当前保存状态。只用于这个月份和种类，优先于聊天里的预览状态。`
+        if (!saved) return prefix + '本次查询未找到已生成的 XLSX。'
+        const summary = saved.fingerprint === recent.preview?.fingerprint
+          ? `该版本的文件内容摘要。${recent.preview.description}`
+          : '现有预览摘要无法核实这份已保存文件的内容。'
+        return prefix + `已生成第 ${saved.version} 版，文件名 ${saved.fileName}。` + summary +
+          '需要提供下载时，用 moneycome_company_report 的 list 显示报表卡和对应版本的下载按钮。文件名用纯文本。'
+      },
+    })
     const stopQuestionGuard = ctx.tools.guard?.((execution) => {
       if (execution.name !== 'ask_user_question') return
       const questions = execution.arguments?.questions
@@ -192,7 +242,7 @@ export function apply(ctx: Context, config: Config = {}): void {
                 if (approvedRevision !== undefined && approvedRevision !== store.approvalRevision())
                   return refuse('BOOK_CHANGED', '等待确认期间账本已变化，请重新核对并确认。没有执行这项操作。')
               }
-              const result = run(args)
+              const result = run(args, exec?.signal, exec)
               if (WORK_OPERATIONS.has(name) && (result as { accepted?: boolean })?.accepted === true)
                 store.recordWork(name, args, result)
               if (receiptKey && (result as { accepted?: boolean })?.accepted === true)
@@ -311,6 +361,37 @@ export function apply(ctx: Context, config: Config = {}): void {
         periodKey,
         ['periodKey'],
         (a) => readStatements(store, pack, String(a.periodKey ?? '')),
+      ),
+      tool(
+        'moneycome_company_report',
+        '生成或下载可以转交财务的 XLSX。使用实际月份和报表种类调用 preview。用户点击报表卡才会生成文件。返回补件入口时，简要指出第一项具体缺口，并引导老板使用本轮卡片。'
+        + '预览返回的 workbookSummary 来自同一份 XLSX 数据。「银行流水」页保留未关联凭证的流水，该行的「对应凭证」为空。「凭证」页只列实际凭证。'
+        + '追问刚导出的文件时，以本会话的当前保存状态为准。状态缺失、查指定版本或需要下载按钮时，用 list。只有保存版本和该月份同类预览的 fingerprint 一致时，才引用那份预览摘要。'
+        + '实际文件名和版本用纯文本写。桌面下载通过本轮报表卡，微信等没有报表卡时提示在桌面打开。',
+        { ...periodKey, action: str('preview 核对并显示生成操作，list 查看已经生成的版本'),
+          kind: str('financial 月度财务报表，ledger-review 账务明细'),
+          version: { type: 'integer', minimum: 1, description: '仅 list 可指定已生成的版本号' } },
+        ['periodKey', 'action', 'kind'],
+        (a, _signal, execution) => {
+          if (!isReportKind(a.kind)) return refuse('REPORT_KIND_INVALID', '请选择月度财务报表或账务明细。')
+          if (a.action !== 'preview' && a.action !== 'list') return refuse('REPORT_ACTION_INVALID', '请选择预览报表或查看已生成版本。')
+          const { kind } = a
+          const periodKey = String(a.periodKey)
+          const result = a.action === 'list'
+            ? listReports(store, periodKey, kind, a.version as number | undefined)
+            : previewReport(store, pack, periodKey, kind, new Date())
+          const session = execution?.agent?.session
+          if (result.accepted && session?.id && !isIntroductionSession(session.id)) {
+            const company = JSON.stringify(store.company())
+            const previous = recentReports.get(session)
+            const preview = 'workbookSummary' in result
+              ? { fingerprint: result.fingerprint, description: result.workbookSummary.description }
+              : previous?.company === company && previous.periodKey === periodKey && previous.kind === kind
+                ? previous.preview : undefined
+            recentReports.set(session, { company, periodKey, kind, preview })
+          }
+          return result
+        },
       ),
       tool(
         'moneycome_export_review_pack',
@@ -564,6 +645,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       disposed = true
       stopObserving?.()
       stopQuestionGuard?.()
+      stopReportPrompt?.()
       for (const dispose of disposers) dispose()
       store.close()
     }
