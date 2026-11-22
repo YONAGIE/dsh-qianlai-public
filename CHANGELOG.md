@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Prepare and download monthly financial reports and ledger-detail XLSX files in Zhangjie conversations. Confirmed workbooks remain available as separate versions.
+- Show which transaction or voucher needs evidence and let the user select the missing file from the report card.
+- Describe actual workbook sheets and saved versions. Bank transactions without a voucher appear on the bank transactions sheet with a blank voucher reference.
+
 - Jump directly to a year or month in both setup forms. Use the same calendar for company and bank dates, and choose bookkeeping months without selecting a day.
 
 - Use one structured interaction at a time for Zhangjie's desktop and web follow-ups. Reuse known facts and receipts, use a choice for decisions or a form for missing fields, and keep unresolved items pending when a control is unavailable.
