@@ -45,10 +45,20 @@ function reportBlocker(store: BookStore, pack: LoadedPack, periodKey: string, no
   const pending = 'checks' in check ? check.checks.flatMap(row => row.blockers.map(b => b as Record<string, unknown>)) : []
   const blocker = pending.find(b => ['unexplained_transaction', 'evidence_missing'].includes(String(b.kind)))
     ?? pending.find(b => !finalizationOnly.has(String(b.kind)))
-  if (blocker?.kind === 'unexplained_transaction')
-    return refuse('REPORT_PREP_REQUIRED', '有一笔银行流水还需要核对用途并记账。', { periodKey, blocker })
-  if (blocker?.kind === 'evidence_missing')
-    return refuse('REPORT_PREP_REQUIRED', '有一张凭证还缺材料。请先补齐该笔业务的材料，再生成本月报表。', { periodKey, blocker })
+  if (blocker?.kind === 'unexplained_transaction') {
+    const { date, amount, description } = blocker
+    const line = typeof date === 'string' && typeof amount === 'string'
+      ? `${date} ${amount.startsWith('-') ? '支出 ' + amount.slice(1) : '收入 ' + amount} 元`
+      : '这笔银行流水'
+    const memo = typeof description === 'string' && description.trim() ? `（${description.trim().slice(0, 80)}）` : ''
+    return refuse('REPORT_PREP_REQUIRED', `${line}${memo}还需要核对用途。请上传与这笔流水对应的发票或其他凭据。`, { periodKey, blocker })
+  }
+  if (blocker?.kind === 'evidence_missing') {
+    const voucher = typeof blocker.voucherNo === 'string' ? `凭证 ${blocker.voucherNo}` : '这张凭证'
+    const summary = typeof blocker.summary === 'string' && blocker.summary.trim() ? `（${blocker.summary.trim().slice(0, 80)}）` : ''
+    const firstMissing = Array.isArray(blocker.missing) && typeof blocker.missing[0] === 'string' ? blocker.missing[0] : '材料'
+    return refuse('REPORT_PREP_REQUIRED', `${voucher}${summary}还缺${firstMissing}。请补交这份材料，再继续生成本月报表。`, { periodKey, blocker })
+  }
   if (!store.vouchers({ periodKey }).some(row => !row.voided))
     return refuse('REPORT_NO_BUSINESS', '本月还没有已记账业务。请先发送一份本月的业务材料，或确认本月确实无业务后完成月结。', { periodKey })
   if (blocker) return refuse('REPORT_PREP_REQUIRED', '本月还有一项需要核对。处理后可继续生成这个月的报表。', { periodKey, blocker })
@@ -143,10 +153,12 @@ export function listReports(store: BookStore, periodKey: string, kind: ReportKin
 export function previewReport(store: BookStore, pack: LoadedPack, periodKey: string, kind: ReportKind, now: Date) {
   const prepared = prepareReport(store, pack, periodKey, kind, now)
   if (!prepared.accepted) {
-    const details = prepared.details as { blocker?: { kind?: string } } | undefined
-    const upload = prepared.code === 'REPORT_NO_BUSINESS' || ['evidence_missing', 'statement_gap', 'statement_balance_unknown', 'matter_missing']
-      .includes(details?.blocker?.kind ?? '')
-    return { ...prepared, periodKey, kind, title: REPORT_TITLES[kind], ...(upload ? { nextAction: 'upload' } : {}) }
+    const blocker = (prepared.details as { blocker?: { kind?: string; missing?: string[] } } | undefined)?.blocker
+    const upload = prepared.code === 'REPORT_NO_BUSINESS'
+      || ['unexplained_transaction', 'evidence_missing', 'statement_gap', 'statement_balance_unknown', 'matter_missing'].includes(blocker?.kind ?? '')
+    const uploadKind = blocker?.kind === 'unexplained_transaction' ? 'transaction-evidence'
+      : blocker?.missing?.[0] === '发票' ? 'invoice' : 'report-material'
+    return { ...prepared, periodKey, kind, title: REPORT_TITLES[kind], ...(upload ? { nextAction: 'upload', uploadKind } : {}) }
   }
   const { companyName, isSample, phase, fingerprint } = prepared
   return { accepted: true as const, periodKey, kind, title: REPORT_TITLES[kind], companyName, isSample, phase, fingerprint,

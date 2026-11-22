@@ -1,6 +1,10 @@
 /* global window */
 const reportChatKind = 'moneycome-report-action'
 const reportTools = new Set(['moneycome_company_report', 'ask_user_question', 'moneycome_onboarding', 'moneycome_check_invoice', 'moneycome_record_entry'])
+const reportUploadLabels = {
+  'transaction-evidence': '上传本笔发票或凭据',
+  invoice: '上传发票',
+}
 
 export function companyReportDefinition(toolResultText) {
   const role = (event, kind = 'update') => Number.isSafeInteger(event.data?.turn)
@@ -109,9 +113,14 @@ export function registerCompanyReportChat(ctx, { jsx, usePreset, useState, useRe
       })
       const upload = () => {
         const input = scope.conversation.input
-        if (typeof input?.pickFiles === 'function' && input.canPickFiles?.(sessionId)) input.pickFiles(sessionId)
-        else setMessage('也可以把资料拖到当前对话，或用输入框旁的文件入口。')
+        if (typeof input?.pickFiles === 'function' && input.canPickFiles?.(sessionId)) {
+          setMessage('')
+          input.pickFiles(sessionId)
+        } else {
+          setMessage('也可以把资料拖到当前对话，或用输入框旁的文件入口。')
+        }
       }
+      const uploadLabel = Object.hasOwn(reportUploadLabels, data.uploadKind) ? reportUploadLabels[data.uploadKind] : '上传本月资料'
       const versions = data.versions ?? []
       const current = generated ? [generated, ...versions.filter(item => item.id !== generated.id)] : versions
       return jsx('section', { 'aria-label': title, style: panelSectionStyle,
@@ -120,7 +129,7 @@ export function registerCompanyReportChat(ctx, { jsx, usePreset, useState, useRe
           jsx('p', { style: { margin: '7px 0 10px' }, children:
             [data.companyName, data.periodKey, data.phase].filter(Boolean).join(' · ') }),
           data.accepted === false ? jsx('div', { children: [jsx('p', { children: data.message }),
-            button('上传本月资料', upload, true)] }) : null,
+            button(uploadLabel, upload, true)] }) : null,
           data.fingerprint && !generated ? jsx('div', { style: { display: 'flex', justifyContent: 'flex-end' },
             children: button('确认生成 XLSX', () => void request('generate', { fingerprint: data.fingerprint }), true) }) : null,
           current.length ? jsx('ul', { style: { margin: '10px 0 0', display: 'grid', gap: '6px' },
