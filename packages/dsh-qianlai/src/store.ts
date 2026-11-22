@@ -128,6 +128,41 @@ const MIGRATIONS: readonly string[] = [
     payload_json TEXT NOT NULL
   );
   `,
+  // Keep the reporting schema compatible with existing fork databases.
+  `
+  CREATE TABLE work_material (
+    id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('read', 'failed')),
+    failure_code TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE work_matter (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    period TEXT,
+    missing_json TEXT NOT NULL,
+    material_links_json TEXT NOT NULL DEFAULT '[]',
+    revision INTEGER NOT NULL DEFAULT 1,
+    voucher_no TEXT UNIQUE REFERENCES voucher(voucher_no),
+    posting_hash TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
+  `
+  CREATE TABLE report_artifact (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    period_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    content BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (kind, period_key, version)
+  );
+  `,
 ]
 
 export interface Company {
@@ -136,6 +171,18 @@ export interface Company {
   readonly accountingStartMonth: string
   readonly isSample: boolean
 }
+
+export interface ReportArtifact {
+  readonly id: string
+  readonly kind: string
+  readonly periodKey: string
+  readonly version: number
+  readonly fingerprint: string
+  readonly fileName: string
+  readonly createdAt: string
+}
+
+const REPORT_COLUMNS = 'id, kind, period_key AS periodKey, version, fingerprint, file_name AS fileName, created_at AS createdAt'
 
 export interface WorkEvent {
   readonly id: number
@@ -289,6 +336,35 @@ export class BookStore {
       .run(requestKey, operation, argsHash, JSON.stringify(result))
   }
 
+  reportArtifacts(periodKey: string, kind: string, version?: number): ReportArtifact[] {
+    if (version !== undefined) {
+      return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM report_artifact
+        WHERE period_key = ? AND kind = ? AND version = ?`).all(periodKey, kind, version) as unknown as ReportArtifact[]
+    }
+    return this.db.prepare(`SELECT ${REPORT_COLUMNS} FROM report_artifact
+      WHERE period_key = ? AND kind = ? ORDER BY version DESC LIMIT 20`).all(periodKey, kind) as unknown as ReportArtifact[]
+  }
+
+  reportArtifact(id: string): (ReportArtifact & { content: Uint8Array }) | undefined {
+    return this.db.prepare(`SELECT ${REPORT_COLUMNS}, content FROM report_artifact WHERE id = ?`)
+      .get(id) as unknown as (ReportArtifact & { content: Uint8Array }) | undefined
+  }
+
+  saveReportArtifact(artifact: ReportArtifact, content: Uint8Array): void {
+    this.db.prepare(`INSERT INTO report_artifact (id, kind, period_key, version, fingerprint, file_name, content, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(artifact.id, artifact.kind, artifact.periodKey, artifact.version, artifact.fingerprint,
+      artifact.fileName, content, artifact.createdAt)
+  }
+
+  reportPendingMatter(periodKey: string): { id: number; title: string; missing: string[] } | undefined {
+    const row = this.db.prepare(`
+      SELECT id, title, missing_json AS missingJson FROM work_matter
+      WHERE period = ? AND voucher_no IS NULL AND json_array_length(missing_json) > 0
+      ORDER BY id ASC LIMIT 1
+    `).get(periodKey) as { id: number; title: string; missingJson: string } | undefined
+    if (row) return { id: row.id, title: row.title, missing: JSON.parse(row.missingJson) as string[] }
+  }
+
   createCompany(company: Company): void {
     this.db
       .prepare('INSERT INTO company (id, name, tax_id, accounting_start_month, is_sample) VALUES (1, ?, ?, ?, ?)')
@@ -301,9 +377,14 @@ export class BookStore {
 
   /** 清空整本账，换一家企业重新开。只在把样本账换成老板自己的账时用。 */
   clearBook(): void {
+    if (this.db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'historical_book_period'").get())
+      this.db.exec('DELETE FROM historical_book_period')
     for (const table of [
       'tool_receipt',
       'work_event',
+      'work_matter',
+      'work_material',
+      'report_artifact',
       'opening_balance',
       'statement_line',
       'statement_import',
