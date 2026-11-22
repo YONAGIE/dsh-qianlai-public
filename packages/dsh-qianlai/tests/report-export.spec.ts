@@ -68,14 +68,34 @@ describe('可下载的报表版本', () => {
     const store = newBook()
     try {
       expect(previewReport(store, pack, month, 'financial', today))
-        .toMatchObject({ code: 'REPORT_NO_BUSINESS', periodKey: month, nextAction: 'upload' })
+        .toMatchObject({ code: 'REPORT_NO_BUSINESS', periodKey: month, nextAction: 'upload', uploadKind: 'report-material' })
       expect(importStatement(store, { accountRef: '合成银行 尾号 0012', periodStart: '2026-01-01', periodEnd: '2026-01-31',
-        rows: [{ rowNumber: 1, occurredAt: '2026-01-10', direction: '收入', amount: '100.00', balanceAfter: '100.00' }] }, today))
+        rows: [
+          { rowNumber: 1, occurredAt: '2026-01-10', direction: '收入', amount: '5000.00', balanceAfter: '5000.00', rawDescription: '咨询服务来款' },
+          { rowNumber: 2, occurredAt: '2026-01-12', direction: '支出', amount: '2000.00', balanceAfter: '3000.00', rawDescription: '用途待核对' },
+        ] }, today))
         .toMatchObject({ accepted: true })
       expect(previewReport(store, pack, month, 'financial', today)).toMatchObject({
-        code: 'REPORT_PREP_REQUIRED', periodKey: month, details: { blocker: { kind: 'unexplained_transaction' } },
+        code: 'REPORT_PREP_REQUIRED', periodKey: month, nextAction: 'upload', uploadKind: 'transaction-evidence',
+        message: expect.stringContaining('2026-01-10 收入 5000.00 元（咨询服务来款）'),
+        details: { blocker: { kind: 'unexplained_transaction', date: '2026-01-10', amount: '5000.00' } },
       })
       expect(store.reportArtifacts(month, 'financial')).toEqual([])
+    } finally { store.close() }
+  })
+
+  it('已记账凭证确实缺发票时，按凭证号和业务摘要提示上传发票', () => {
+    const store = newBook()
+    try {
+      expect(recordEntry(store, pack, {
+        date: '2026-01-10', summary: '合成办公用品', eventKind: 'office_supply',
+        facts: { 'settlement.method': 'cash' }, amounts: { invoice_total: '1300.00' },
+      }, today)).toMatchObject({ accepted: true, voucherNo: 'PZ-202601-001', missingEvidence: ['invoice'] })
+      expect(previewReport(store, pack, month, 'financial', today)).toMatchObject({
+        code: 'REPORT_PREP_REQUIRED', periodKey: month, nextAction: 'upload', uploadKind: 'invoice',
+        message: expect.stringContaining('凭证 PZ-202601-001（合成办公用品）还缺发票'),
+        details: { blocker: { kind: 'evidence_missing', voucherNo: 'PZ-202601-001', missing: ['发票'] } },
+      })
     } finally { store.close() }
   })
 

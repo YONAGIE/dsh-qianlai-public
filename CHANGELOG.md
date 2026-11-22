@@ -15,6 +15,7 @@
 - Jump directly to a year or month in both setup forms. Use the same calendar for company and bank dates, and choose bookkeeping months without selecting a day.
 
 - Preview monthly financial reports and ledger details, then generate and download readable XLSX files. Keep historical report files and return the same version when the underlying report is unchanged.
+- Open a file picker from the financial report card for the specific bank transaction or voucher that still needs evidence.
 
 - Review social insurance and housing-fund records separately. Keep individual enrollment results and link payment proof while preserving corrected contribution months.
 
