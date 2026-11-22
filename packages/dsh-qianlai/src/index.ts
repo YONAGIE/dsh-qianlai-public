@@ -960,9 +960,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_company_report',
-        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮，用户点击后才生成。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。微信没有下载卡时说明可在桌面打开。'
+        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮，用户点击后才生成。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。'
         + '成功预览的 workbookSummary 来自准备写入 XLSX 的表格。说明预览内容时使用其 description。bankRowsWithoutVoucher 是仍会导出到「银行流水」页、对应凭证为空的流水数。「凭证」页只列实际凭证。'
-        + '老板追问刚才导出的文件、生成状态或已保存 XLSX 的内容时，先用 list 查询同一月份和报表种类，有指定版本时传 version。卡片上的生成操作可能没有聊天消息，以本轮 list 返回的 versions 判断是否有已生成文件。只有选中版本的 fingerprint 和同一月份同类预览的 fingerprint 一致，才用那次的 workbookSummary 说明该文件内容。否则仅提供 list 实际返回的版本及下载入口。',
+        + '老板追问刚才导出的文件、生成状态或已保存 XLSX 的内容时，先用 list 查询同一月份和报表种类，有指定版本时传 version。卡片上的生成操作可能没有聊天消息，以本轮 list 返回的 versions 判断是否有已生成文件。只有选中版本的 fingerprint 和同一月份同类预览的 fingerprint 一致，才用那次的 workbookSummary 说明该文件内容。否则仅提供 list 实际返回的版本及下载入口。'
+        + '用纯文本写实际文件名和版本。桌面引导点击本轮报表卡对应版本的下载按钮，微信等没有报表卡时提示在桌面打开。不要将文件名写成 Markdown 链接或拼接下载网址。',
         { ...periodKey, action: str('preview 核对并显示生成，list 查看历史版本，compare-equipment 比较已核实设备采购的适用处理'),
           kind: str('financial 月度财务报表，ledger-review 账务明细'),
           version: { type: 'integer', minimum: 1, description: '查询指定旧版本，仅 list 使用' },
