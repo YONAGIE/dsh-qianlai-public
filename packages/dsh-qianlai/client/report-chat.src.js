@@ -95,7 +95,7 @@ export function registerCompanyReportChat(ctx, { jsx, usePreset, useState, useRe
             return
           }
           if (action === 'generate') {
-            setGenerated(result.artifact)
+            setGenerated({ artifact: result.artifact, workbookSummary: result.workbookSummary })
             setMessage(result.reused ? '报表内容相同，已保留原版本。' : '文件已生成，可以下载。')
           } else {
             downloadCompanyReport(result)
@@ -122,12 +122,15 @@ export function registerCompanyReportChat(ctx, { jsx, usePreset, useState, useRe
       }
       const uploadLabel = Object.hasOwn(reportUploadLabels, data.uploadKind) ? reportUploadLabels[data.uploadKind] : '上传本月资料'
       const versions = data.versions ?? []
-      const current = generated ? [generated, ...versions.filter(item => item.id !== generated.id)] : versions
+      const current = generated ? [generated.artifact, ...versions.filter(item => item.id !== generated.artifact.id)] : versions
+      const summary = generated?.workbookSummary ?? data.workbookSummary
       return jsx('section', { 'aria-label': title, style: panelSectionStyle,
         children: [
           jsx('strong', { children: title }),
           jsx('p', { style: { margin: '7px 0 10px' }, children:
             [data.companyName, data.periodKey, data.phase].filter(Boolean).join(' · ') }),
+          typeof summary?.description === 'string' ? jsx('p', { style: { margin: '0 0 10px' },
+            children: [jsx('strong', { children: generated ? '本次文件' : '本次预览' }), ' ', summary.description] }) : null,
           data.accepted === false ? jsx('div', { children: [jsx('p', { children: data.message }),
             button(uploadLabel, upload, true)] }) : null,
           data.fingerprint && !generated ? jsx('div', { style: { display: 'flex', justifyContent: 'flex-end' },
@@ -135,7 +138,7 @@ export function registerCompanyReportChat(ctx, { jsx, usePreset, useState, useRe
           current.length ? jsx('ul', { style: { margin: '10px 0 0', display: 'grid', gap: '6px' },
             children: current.map(artifact => jsx('li', {
               children: button('下载第 ' + artifact.version + ' 版 XLSX', () => void request('download', {
-                id: artifact.id, ...(artifact.id === generated?.id ? { fingerprint: artifact.fingerprint } : {}),
+                id: artifact.id, ...(artifact.id === generated?.artifact.id ? { fingerprint: artifact.fingerprint } : {}),
               })),
             }, artifact.id)) }) : null,
           message ? jsx('p', { role: 'status', children: message }) : null,

@@ -1,11 +1,16 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import * as XLSX from 'xlsx'
 import { describe, expect, it } from 'vitest'
 
 import { openBook, setCompanyFacts, setOpeningBalances } from '../src/book.js'
 import { closingCheck } from '../src/closing.js'
 import { recordEntry } from '../src/entries.js'
+import { apply } from '../src/index.js'
 import { checkInvoice } from '../src/invoices.js'
 import { loadPack } from '../src/pack.js'
+import type { PdfReferenceSession } from '../src/referenced-pdf.js'
 import { compareEquipmentReport, generateReport, listReports, previewReport } from '../src/report-export.js'
 import { registerCompanyReport } from '../src/report-rpc.js'
 import { importStatement } from '../src/statements.js'
@@ -17,8 +22,8 @@ const companyName = '合成报表测试企业'
 const today = new Date('2026-03-04T08:00:00Z')
 const pack = loadPack()
 
-function newBook() {
-  const store = new BookStore(':memory:')
+function newBook(path = ':memory:') {
+  const store = new BookStore(path)
   expect(openBook(store, { companyName, accountingStartMonth: month })).toMatchObject({ accepted: true })
   expect(setOpeningBalances(store, pack, [], today)).toMatchObject({ accepted: true })
   return store
@@ -109,7 +114,7 @@ describe('可下载的报表版本', () => {
       const first = generateReport(store, pack, month, 'financial', preview.fingerprint, today)
       if (!first.accepted) throw Error(JSON.stringify(first))
       expect(generateReport(store, pack, month, 'financial', preview.fingerprint, today))
-        .toEqual({ accepted: true, artifact: first.artifact, reused: true })
+        .toEqual({ accepted: true, artifact: first.artifact, reused: true, workbookSummary: preview.workbookSummary })
       const original = Buffer.from(store.reportArtifact(first.artifact.id)!.content)
       const workbook = XLSX.read(Uint8Array.from(original), { type: 'array' })
       expect(workbook.SheetNames).toEqual(['报表说明', '资产负债表', '利润表'])
@@ -130,6 +135,100 @@ describe('可下载的报表版本', () => {
       expect(listReports(store, month, 'financial', 1)).toMatchObject({ versions: [first.artifact] })
       expect(listReports(store, '2026-02', 'financial')).toMatchObject({ versions: [] })
     } finally { store.close() }
+  })
+
+  it('账务明细摘要和下载的工作表一致，未关联凭证的流水仍导出', () => {
+    const store = newBook()
+    try {
+      const accountRef = '合成银行 尾号 0012'
+      const statement = importStatement(store, { accountRef, periodStart: '2026-01-01', periodEnd: '2026-01-31',
+        rows: [
+          { rowNumber: 1, occurredAt: '2026-01-10', direction: '收入', amount: '500.00', balanceAfter: '500.00' },
+          { rowNumber: 2, occurredAt: '2026-01-11', direction: '支出', amount: '20.00', balanceAfter: '480.00' },
+        ],
+      }, today)
+      if (!statement.accepted) throw Error(JSON.stringify(statement))
+      const bankFee = recordEntry(store, pack, { date: '2026-01-11', summary: '合成手续费', eventKind: 'bank_fee',
+        facts: { 'settlement.method': 'bank' }, amounts: { settlement: '20.00' },
+        statementLineIds: [store.statementLines({ importId: statement.receipt.importId })[1]!.id],
+      }, today)
+      if (!bankFee.accepted || !('voucherNo' in bankFee)) throw Error(JSON.stringify(bankFee))
+      const preview = previewReport(store, pack, month, 'ledger-review', today)
+      if (!preview.accepted) throw Error(JSON.stringify(preview))
+      const file = generateReport(store, pack, month, 'ledger-review', preview.fingerprint, today)
+      if (!file.accepted) throw Error(JSON.stringify(file))
+      const listed = listReports(store, month, 'ledger-review')
+      expect(listed).toMatchObject({ versions: [{ version: 1, fingerprint: preview.fingerprint }] })
+      const stored = store.reportArtifact(file.artifact.id)!
+      const workbook = XLSX.read(stored.content, { type: 'array' })
+      expect(file.workbookSummary).toEqual(preview.workbookSummary)
+      expect(preview.workbookSummary).toMatchObject({
+        sheetNames: workbook.SheetNames,
+        postedVoucherCount: 1, bankRowCount: 2, bankRowsWithoutVoucher: 1,
+        description: expect.stringContaining('仍会列在「银行流水」页，「对应凭证」栏为空'),
+      })
+      expect(XLSX.utils.sheet_to_json(workbook.Sheets['银行流水']!, { header: 1, defval: null })).toEqual(expect.arrayContaining([
+        [accountRef, '2026-01-10', null, null, 500, null],
+        [accountRef, '2026-01-11', null, null, -20, bankFee.voucherNo],
+      ]))
+      expect(XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets['凭证']!, { header: 1 }).slice(3).map(row => row[0]))
+        .toEqual([bankFee.voucherNo, bankFee.voucherNo])
+
+      cashSale(store, '2026-01-13', '26000000000123456781', '100.00', '101.00', '1.00')
+      const newPreview = previewReport(store, pack, month, 'ledger-review', today)
+      if (!newPreview.accepted) throw Error(JSON.stringify(newPreview))
+      expect(newPreview.workbookSummary).toMatchObject({ postedVoucherCount: 2 })
+      expect(newPreview.fingerprint).not.toBe(preview.fingerprint)
+      expect(listReports(store, month, 'ledger-review')).toEqual(listed)
+      expect(listReports(store, month, 'ledger-review', 1)).not.toHaveProperty('workbookSummary')
+      expect(Buffer.compare(Buffer.from(store.reportArtifact(file.artifact.id)!.content), Buffer.from(stored.content))).toBe(0)
+    } finally { store.close() }
+  })
+
+  it('每次模型请求读本会话对应的文件版本，能看到界面另存的报表', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'qianlai-report-context-'))
+    const bookPath = join(directory, 'book.sqlite')
+    const store = newBook(bookPath)
+    const tools = new Map<string, Parameters<Parameters<typeof apply>[0]['tools']['register']>[0]>()
+    let readReportPrompt = (_input: { agent: { session: PdfReferenceSession } }) => ''
+    let dispose = () => {}
+    try {
+      cashSale(store, '2026-01-10', '26000000000123456781', '100.00', '101.00', '1.00')
+      apply({
+        effect: fn => { dispose = fn() },
+        tools: { register: tool => { tools.set(tool.name, tool); return () => {} } },
+        get: name => name === 'systemPrompt' ? {
+          context(contribution: { name: string; text: typeof readReportPrompt }) {
+            if (contribution.name === 'moneycome-report:saved-state') readReportPrompt = contribution.text
+            return () => {}
+          },
+        } : undefined,
+      }, { bookPath })
+      const agent = { session: { id: 'report-desktop' } }
+      const execution = { agent, signal: new AbortController().signal }
+      const preview = await tools.get('moneycome_company_report')!.execute({ kind: 'ledger-review', periodKey: month, action: 'preview' }, execution)
+      if (!preview || typeof preview !== 'object' || !('fingerprint' in preview) || typeof preview.fingerprint !== 'string')
+        throw Error(JSON.stringify(preview))
+      expect(readReportPrompt({ agent })).toContain('未找到已生成的 XLSX')
+      expect(readReportPrompt({ agent: { session: { id: 'other-desktop' } } })).toBe('')
+
+      const generated = generateReport(store, pack, month, 'ledger-review', preview.fingerprint, today)
+      if (!generated.accepted) throw Error(JSON.stringify(generated))
+      expect(readReportPrompt({ agent })).toContain(`已生成第 1 版，文件名 ${generated.artifact.fileName}`)
+      expect(readReportPrompt({ agent })).toContain(generated.workbookSummary.description)
+      expect(readReportPrompt({ agent: { session: { id: 'other-desktop' } } })).toBe('')
+
+      cashSale(store, '2026-01-12', '26000000000123456782', '200.00', '202.00', '2.00')
+      const updated = previewReport(store, pack, month, 'ledger-review', today)
+      if (!updated.accepted) throw Error(JSON.stringify(updated))
+      expect(generateReport(store, pack, month, 'ledger-review', updated.fingerprint, today)).toMatchObject({ accepted: true })
+      expect(readReportPrompt({ agent })).toContain('已生成第 2 版')
+      expect(readReportPrompt({ agent })).not.toContain(generated.workbookSummary.description)
+    } finally {
+      dispose()
+      store.close()
+      rmSync(directory, { recursive: true })
+    }
   })
 
   it('只允许通过匹配原会话与工具结果的操作读写该文件', async () => {

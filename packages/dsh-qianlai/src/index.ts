@@ -39,7 +39,7 @@ import {
   type PdfReferenceSession,
 } from './referenced-pdf.js'
 import { balanceTransferItems, readProfit, readStatements } from './reports.js'
-import { compareEquipmentReport, isReportKind, listReports, previewReport } from './report-export.js'
+import { compareEquipmentReport, isReportKind, listReports, previewReport, REPORT_TITLES, type ReportKind } from './report-export.js'
 import { registerCompanyReport } from './report-rpc.js'
 import { receiptMatch } from './receipt-match.js'
 import { exportReviewPack } from './review-pack.js'
@@ -127,7 +127,7 @@ interface Context {
   get?(name: string): unknown
 }
 
-interface OnboardingPromptContext {
+interface SystemPromptContext {
   context(contribution: {
     name: string
     order: number
@@ -311,7 +311,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     })
     const onboarding = new CompanyOnboarding(store)
-    const stopOnboardingPrompt = (ctx.get?.('systemPrompt') as Partial<OnboardingPromptContext> | undefined)?.context?.({
+    const systemPrompt = ctx.get?.('systemPrompt') as Partial<SystemPromptContext> | undefined
+    const stopOnboardingPrompt = systemPrompt?.context?.({
       name: 'moneycome-onboarding:entry-state',
       order: 320,
       required: true,
@@ -330,6 +331,27 @@ export function apply(ctx: Context, config: Config = {}): void {
           '先简短回应老板这次发来的内容。能直接回答的先回答。有账务或材料就接住原来的事，建档后从原对话续办。' +
           '回复末尾自然带到建档的当前一步，界面会在正文后提供开始或继续入口。先回应再引导，不靠固定口令。' +
           '未实际打开表单时，请说可以开始或继续，别声称已经显示了表单。明确选择开始、继续、暂缓或提交当前资料时，用建档工具处理实际决定。'
+      },
+    })
+    const recentReports = new WeakMap<PdfReferenceSession, {
+      company: string; periodKey: string; kind: ReportKind; preview: { fingerprint: string; description: string } | undefined
+    }>()
+    const stopReportPrompt = systemPrompt?.context?.({
+      name: 'moneycome-report:saved-state',
+      order: 321,
+      required: true,
+      interpolate: false,
+      text({ agent }) {
+        const recent = agent && recentReports.get(agent.session)
+        if (!recent || recent.company !== JSON.stringify(store.company())) return ''
+        const saved = store.reportArtifacts(recent.periodKey, recent.kind)[0]
+        const prefix = `本会话最近查看的 ${recent.periodKey}「${REPORT_TITLES[recent.kind]}」当前保存状态。只用于这个月份和种类，优先于聊天里的预览状态。`
+        if (!saved) return prefix + '本次查询未找到已生成的 XLSX。'
+        const summary = saved.fingerprint === recent.preview?.fingerprint
+          ? `该版本的文件内容摘要。${recent.preview.description}`
+          : '现有预览摘要无法核实这份已保存文件的内容。'
+        return prefix + `已生成第 ${saved.version} 版，文件名 ${saved.fileName}。` + summary +
+          '如需给下载入口，用 moneycome_company_report 的 list 显示报表卡和对应版本的下载按钮。文件名用纯文本。'
       },
     })
     const currentGuide = (sessionId: string) => {
@@ -960,7 +982,10 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_company_report',
-        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮；list 查已生成版本，可用 version 指定较早版本。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。只有用户点击实际按钮才生成，不能先说文件已生成。微信没有下载卡时说明可在桌面打开。',
+        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮，用户点击后才生成。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。'
+        + '成功预览的 workbookSummary 来自准备写入 XLSX 的表格。说明预览内容时使用其 description。bankRowsWithoutVoucher 是仍会导出到「银行流水」页、对应凭证为空的流水数。「凭证」页只列实际凭证。'
+        + '老板追问刚才导出的文件、生成状态或已保存 XLSX 的内容时，以本会话的当前保存状态为准；没有该月份和类型的状态、查询指定版本或需显示下载按钮时，调用 list，有指定版本时传 version。卡片生成可能没有聊天消息。只有选中版本的 fingerprint 和同一月份同类预览的 fingerprint 一致，才用那次的 workbookSummary 说明该文件内容。否则仅提供核实的版本及下载入口。'
+        + '用纯文本写实际文件名和版本。桌面引导点击本轮报表卡对应版本的下载按钮，微信等没有报表卡时提示在桌面打开。不要将文件名写成 Markdown 链接或拼接下载网址。',
         { ...periodKey, action: str('preview 核对并显示生成，list 查看历史版本，compare-equipment 比较已核实设备采购的适用处理'),
           kind: str('financial 月度财务报表，ledger-review 账务明细'),
           version: { type: 'integer', minimum: 1, description: '查询指定旧版本，仅 list 使用' },
@@ -969,10 +994,26 @@ export function apply(ctx: Context, config: Config = {}): void {
           treatments: { type: 'array', items: { type: 'string', enum: ['expense', 'capitalize'] },
             description: '只传已依据实际材料和会计政策核实适用的方案，可只填一个。' } },
         ['periodKey', 'action', 'kind'],
-        a => {
+        (a, _signal, execution) => {
           if (!isReportKind(a.kind)) return refuse('REPORT_KIND_INVALID', '请选择月度财务报表或账务明细。')
-          if (a.action === 'list') return listReports(store, String(a.periodKey), a.kind, a.version as number | undefined)
-          if (a.action === 'preview') return previewReport(store, pack, String(a.periodKey), a.kind, new Date())
+          if (a.action === 'list' || a.action === 'preview') {
+            const { kind } = a
+            const periodKey = String(a.periodKey)
+            const result = a.action === 'list'
+              ? listReports(store, periodKey, kind, a.version as number | undefined)
+              : previewReport(store, pack, periodKey, kind, new Date())
+            const session = execution?.agent?.session
+            if (result.accepted && session?.id && !isIntroductionSession(session.id)) {
+              const company = JSON.stringify(store.company())
+              const previous = recentReports.get(session)
+              const preview = 'workbookSummary' in result
+                ? { fingerprint: result.fingerprint, description: result.workbookSummary.description }
+                : previous?.company === company && previous.periodKey === periodKey && previous.kind === kind
+                  ? previous.preview : undefined
+              recentReports.set(session, { company, periodKey, kind, preview })
+            }
+            return result
+          }
           if (a.action === 'compare-equipment' && a.kind === 'financial')
             return compareEquipmentReport(store, pack, String(a.periodKey), String(a.invoiceNumber ?? ''), String(a.settlement ?? ''),
               (a.treatments ?? []) as string[], new Date())
@@ -1333,6 +1374,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       stopObserving?.()
       stopQuestionGuard?.()
       stopOnboardingPrompt?.()
+      stopReportPrompt?.()
       for (const dispose of disposers) dispose()
       store.close()
     }
