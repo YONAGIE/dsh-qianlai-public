@@ -132,6 +132,8 @@ describe('可下载的报表版本', () => {
       if (!preview.accepted) throw Error(JSON.stringify(preview))
       const file = generateReport(store, pack, month, 'ledger-review', preview.fingerprint, today)
       if (!file.accepted) throw Error(JSON.stringify(file))
+      const listed = listReports(store, month, 'ledger-review')
+      expect(listed).toMatchObject({ versions: [{ version: 1, fingerprint: preview.fingerprint }] })
       const stored = store.reportArtifact(file.artifact.id)!
       const workbook = XLSX.read(stored.content, { type: 'array' })
       expect(file.workbookSummary).toEqual(preview.workbookSummary)
@@ -148,7 +150,11 @@ describe('可下载的报表版本', () => {
         .toEqual([bankFee.voucherNo, bankFee.voucherNo])
 
       cashSale(store, '2026-01-13', '26000000000123456781', '100.00', '101.00', '1.00')
-      expect(previewReport(store, pack, month, 'ledger-review', today)).toMatchObject({ workbookSummary: { postedVoucherCount: 2 } })
+      const newPreview = previewReport(store, pack, month, 'ledger-review', today)
+      if (!newPreview.accepted) throw Error(JSON.stringify(newPreview))
+      expect(newPreview.workbookSummary).toMatchObject({ postedVoucherCount: 2 })
+      expect(newPreview.fingerprint).not.toBe(preview.fingerprint)
+      expect(listReports(store, month, 'ledger-review')).toEqual(listed)
       expect(listReports(store, month, 'ledger-review', 1)).not.toHaveProperty('workbookSummary')
       expect(Buffer.compare(Buffer.from(store.reportArtifact(file.artifact.id)!.content), Buffer.from(stored.content))).toBe(0)
     } finally { store.close() }
