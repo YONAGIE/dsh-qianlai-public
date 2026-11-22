@@ -1,4 +1,4 @@
-/* global window, AbortController, setTimeout, clearTimeout, setInterval, clearInterval */
+/* global window, AbortController, setTimeout, clearTimeout, setInterval, clearInterval, registerCompanyReportChat */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -169,7 +169,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function questionResultText(event) {
+    function toolResultText(event) {
       const message = event.data.message
       const content = message?.content
       if (event.surfaceOp !== 'append' || message?.isError || message?.source?.kind !== 'tool'
@@ -186,7 +186,7 @@ window.__ModuleLoader__.load({
             ? { id: event.data.callId, role: 'start' }
             : null,
           'tool/result': event => {
-            const text = questionResultText(event)
+            const text = toolResultText(event)
             // Only ask-user results can add a row. Keep matches when history
             // loads the result before its call, without retaining unrelated results.
             return text?.includes('"answers"')
@@ -202,7 +202,7 @@ window.__ModuleLoader__.load({
         },
         update: ({ state }, { event }) => {
           if (state === null) return state
-          const result = parseJson(questionResultText(event))
+          const result = parseJson(toolResultText(event))
           if (result?.pending || !Array.isArray(result?.answers) || result.answers.length !== state.questions.length) return state
           const answers = new Map(result.answers.map(item => [item?.id, item]))
           const pairs = []
@@ -258,6 +258,8 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /* report-chat-client */
+
     const inject = ['slots']
 
     function apply(ctx) {
@@ -289,6 +291,7 @@ window.__ModuleLoader__.load({
         const { events } = scope.uiConversation
         events.register(questionHistoryDefinition(events))
       })
+      registerCompanyReportChat(ctx, { jsx, useState, useRef, usePreset, toolResultText, buttonStyle })
       ctx.slots.inject('conversation.chat.node', () =>
         ctx.slots.register(
           { name: 'conversation.chat.node', key: QUESTION_HISTORY },

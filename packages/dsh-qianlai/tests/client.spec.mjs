@@ -3,11 +3,14 @@ import { runInNewContext } from 'node:vm'
 import { describe, expect, it, vi } from 'vitest'
 
 function makeClient() {
+  const reportChat = readFileSync(new URL('../client/report-chat.src.js', import.meta.url), 'utf8').replace(/^export /gm, '')
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
+    .replace('/* report-chat-client */', () => reportChat)
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
   const registrations = []
+  const eventDefinitions = []
   const calls = []
   let activeFiber
   let hookIndex
@@ -60,9 +63,13 @@ function makeClient() {
   }) } }
   const ctx = {
     inject(dependencies, callback) {
-      if (dependencies[0] === 'connection') callback({ connection, effect() {} })
+      if (dependencies.includes('conversation')) callback({ connection, conversation: {}, effect: install => install() })
+      else if (dependencies[0] === 'connection') callback({ connection, effect() {} })
       else if (dependencies[0] === 'theme') callback({ theme: { overrideTokens: () => () => {} }, effect() {} })
-      else if (dependencies[0] === 'uiConversation') callback({ uiConversation: { events: { register() {}, entries: () => [] } } })
+      else if (dependencies[0] === 'uiConversation') callback({
+        effect: install => install(),
+        uiConversation: { events: { register(definition) { eventDefinitions.push(definition) }, entries: () => eventDefinitions } },
+      })
     },
     slots: {
       inject(_name, callback) { callback() },
@@ -117,7 +124,9 @@ function makeClient() {
     calls,
     connection,
     dispose,
+    eventDefinitions,
     intervals,
+    registrations,
     render,
     setStatus(value) { status = value },
     buttonText() { return findButtons(render())[0]?.props.children },
@@ -152,4 +161,19 @@ describe('WeChat header status', () => {
       client.dispose()
     }
   })
+})
+
+it('registers the report projection and renderer from the client bundle', () => {
+  const client = makeClient()
+  try {
+    expect(client.eventDefinitions).toContainEqual(expect.objectContaining({
+      kind: 'moneycome-report-action', target: 'chat',
+    }))
+    expect(client.registrations).toContainEqual(expect.objectContaining({
+      definition: { name: 'conversation.chat.node', key: 'moneycome-report-action' },
+      component: expect.any(Function),
+    }))
+  } finally {
+    client.dispose()
+  }
 })
