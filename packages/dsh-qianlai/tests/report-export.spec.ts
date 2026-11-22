@@ -89,7 +89,7 @@ describe('可下载的报表版本', () => {
       const first = generateReport(store, pack, month, 'financial', preview.fingerprint, today)
       if (!first.accepted) throw Error(JSON.stringify(first))
       expect(generateReport(store, pack, month, 'financial', preview.fingerprint, today))
-        .toEqual({ accepted: true, artifact: first.artifact, reused: true })
+        .toEqual({ accepted: true, artifact: first.artifact, reused: true, workbookSummary: preview.workbookSummary })
       const original = Buffer.from(store.reportArtifact(first.artifact.id)!.content)
       const workbook = XLSX.read(Uint8Array.from(original), { type: 'array' })
       expect(workbook.SheetNames).toEqual(['报表说明', '资产负债表', '利润表'])
@@ -109,6 +109,48 @@ describe('可下载的报表版本', () => {
       expect(Buffer.compare(stillStored, original)).toBe(0)
       expect(listReports(store, month, 'financial', 1)).toMatchObject({ versions: [first.artifact] })
       expect(listReports(store, '2026-02', 'financial')).toMatchObject({ versions: [] })
+    } finally { store.close() }
+  })
+
+  it('账务明细摘要和下载的工作表一致，未关联凭证的流水仍导出', () => {
+    const store = newBook()
+    try {
+      const accountRef = '合成银行 尾号 0012'
+      const statement = importStatement(store, { accountRef, periodStart: '2026-01-01', periodEnd: '2026-01-31',
+        rows: [
+          { rowNumber: 1, occurredAt: '2026-01-10', direction: '收入', amount: '500.00', balanceAfter: '500.00' },
+          { rowNumber: 2, occurredAt: '2026-01-11', direction: '支出', amount: '20.00', balanceAfter: '480.00' },
+        ],
+      }, today)
+      if (!statement.accepted) throw Error(JSON.stringify(statement))
+      const bankFee = recordEntry(store, pack, { date: '2026-01-11', summary: '合成手续费', eventKind: 'bank_fee',
+        facts: { 'settlement.method': 'bank' }, amounts: { settlement: '20.00' },
+        statementLineIds: [store.statementLines({ importId: statement.receipt.importId })[1]!.id],
+      }, today)
+      if (!bankFee.accepted || !('voucherNo' in bankFee)) throw Error(JSON.stringify(bankFee))
+      const preview = previewReport(store, pack, month, 'ledger-review', today)
+      if (!preview.accepted) throw Error(JSON.stringify(preview))
+      const file = generateReport(store, pack, month, 'ledger-review', preview.fingerprint, today)
+      if (!file.accepted) throw Error(JSON.stringify(file))
+      const stored = store.reportArtifact(file.artifact.id)!
+      const workbook = XLSX.read(stored.content, { type: 'array' })
+      expect(file.workbookSummary).toEqual(preview.workbookSummary)
+      expect(preview.workbookSummary).toMatchObject({
+        sheetNames: workbook.SheetNames,
+        postedVoucherCount: 1, bankRowCount: 2, bankRowsWithoutVoucher: 1,
+        description: expect.stringContaining('仍会列在「银行流水」页，「对应凭证」栏为空'),
+      })
+      expect(XLSX.utils.sheet_to_json(workbook.Sheets['银行流水']!, { header: 1, defval: null })).toEqual(expect.arrayContaining([
+        [accountRef, '2026-01-10', null, null, 500, null],
+        [accountRef, '2026-01-11', null, null, -20, bankFee.voucherNo],
+      ]))
+      expect(XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets['凭证']!, { header: 1 }).slice(3).map(row => row[0]))
+        .toEqual([bankFee.voucherNo, bankFee.voucherNo])
+
+      cashSale(store, '2026-01-13', '26000000000123456781', '100.00', '101.00', '1.00')
+      expect(previewReport(store, pack, month, 'ledger-review', today)).toMatchObject({ workbookSummary: { postedVoucherCount: 2 } })
+      expect(listReports(store, month, 'ledger-review', 1)).not.toHaveProperty('workbookSummary')
+      expect(Buffer.compare(Buffer.from(store.reportArtifact(file.artifact.id)!.content), Buffer.from(stored.content))).toBe(0)
     } finally { store.close() }
   })
 

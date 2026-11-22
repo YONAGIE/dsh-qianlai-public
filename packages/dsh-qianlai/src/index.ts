@@ -960,7 +960,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       ),
       tool(
         'moneycome_company_report',
-        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮；list 查已生成版本，可用 version 指定较早版本。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。只有用户点击实际按钮才生成，不能先说文件已生成。微信没有下载卡时说明可在桌面打开。',
+        '生成或下载可以转交财务的 XLSX 时用。选择实际月份和报告种类，preview 核对本月依赖并给出确认按钮；list 查已生成版本，可用 version 指定较早版本。结果接受后，在本轮简要说明企业及月份，用户直接使用当前卡片。blocked 时解释工具返回的当前卡点，保留月份，用相应的上传入口或表单让老板处理，别让老板再打字确认或生成全零报表。只有用户点击实际按钮才生成，不能先说文件已生成。微信没有下载卡时说明可在桌面打开。'
+        + '成功预览的 workbookSummary 来自准备写入 XLSX 的表格。说明包含哪些内容时，使用其 description。bankRowsWithoutVoucher 是仍会导出到「银行流水」页、对应凭证为空的流水数。「凭证」页只列实际凭证。list 未提供文件内容摘要，只说明已有版本和下载入口。',
         { ...periodKey, action: str('preview 核对并显示生成，list 查看历史版本，compare-equipment 比较已核实设备采购的适用处理'),
           kind: str('financial 月度财务报表，ledger-review 账务明细'),
           version: { type: 'integer', minimum: 1, description: '查询指定旧版本，仅 list 使用' },

@@ -4,6 +4,8 @@
 
 - After a Zhangjie reply, show the current company setup action for any conversation that still needs an enterprise profile. Resume existing drafts and respect deferred setup.
 
+- Describe XLSX exports using the actual worksheet contents. Keep bank transactions without linked vouchers visible in ledger details with blank voucher references.
+
 - Preview and post vouchers for confirmed historical gaps after reconciling balances. Keep the existing takeover month and opening balances, and include the approved vouchers in historical reports.
 
 - Prepare and review tax materials by company, tax type and reporting period. Preserve local versions and keep uploaded filing and payment receipts pending official verification.
