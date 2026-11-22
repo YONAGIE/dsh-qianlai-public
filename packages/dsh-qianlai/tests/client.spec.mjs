@@ -8,17 +8,20 @@ import { taxFields } from '../src/onboarding-fields.js'
 import { taxRegionCities, taxScanCities } from '../src/tax-portals.js'
 
 function makeClient() {
+  const reportChat = readFileSync(new URL('../client/report-chat.src.js', import.meta.url), 'utf8').replace(/^export /gm, '')
   const source = readFileSync(new URL('../client/client.src.js', import.meta.url), 'utf8')
     .replace('/* tax-region-catalogue */ {}', JSON.stringify(taxRegionCities))
     .replace('/* tax-fields */ []', JSON.stringify(taxFields))
     .replace('/* tax-scan-cities */ {}', JSON.stringify(taxScanCities()))
     .replace('/* onboarding-date-client */', () => createOnboardingDateInput.toString())
+    .replace('/* report-chat-client */', () => reportChat)
     .replace('/* onboarding-chat-client */', () => onboardingFieldError.toString() +
       '\nfunction registerOnboardingChat(_ctx, client) { window.onboardingClient = client }')
   const fibers = new Map()
   const pendingEffects = []
   const intervals = new Map()
   const registrations = []
+  const eventDefinitions = []
   const calls = []
   let activeFiber
   let hookIndex
@@ -105,10 +108,15 @@ function makeClient() {
   }) } }
   const ctx = {
     inject(dependencies, callback) {
-      if (dependencies[0] === 'connection') callback({ connection, effect() {} })
+      if (dependencies[0] === 'connection' && dependencies.includes('conversation'))
+        callback({ connection, conversation: {}, effect: install => install() })
+      else if (dependencies[0] === 'connection') callback({ connection, effect() {} })
       else if (dependencies.includes('sessions') && dependencies.includes('conversation')) callback({ sessions, effect() {} })
       else if (dependencies[0] === 'theme') callback({ theme: { overrideTokens: () => () => {} }, effect() {} })
-      else if (dependencies[0] === 'uiConversation') callback({ uiConversation: { events: { register() {}, entries: () => [] } } })
+      else if (dependencies[0] === 'uiConversation') callback({
+        effect: install => install(),
+        uiConversation: { events: { register(definition) { eventDefinitions.push(definition) }, entries: () => eventDefinitions } },
+      })
       else if (dependencies[0] === 'sidebarRight') callback({ sidebarRight, sidebarRightTabs, effect: install => install() })
     },
     slots: {
@@ -176,6 +184,7 @@ function makeClient() {
   return {
     calls,
     connection,
+    eventDefinitions,
     registrations,
     sidebarRight,
     tabTypes,
@@ -271,6 +280,21 @@ describe('WeChat header status', () => {
 
 
 const sampleDraft = { accepted: true, draftId: 'synthetic-draft', revision: 0, step: 1, completed: false, replacesSampleBook: true }
+
+it('registers the report projection and renderer alongside the onboarding UI', () => {
+  const client = makeClient()
+  try {
+    expect(client.eventDefinitions).toContainEqual(expect.objectContaining({
+      kind: 'moneycome-report-action', target: 'chat',
+    }))
+    expect(client.registrations).toContainEqual(expect.objectContaining({
+      definition: { name: 'conversation.chat.node', key: 'moneycome-report-action' },
+      component: expect.any(Function),
+    }))
+  } finally {
+    client.dispose()
+  }
+})
 
 describe('Zhangjie onboarding sidebar', () => {
   it('clears other business selections when selecting "none", and clears "none" when selecting an activity', async () => {

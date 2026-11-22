@@ -1,4 +1,5 @@
 /* global window, AbortController, AbortSignal, setTimeout, clearTimeout, setInterval, clearInterval, registerOnboardingChat, onboardingFieldError, createOnboardingDateInput */
+/* global registerCompanyReportChat */
 /**
  * 张姐会话的界面插件（浏览器端）。
  *
@@ -788,6 +789,7 @@ window.__ModuleLoader__.load({
 
     /* onboarding-date-client */
     /* onboarding-chat-client */
+    /* report-chat-client */
 
     const OnboardingDateInput = createOnboardingDateInput({ jsx, useState, useRef, useEffect },
       typeof window.HTMLElement?.prototype.showPopover === 'function')
@@ -838,6 +840,7 @@ window.__ModuleLoader__.load({
         sendOnboardingReply, subscribeOnboarding, previewOnboardingTax, readOnboardingFile, taxRequest,
         taxRegionCities: TAX_REGION_CITIES, taxScanCities: TAX_SCAN_CITIES,
       })
+      registerCompanyReportChat(ctx, { jsx, useState, useRef, usePreset, toolResultText, buttonStyle, panelSectionStyle })
       ctx.inject(['uiConversation'], scope => {
         const { events } = scope.uiConversation
         events.register(questionHistoryDefinition(events))
