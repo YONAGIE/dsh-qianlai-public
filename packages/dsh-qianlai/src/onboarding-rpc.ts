@@ -2,11 +2,12 @@ import type { CompanyOnboarding } from './company-onboarding.js'
 import { recognizeCompanyDocument, type DocumentRecognitionServices, type ModelSelection } from './onboarding-document.js'
 import { refuse } from './period.js'
 import type { TaxDraftAccess, TaxOnboardingTarget } from './tax-onboarding.js'
-import type { RpcConnection } from './wechat/control.js'
+import { isIntroductionSession, isWechatSession, type RpcConnection } from './wechat/control.js'
 
 interface SessionSnapshot {
   readonly meta: { readonly agentPreset?: string }
   readonly events: readonly { readonly type: string; readonly data?: unknown }[]
+  readonly currentPreset?: string | null
 }
 
 // Room for an 8 MiB file in base64 plus the RPC envelope.
@@ -37,6 +38,28 @@ export interface OnboardingSessions {
   inspect(id: string, signal: AbortSignal): Promise<SessionSnapshot>
 }
 
+export interface OnboardingSessionQuery {
+  observeSession(id: string, options: { signal: AbortSignal; projectionMode: 'all' }): Promise<{
+    readonly projections?: { readonly values: { readonly agentPreset?: string | null } }
+    readonly events: SessionSnapshot['events']
+    [Symbol.dispose](): void
+  }>
+}
+
+export function onboardingSessionAccess(controller?: Partial<OnboardingSessions>, query?: OnboardingSessionQuery): OnboardingSessions | undefined {
+  if (typeof controller?.inspect === 'function') return { inspect: controller.inspect.bind(controller) }
+  if (!query) return undefined
+  return {
+    async inspect(id, signal) {
+      const observation = await query.observeSession(id, { signal, projectionMode: 'all' })
+      try {
+        signal.throwIfAborted()
+        return { meta: {}, currentPreset: observation.projections?.values.agentPreset ?? null, events: observation.events.slice() }
+      } finally { observation[Symbol.dispose]() }
+    },
+  }
+}
+
 export interface OnboardingHostServices extends DocumentRecognitionServices {
   readonly agentDefaultModel?: { currentSelection(): ModelSelection } | undefined
 }
@@ -45,12 +68,38 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
+function hasCurrentReply(session: SessionSnapshot, turn: unknown): boolean {
+  if (typeof turn !== 'number' || !Number.isSafeInteger(turn) || turn < 0) return false
+  const { events } = session
+  let end = events.length - 1
+  while (end >= 0 && events[end]?.type !== 'turn/start' && events[end]?.type !== 'turn/end') end--
+  const boundary = events[end]
+  if (boundary?.type !== 'turn/end' || record(boundary.data).turn !== turn ||
+    record(record(boundary.data).reason).kind !== 'completed') return false
+  let start = end - 1
+  while (start >= 0 && events[start]?.type !== 'turn/start') start--
+  if (start < 0 || record(events[start]?.data).turn !== turn) return false
+  const reply = events.slice(start + 1, end)
+  return reply.some(event => event.type === 'user/message' && record(record(event.data).source).kind === 'user') &&
+    reply.some(event => {
+      if (event.type !== 'assistant/message') return false
+      const content = record(record(event.data).message).content
+      return Array.isArray(content) && content.some(part => {
+        const { type, text } = record(part)
+        return type === 'text' && typeof text === 'string' && text.trim() !== ''
+      })
+    })
+}
+
 export async function inspectZhangjie(sessions: OnboardingSessions | undefined, id: unknown, signal: AbortSignal) {
   if (!sessions || typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id) || signal.aborted) return undefined
   try {
     const session = await sessions.inspect(id, signal)
-    const lastSelection = session.events.filter(event => event.type === 'agent-preset/selected').at(-1)
-    const preset = lastSelection ? record(lastSelection.data).agentPreset : session.meta.agentPreset
+    let preset: unknown = session.currentPreset
+    if (preset === undefined) {
+      const lastSelection = session.events.filter(event => event.type === 'agent-preset/selected').at(-1)
+      preset = lastSelection ? record(lastSelection.data).agentPreset : session.meta.agentPreset
+    }
     return !signal.aborted && preset === 'moneycome-zhangjie' ? session : undefined
   } catch {
     return undefined
@@ -116,6 +165,12 @@ export function registerCompanyOnboarding(connection: RpcConnection, onboarding:
 
       try {
         signal.throwIfAborted()
+        if (action === 'entry-status' || action === 'open-entry') {
+          if (typeof sessionId !== 'string' || isWechatSession(sessionId) || isIntroductionSession(sessionId) ||
+            !hasCurrentReply(session, payload.turn)) return reply({ accepted: true, entry: null })
+          if (action === 'entry-status') return reply({ accepted: true, entry: onboarding.entryState() })
+          return reply(onboarding.openEntry(sessionId))
+        }
         const view = onboarding.status()
         if (action === 'status') return reply(view)
         if (action === 'card-status' && typeof sessionId === 'string' && typeof payload.cardId === 'string')

@@ -37,6 +37,7 @@ const result = (callId, value) => ({
 })
 const guide = (callId, card) => [call(callId), result(callId, { accepted: true, card })]
 const end = (kind = 'completed') => ({ type: 'turn/end', data: { reason: { kind } } })
+const reply = text => ({ type: 'assistant/message', data: { message: { content: [{ type: 'text', text }] } } })
 
 function project(contribution, turn, events, previous) {
   const start = { location: { kind: 'turn', turn }, event: { type: 'turn/start', data: { turn } } }
@@ -55,6 +56,17 @@ function project(contribution, turn, events, previous) {
 }
 
 describe('建档卡按对话轮次显示', () => {
+  it('普通回复生成当前建档入口候选，直到正文完成才显示', () => {
+    const contribution = definition()
+    expect(project(contribution, 7, [reply('明白，我先给您说清基本做法。')]).node).toBeNull()
+    expect(project(contribution, 7, [reply('明白，我先给您说清基本做法。'), end()]).node)
+      .toMatchObject({ visibility: 'visible', anchorSeq: 701, data: { entryTurn: 7 } })
+    expect(project(contribution, 8, [reply('收到'), end('aborted')]).node.visibility).toBe('hidden')
+    expect(project(contribution, 9, [reply(' '), end()]).node.visibility).toBe('hidden')
+    expect(project(contribution, 10, [...guide('explicit', business), reply('先核对经营情况。'), end()]).node.data).toEqual(business)
+    expect(project(contribution, 11, [call('question', 'ask_user_question'), reply('请先核对。'), end()]).node.visibility).toBe('hidden')
+  })
+
   it('等待本轮完成，最后只展示一张卡片且锚定在回复末尾', () => {
     const contribution = definition()
     const events = [...guide('one', business), ...guide('two', correction), ...guide('three', correction)]

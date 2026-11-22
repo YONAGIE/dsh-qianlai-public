@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- After a Zhangjie reply, show the current company setup action for any conversation that still needs an enterprise profile. Resume existing drafts and respect deferred setup.
+
+- Describe XLSX exports using the actual worksheet contents. Keep bank transactions without linked vouchers visible in ledger details with blank voucher references.
+
 - Preview and post vouchers for confirmed historical gaps after reconciling balances. Keep the existing takeover month and opening balances, and include the approved vouchers in historical reports.
 
 - Prepare and review tax materials by company, tax type and reporting period. Preserve local versions and keep uploaded filing and payment receipts pending official verification.
@@ -13,6 +17,7 @@
 - Jump directly to a year or month in both setup forms. Use the same calendar for company and bank dates, and choose bookkeeping months without selecting a day.
 
 - Preview monthly financial reports and ledger details, then generate and download readable XLSX files. Keep historical report files and return the same version when the underlying report is unchanged.
+- Open a file picker from the financial report card for the specific bank transaction or voucher that still needs evidence.
 
 - Review social insurance and housing-fund records separately. Keep individual enrollment results and link payment proof while preserving corrected contribution months.
 
